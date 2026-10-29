@@ -323,7 +323,19 @@ fn source_changes_while_waiting_and_running_cannot_report_a_pass() {
     let state = queue::inspect(&f.queue()).unwrap();
     assert_eq!(state.jobs[0].stage, Stage::Stale);
     assert!(state.jobs[0].exit_code.is_none());
-    assert_eq!(state.jobs[1].stage, Stage::Stale);
+    assert_eq!(
+        state.jobs[1].stage,
+        Stage::Stale,
+        "{}",
+        queue::mcp::call(
+            &f.queue(),
+            &["running".into()],
+            "test",
+            "validation_result",
+            &serde_json::json!({"job_id":state.jobs[1].id})
+        )
+        .unwrap()
+    );
     assert_eq!(state.jobs[1].exit_code, Some(0));
     assert_eq!(
         fs::read_to_string(f.queue().join("events.txt"))
@@ -406,6 +418,24 @@ fn missing_worker_blocks_all_new_work_until_explicit_review() {
         queue::inspect(&f.queue()).unwrap().jobs[1].stage,
         Stage::Passed
     );
+}
+
+#[test]
+fn a_contending_reader_waits_for_the_platform_lock() {
+    let f = Fixture::new();
+    let directory = f.queue();
+    let (ready, receive) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        queue::transaction(&directory, |_s| {
+            ready.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(80));
+            Ok(())
+        })
+        .unwrap();
+    });
+    receive.recv().unwrap();
+    assert!(queue::inspect(&f.queue()).is_ok());
+    holder.join().unwrap();
 }
 
 #[test]

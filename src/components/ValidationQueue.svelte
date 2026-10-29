@@ -177,7 +177,7 @@
         {/each}
         {#if jobs.length > 4}
             <details class="queue-more">
-                <summary>{jobs.length - 4} more jobs</summary>
+                <summary>{jobs.length - 4} more {jobs.length === 5 ? 'job' : 'jobs'}</summary>
                 {#each jobs.slice(4) as job (job.id)}
                     <div class="remaining-job">
                         <span>{job.task}</span><span class="muted">{job.harness} · {job.stage}</span

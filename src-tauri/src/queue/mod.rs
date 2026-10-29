@@ -273,7 +273,7 @@ fn lock(directory: &Path) -> Result<File, String> {
     for _ in 0..100 {
         match fs2::FileExt::try_lock_exclusive(&lock) {
             Ok(()) => return Ok(lock),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
                 std::thread::sleep(Duration::from_millis(10))
             }
             Err(_) => return Err("Cannot lock queue state.".into()),
