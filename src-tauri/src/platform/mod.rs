@@ -2,6 +2,8 @@ use crate::types::PlatformReadings;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", test))]
+mod memory;
 #[cfg(target_os = "windows")]
 mod windows;
 

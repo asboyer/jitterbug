@@ -1,5 +1,44 @@
-use crate::types::PlatformReadings;
+use super::memory::{account, VmPages};
+use crate::types::{MemoryBreakdown, PlatformReadings};
 use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState};
+use std::{mem, sync::OnceLock};
+
+fn memory() -> Option<MemoryBreakdown> {
+    // Keep one host send right for this process, rather than leaking one each sample.
+    static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();
+    #[allow(deprecated)] // libc exposes the stable Mach host API; no extra runtime is needed.
+    let host = *HOST.get_or_init(|| unsafe { libc::mach_host_self() });
+    let mut stats: libc::vm_statistics64 = unsafe { mem::zeroed() };
+    // The stable revision ends before swapped_count; newer SDKs add fields after it.
+    let mut count = (mem::offset_of!(libc::vm_statistics64, swapped_count)
+        / mem::size_of::<libc::integer_t>()) as libc::mach_msg_type_number_t;
+    let requested = count;
+    let result = unsafe {
+        libc::host_statistics64(
+            host,
+            libc::HOST_VM_INFO64,
+            (&mut stats as *mut libc::vm_statistics64).cast(),
+            &mut count,
+        )
+    };
+    if result != libc::KERN_SUCCESS || count < requested {
+        return None;
+    }
+    account(
+        VmPages {
+            active: stats.active_count.into(),
+            inactive: stats.inactive_count.into(),
+            speculative: stats.speculative_count.into(),
+            wired: stats.wire_count.into(),
+            compressed: stats.compressor_page_count.into(),
+            purgeable: stats.purgeable_count.into(),
+            external: stats.external_page_count.into(),
+            swap_in: stats.swapins,
+            swap_out: stats.swapouts,
+        },
+        unsafe { libc::vm_page_size } as u64,
+    )
+}
 
 pub fn readings() -> PlatformReadings {
     let mut value: i32 = 0;
@@ -39,5 +78,6 @@ pub fn readings() -> PlatformReadings {
         memory_pressure,
         thermal: Some(thermal.into()),
         process_actions: true,
+        memory: memory(),
     }
 }

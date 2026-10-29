@@ -7,6 +7,32 @@ async fn main() {
     let snapshot = collector.sample();
     assert!(snapshot.sample_ready && snapshot.memory_total_bytes > 0 && snapshot.process_count > 0);
     assert!(!snapshot.workloads.is_empty());
+    assert_eq!(snapshot.cpu_cores.len(), snapshot.logical_cpus);
+    assert!(snapshot
+        .cpu_cores
+        .iter()
+        .all(|cpu| cpu.is_finite() && (0.0..=100.0).contains(cpu)));
+    #[cfg(target_os = "macos")]
+    {
+        let memory = snapshot
+            .platform
+            .memory
+            .as_ref()
+            .expect("Native VM counters unavailable");
+        assert_eq!(
+            memory.used_bytes,
+            memory.app_bytes + memory.wired_bytes + memory.compressed_bytes
+        );
+        assert!(memory.used_bytes > 0 && memory.used_bytes <= snapshot.memory_total_bytes);
+        assert_eq!(
+            snapshot.memory_available_bytes,
+            snapshot.memory_total_bytes - memory.used_bytes
+        );
+        assert!(snapshot.swap_in_bytes.is_some() && snapshot.swap_out_bytes.is_some());
+        println!("Native memory smoke passed: VM accounting, actual page size, and interval swap counters.");
+    }
+    assert!(snapshot.quick_view().processes.is_empty());
+    assert!(snapshot.quick_view().workloads.len() <= 5);
     // Never print process names, paths, machine identifiers, or telemetry values.
     println!("Live collector smoke passed: sample, process inventory, workload attribution, and bounded history.");
 

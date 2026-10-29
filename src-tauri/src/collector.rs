@@ -12,6 +12,7 @@ pub struct Collector {
     history: VecDeque<MetricPoint>,
     workload_history: HashMap<String, VecDeque<ResourcePoint>>,
     previous_swap: Option<u64>,
+    swap_io: SwapIo,
     samples: u64,
 }
 
@@ -24,6 +25,7 @@ impl Default for Collector {
             history: VecDeque::new(),
             workload_history: HashMap::new(),
             previous_swap: None,
+            swap_io: SwapIo::default(),
             samples: 0,
         }
     }
@@ -120,6 +122,26 @@ impl Collector {
             workload.history = history.iter().cloned().collect();
         }
         let swap = self.system.used_swap();
+        let mut platform = crate::platform::readings();
+        if platform
+            .memory
+            .as_ref()
+            .is_some_and(|m| m.used_bytes > total)
+        {
+            platform.memory = None;
+        }
+        let (swap_in_bytes, swap_out_bytes) = self.swap_io.update(platform.memory.as_ref());
+        // sysinfo's macOS "available" includes active app pages (non-compressed memory).
+        // Use reclaimable headroom for both the dashboard and conservative inference guards.
+        #[cfg(target_os = "macos")]
+        let available = total.saturating_sub(
+            platform
+                .memory
+                .as_ref()
+                .map_or(self.system.used_memory(), |memory| memory.used_bytes),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let available = self.system.available_memory();
         let mut snapshot = Snapshot {
             source: "live".into(),
             captured_at,
@@ -127,9 +149,17 @@ impl Collector {
             interval_ms: 5000,
             cpu_percent: self.system.global_cpu_usage().clamp(0.0, 100.0),
             logical_cpus: cores,
+            cpu_cores: self
+                .system
+                .cpus()
+                .iter()
+                .map(|cpu| cpu.cpu_usage().clamp(0.0, 100.0))
+                .collect(),
             memory_total_bytes: total,
-            memory_available_bytes: self.system.available_memory(),
+            memory_available_bytes: available,
             swap_used_bytes: swap,
+            swap_in_bytes,
+            swap_out_bytes,
             swap_growth_bytes: self
                 .previous_swap
                 .map(|old| swap.saturating_sub(old))
@@ -137,7 +167,7 @@ impl Collector {
             process_count: self.system.processes().len(),
             processes,
             workloads,
-            platform: crate::platform::readings(),
+            platform,
             ..Default::default()
         };
         (snapshot.pressure, snapshot.incident) = self.detector.update(&snapshot);
@@ -157,6 +187,20 @@ impl Collector {
         self.previous_swap = Some(swap);
         self.samples += 1;
         snapshot
+    }
+}
+
+#[derive(Default)]
+struct SwapIo(Option<(u64, u64)>);
+
+impl SwapIo {
+    fn update(&mut self, memory: Option<&MemoryBreakdown>) -> (Option<u64>, Option<u64>) {
+        let next = memory.map(|m| (m.swap_in_total_bytes, m.swap_out_total_bytes));
+        let previous = std::mem::replace(&mut self.0, next);
+        match (previous, next) {
+            (Some((a, b)), Some((c, d))) if c >= a && d >= b => (Some(c - a), Some(d - b)),
+            _ => (None, None),
+        }
     }
 }
 
@@ -189,9 +233,33 @@ pub fn explain(snapshot: &Snapshot, workload_id: Option<&str>) -> String {
             w.attribution
         ));
     }
+    if let (Some(input), Some(output)) = (snapshot.swap_in_bytes, snapshot.swap_out_bytes) {
+        lines.push(format!("The OS swapped in {:.1} MiB and swapped out {:.1} MiB during the last sample interval. These are system-wide counters, not attribution to any one process.", input as f64 / 1048576.0, output as f64 / 1048576.0));
+    }
     if snapshot.swap_used_bytes > 0 {
         lines.push("Existing swap use alone does not prove current thrashing; watch its growth and OS memory pressure.".into());
     }
     lines.push("These are deterministic observations, not a model diagnosis. Shared memory can be counted in multiple process totals. No processes have been changed.".into());
     lines.join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_io_rebaselines_on_first_sample_missing_data_or_counter_reset() {
+        let mut io = SwapIo::default();
+        let reading = |n| MemoryBreakdown {
+            swap_in_total_bytes: n,
+            swap_out_total_bytes: n * 2,
+            ..Default::default()
+        };
+        assert_eq!(io.update(Some(&reading(100))), (None, None));
+        assert_eq!(io.update(Some(&reading(110))), (Some(10), Some(20)));
+        assert_eq!(io.update(Some(&reading(2))), (None, None));
+        assert_eq!(io.update(None), (None, None));
+        assert_eq!(io.update(Some(&reading(120))), (None, None));
+        assert_eq!(io.update(Some(&reading(120))), (Some(0), Some(0)));
+    }
 }

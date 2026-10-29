@@ -3,6 +3,7 @@ pub mod attribution;
 pub mod automation;
 pub mod budget;
 pub mod collector;
+mod desktop;
 pub mod diagnostics;
 pub mod platform;
 pub mod pressure;
@@ -34,6 +35,15 @@ fn get_snapshot(state: State<'_, AppState>) -> Result<types::Snapshot, String> {
         .read()
         .map(|s| s.dashboard_view())
         .map_err(|_| "Telemetry state unavailable.".into())
+}
+
+#[tauri::command]
+fn get_quick_snapshot(state: State<'_, AppState>) -> Result<types::Snapshot, String> {
+    state
+        .snapshot
+        .read()
+        .map(|s| s.quick_view())
+        .map_err(|_| "Telemetry unavailable.".into())
 }
 
 #[tauri::command]
@@ -241,33 +251,24 @@ pub fn run() {
                                 task.run(id).await;
                             });
                         }
-                        let _ = handle.emit("telemetry", &sample.dashboard_view());
+                        desktop::publish(&handle, &sample);
                         std::thread::sleep(Duration::from_secs(5));
                     }
                 })?;
-            let show =
-                tauri::menu::MenuItem::with_id(app, "show", "Open Jitterbug", true, None::<&str>)?;
-            let quit =
-                tauri::menu::MenuItem::with_id(app, "quit", "Quit Jitterbug", true, None::<&str>)?;
-            let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
-            tauri::tray::TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Jitterbug · resource assistant")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => (),
-                })
-                .build(app)?;
+            desktop::install(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == "menubar" && !focused {
+                    let _ = window.hide();
+                } else if *focused {
+                    let state = window.state::<AppState>();
+                    if let Ok(snapshot) = state.snapshot.read() {
+                        desktop::publish(window.app_handle(), &snapshot);
+                    };
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
@@ -275,6 +276,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_quick_snapshot,
+            desktop::open_main,
+            desktop::hide_quick_view,
             get_bootstrap,
             save_settings,
             save_credential,

@@ -22,6 +22,37 @@ npm run format       # house-style formatting and rustfmt
 npm run tauri build  # desktop package; unsigned unless signing is configured
 ```
 
+## Desktop interface and native readings
+
+The macOS menu bar uses a monochrome template image: macOS supplies white or dark tint to
+match the menu bar. Click it for a compact quick view; right-click for Open, Settings, and Quit.
+Use **Window → Quick View** (⇧⌘M on macOS) for keyboard access, and ⌘, for Settings.
+The panel uses native macOS popover vibrancy, closes on Escape or focus loss, and opens the
+selected workload directly in the main assistant. The shared Svelte interface uses system
+fonts, light/dark appearance, compact controls, and native window chrome. It remains a Tauri
+webview interface, not a rewrite in AppKit.
+
+The quick view reuses the same five-second Rust sampler. Its webview is created only on first
+use and receives at most five workloads with no process inventory. Hidden/minimized windows
+stop receiving telemetry events; reopening delivers the latest sample. Monitoring and the
+policy-controlled incident loop continue independently.
+
+On macOS, **Core activity & memory details** adds per-core usage from the existing CPU poll,
+plus app, wired, compressed, and cached memory via `host_statistics64`. Swap-in/out values are
+page-counter deltas for the last sample interval, not allocated swap size or a claim about any
+particular process. Missing/first samples are unavailable; counter resets establish a new
+baseline. macOS available memory is total minus native used memory (app + wired + compressed),
+including reclaimable cache. The same conservative headroom feeds local-inference guards;
+`sysinfo`'s macOS non-compressed-memory estimate includes active app pages and is not used
+as allocation headroom. CPU values elsewhere still represent total machine capacity; each core bar is a
+percentage of that one logical core. Native memory detail is unavailable on Windows.
+
+Memory accounting is adapted from [Stats](https://github.com/exelban/stats) under its MIT license;
+see [third-party notices](THIRD_PARTY_NOTICES.md), also included in the app's Settings.
+The adapter uses the actual kernel page size and makes no shell calls. Existing cached
+`sysinfo` process collection is retained; no Stats private SMC APIs, privileged helpers, or
+repeated `top` subprocesses are imported.
+
 ## What is real
 
 - Live process CPU, resident memory, disk read/write counters, parent relationships, available memory, and swap usage through `sysinfo`. App/workload history retains the last 24 samples (about two minutes).
@@ -41,7 +72,7 @@ The native loop runs while the window is hidden:
 4. **Apply:** choose **Apply once & measure**, or **Allow for this workload & apply**. The latter saves permission for future priority changes in that workload. No workloads are allowed initially. Automatic termination is never allowed. Current trigger, PID/start time, ownership, protection, and permission are rechecked immediately before the OS action.
 5. **Verify:** wait for a complete fresh sampling interval, compare resources, and read back OS scheduling priority. The result explicitly reports when CPU did not improve or evidence is unavailable. Lower priority helps contention; it does not cap CPU, free RAM, or guarantee a speedup. It lasts until process exit and cannot always be reversed without privileges.
 
-Use **Providers & policy** to change limits, disable model analysis or automation, and remove permissions. The popup can dismiss an incident or pause new investigations/actions for 15 minutes. Closing it leaves monitoring active. Dismissal cannot cancel an action already applied. Repeated alerts require recovery and a cooldown (five minutes by default), with a global 60-second gap and at most four investigations per hour per session. Only one model request and one measured action run at a time. Up to 12 incidents, with 12 steps each, stay in memory and disappear on quit. Existing lifetime spending reservations survive restarts.
+Use **Settings** to change limits, disable model analysis or automation, and remove permissions. The popup can dismiss an incident or pause new investigations/actions for 15 minutes. Closing it leaves monitoring active. Dismissal cannot cancel an action already applied. Repeated alerts require recovery and a cooldown (five minutes by default), with a global 60-second gap and at most four investigations per hour per session. Only one model request and one measured action run at a time. Up to 12 incidents, with 12 steps each, stay in memory and disappear on quit. Existing lifetime spending reservations survive restarts.
 
 Automatic process changes currently work on **macOS only**. Windows can detect, investigate, and display evidence, but has no native action adapter yet. This is workload reprioritization, not moving arbitrary running work between machines.
 
@@ -49,7 +80,7 @@ Automatic process changes currently work on **macOS only**. Windows can detect, 
 
 The default policy is hybrid: a tiny local model for clearly bounded definitions and Meta for intelligent analysis. Optional decision-model routing is off initially. Every tier can be configured independently; local-only and cloud-only are enforced in Rust before inference. Simple requests can escalate once to the intelligent tier. Process investigations bypass the optional decision model and go to the intelligent tier. Diagnoses never silently downgrade to the cheap tier. Explicit cheap-tier diagnosis requests return observations and explain how to select the intelligent tier. Capability questions such as “Can I ask about a particular process?” are answered locally, without an inference call. If no eligible model can answer, the app labels its fallback as deterministic observations. Tiny models can still make factual mistakes; their output is advisory.
 
-For development, copy `.env.example` to `.env`, set `META_API_KEY`, and restrict the file to your user (`chmod 600 .env` on Unix). `.env` is ignored and is loaded by debug builds only. Never prefix secrets with `VITE_`. Packaged apps use keys entered in **Providers & policy**, stored in the native credential store. Development environment keys take precedence.
+For development, copy `.env.example` to `.env`, set `META_API_KEY`, and restrict the file to your user (`chmod 600 .env` on Unix). `.env` is ignored and is loaded by debug builds only. Never prefix secrets with `VITE_`. Packaged apps use keys entered in **Settings**, stored in the native credential store. Development environment keys take precedence.
 
 Ollama is optional and accessed only at `127.0.0.1:11434`. Install a tiny model yourself if desired:
 
@@ -90,7 +121,8 @@ src-tauri/src/
   settings.rs           inference modes, model tiers, credentials, reviewed prices
   budget.rs             locked, persistent pre-request spending reservations
   storage.rs            private local settings and ledger writes
-  lib.rs                Tauri IPC, background sampler, tray lifecycle
+  desktop.rs            template tray icon, native quick-view window, visibility-aware events
+  lib.rs                Tauri IPC, background sampler, lifecycle
 ```
 
 Application settings and spending totals live in the OS application-data directory for `com.jitterbug.desktop`. Credentials stay in the native credential store or ignored development environment. Keep local evidence, logs, screenshots, and experiments in ignored `.local/`. Never commit real process snapshots, machine details, transcripts, or credentials to this public repository.
@@ -99,7 +131,7 @@ Application settings and spending totals live in the OS application-data directo
 
 CI checks formatting, TypeScript/Svelte, Rust unit tests, Clippy, and native compilation on macOS and Windows. No API credentials or machine telemetry are used in CI. Windows interactive behavior still needs a teammate's hands-on check; Windows process actions and native pressure/thermal sensors are not implemented.
 
-On macOS, the native desktop feedback loop has been exercised with live collection, workload filtering, simulated sustained pressure, a real Meta answer, provider-mode persistence, a zero-budget cloud denial, and a confirmation-driven stop of a disposable worker. The worker was observed in telemetry and disappeared after the action. The automatic workflow has also been exercised with a bounded real app fixture: anomaly detection, automatic Meta investigation, saved workload permission, priority application, and fresh verification. The displayed result correctly reported no clear CPU reduction. Pause/resume and permission removal were checked through the desktop UI. A separate native probe exercises the complete automatic flow with an existing permission, rules-only investigation, and no cloud calls.
+On macOS, the native desktop feedback loop has been exercised with live collection, workload filtering, simulated sustained pressure, a real Meta answer, provider-mode persistence, a zero-budget cloud denial, and a confirmation-driven stop of a disposable worker. The worker was observed in telemetry and disappeared after the action. The automatic workflow has also been exercised with a bounded real app fixture: anomaly detection, automatic Meta investigation, saved workload permission, priority application, and fresh verification. The displayed result correctly reported no clear CPU reduction. Pause/resume and permission removal were checked through the desktop UI. A separate native probe exercises the complete automatic flow with an existing permission, rules-only investigation, and no cloud calls. The macOS UI refresh was checked in the packaged desktop app: native memory detail, Quick View keyboard access, workload-to-assistant navigation, Escape dismissal, focus-loss dismissal, and Settings access. The collector probe now checks native VM accounting and interval swap counters.
 
 ```sh
 # Safe by default: sample real telemetry, without logging private values.
@@ -130,7 +162,7 @@ The automation fixture first waits 35 seconds for a baseline, then uses a 70% du
 
 The action fixture allocates 32 MiB only when at least 4 GiB is available, produces a three-second single-thread CPU pulse, and exits within 90 seconds even without an action. Model probes retain responses only in ignored `.local/verification/` and use a separate $0.25 conservative lifetime ledger. Local Qwen and Tev routing and Meta generation have been exercised against real endpoints. Claude and hosted Jev adapters have protocol tests but have not been tested with live credentials. Jev remains optional and no Jev request is made without an explicit configuration and key.
 
-To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select a workload, to open its assistant. Ask “Can I ask you about a particular process?”, then name an app or PID. Verify the resolved target, model tier, history, and process evidence. For actions, use only the disposable worker; confirm an action and check the follow-up measurement. Use **Simulate pressure** to exercise the alert and mocked chat without stressing the host, then **Return to live**. In Providers, save each privacy mode and verify excluded tiers return observations with a routing explanation. Set the budget to zero and verify a cloud request is blocked without increasing the ledger; restore the intended mode and budget afterward.
+To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select a workload, to open its assistant. Ask “Can I ask you about a particular process?”, then name an app or PID. Verify the resolved target, model tier, history, and process evidence. For actions, use only the disposable worker; confirm an action and check the follow-up measurement. Use **Simulate pressure** to exercise the alert and mocked chat without stressing the host, then **Return to live**. In Settings, save each privacy mode and verify excluded tiers return observations with a routing explanation. Set the budget to zero and verify a cloud request is blocked without increasing the ledger; restore the intended mode and budget afterward.
 
 ## Next increments
 

@@ -1,6 +1,8 @@
 <script lang="ts">
     import { memory, percent } from '../lib/format';
     import type { Snapshot, Workload } from '../lib/types';
+    import ActivityGraph from './ActivityGraph.svelte';
+    import Icon from './Icon.svelte';
 
     let {
         snapshot,
@@ -13,12 +15,12 @@
         onselect: (workload: Workload) => void;
         onask: () => void;
     } = $props();
-
     let search = $state('');
     let sort = $state('impact');
     const usedPercent = $derived(
         100 * (1 - snapshot.memory_available_bytes / snapshot.memory_total_bytes)
     );
+    const breakdown = $derived(snapshot.platform.memory);
     const rows = $derived.by(() => {
         const filtered = snapshot.workloads.filter((w) =>
             `${w.label} ${w.category}`.toLowerCase().includes(search.toLowerCase())
@@ -27,108 +29,132 @@
         if (sort === 'memory') return filtered.sort((a, b) => b.memory_bytes - a.memory_bytes);
         return filtered;
     });
-    const points = $derived(
-        snapshot.history
-            .map(
-                (p, i) =>
-                    `${(i / Math.max(snapshot.history.length - 1, 1)) * 600},${80 - p.cpu_percent * 0.7}`
-            )
-            .join(' ')
-    );
 </script>
 
 <div class="page-heading">
     <div>
-        <p class="eyebrow">YOUR COMPUTER, EXPLAINED</p>
-        <h1>Workloads</h1>
-        <p class="muted">A little context for everything running.</p>
+        <h1>Activity</h1>
+        <p class="muted">Select a workload to investigate its resource use.</p>
     </div>
-    <button class="primary" onclick={onask}
-        >Why is my computer struggling? <span aria-hidden="true">↗</span></button
-    >
+    <button class="primary" onclick={onask}>Ask Jitterbug <span aria-hidden="true">↗</span></button>
 </div>
-
 <div class="metrics">
     <article class="metric">
-        <div class="metric-label">CPU <span>Whole machine</span></div>
-        <strong>{snapshot.sample_ready ? percent(snapshot.cpu_percent) : 'Warming up'}</strong>
+        <div class="metric-label">CPU <span>Total capacity</span></div>
+        <strong>{snapshot.sample_ready ? percent(snapshot.cpu_percent) : 'Sampling…'}</strong>
         <div class="meter"><i style={`width:${snapshot.cpu_percent}%`}></i></div>
-        <small>{snapshot.logical_cpus} logical cores · all CPU values use total capacity</small>
+        <small>{snapshot.logical_cpus} logical cores</small>
     </article>
     <article class="metric">
         <div class="metric-label">Memory <span>Available</span></div>
         <strong>{memory(snapshot.memory_available_bytes)}</strong>
         <div class="meter blue"><i style={`width:${100 - usedPercent}%`}></i></div>
         <small
-            >{memory(snapshot.memory_total_bytes)} total · {memory(snapshot.swap_used_bytes)} swap</small
+            >of {memory(snapshot.memory_total_bytes)} · {memory(snapshot.swap_used_bytes)} swap</small
         >
     </article>
     <article class="metric">
         <div class="metric-label">
-            Resource pressure <span
-                class:warning={snapshot.pressure.level !== 'normal'}
-                class="status-dot"
+            Pressure <span class:warning={snapshot.pressure.level !== 'normal'} class="status-dot"
             ></span>
         </div>
-        <strong class="capitalize"
+        <strong
             >{snapshot.pressure.level === 'normal'
-                ? 'Looking good'
+                ? 'Normal'
                 : snapshot.pressure.level === 'watch'
-                  ? 'Watching a spike'
-                  : 'Needs attention'}</strong
-        ><small
-            >{snapshot.platform.thermal
-                ? `Thermal state: ${snapshot.platform.thermal}`
-                : 'Thermal sensor unavailable'}<br />{snapshot.platform.memory_pressure
-                ? `OS memory pressure: ${snapshot.platform.memory_pressure}`
-                : 'Using available-memory heuristic'}</small
+                  ? 'Elevated'
+                  : 'High'}</strong
+        >
+        <small
+            >Thermal: {snapshot.platform.thermal ?? 'unavailable'}<br />Memory: {snapshot.platform
+                .memory_pressure ?? 'estimated from available RAM'}</small
         >
     </article>
 </div>
-
 <article class="timeline panel">
     <div class="section-title">
-        <h2>Recent activity</h2>
-        <span class="muted">CPU · up to 10 minutes</span>
+        <h2>CPU history</h2>
+        <span class="muted">Total capacity · up to 10 minutes</span>
     </div>
-    <svg
-        viewBox="0 0 600 90"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label="Recent total CPU use"
-    >
-        <path d="M0 15H600 M0 45H600 M0 75H600" stroke="var(--border)" stroke-dasharray="3 5" />
-        {#if points}<polyline
-                {points}
-                fill="none"
-                stroke="var(--accent)"
-                stroke-width="2"
-                vector-effect="non-scaling-stroke"
-            />{/if}
-    </svg>
+    <ActivityGraph {snapshot} />
+    <details class="resource-details">
+        <summary>Core activity & memory details</summary>
+        <div class="core-label">
+            <span>Logical cores</span><span>Each bar: 0–100% of one core</span>
+        </div>
+        <div class="core-bars" role="img" aria-label="Individual logical core activity">
+            {#each snapshot.cpu_cores as cpu, index}<div
+                    title={`Core ${index + 1}: ${percent(cpu)}`}
+                >
+                    <i style={`height:${snapshot.sample_ready ? Math.max(cpu, 1) : 0}%`}></i>
+                </div>{/each}
+        </div>
+        {#if breakdown}
+            <dl class="memory-breakdown">
+                <div>
+                    <dt>App memory</dt>
+                    <dd>{memory(breakdown.app_bytes)}</dd>
+                </div>
+                <div>
+                    <dt>Wired</dt>
+                    <dd>{memory(breakdown.wired_bytes)}</dd>
+                </div>
+                <div>
+                    <dt>Compressed</dt>
+                    <dd>{memory(breakdown.compressed_bytes)}</dd>
+                </div>
+                <div>
+                    <dt>Cached files</dt>
+                    <dd>{memory(breakdown.cached_bytes)}</dd>
+                </div>
+                <div>
+                    <dt>Swap in · last {snapshot.interval_ms / 1000}s</dt>
+                    <dd>
+                        {snapshot.swap_in_bytes === null
+                            ? 'Sampling…'
+                            : memory(snapshot.swap_in_bytes)}
+                    </dd>
+                </div>
+                <div>
+                    <dt>Swap out · last {snapshot.interval_ms / 1000}s</dt>
+                    <dd>
+                        {snapshot.swap_out_bytes === null
+                            ? 'Sampling…'
+                            : memory(snapshot.swap_out_bytes)}
+                    </dd>
+                </div>
+            </dl>
+            <p class="muted">
+                {snapshot.source === 'demo' ? 'Synthetic example.' : 'Native macOS VM counters.'} App
+                + wired + compressed = used memory. Cached files are reclaimable. Swap activity alone
+                does not identify a cause.
+            </p>
+        {:else}<p class="muted">
+                Native memory breakdown and swap activity are unavailable on this platform.
+                Available memory and swap usage above come from the shared system collector.
+            </p>{/if}
+    </details>
 </article>
-
 <section class="panel workload-panel">
     <div class="section-title">
         <div>
-            <h2>What’s running</h2>
-            <span class="muted"
-                >{snapshot.process_count} processes · showing up to 40 workload groups</span
-            >
+            <h2>Workloads</h2>
+            <span class="muted">{snapshot.process_count} processes · up to 40 groups</span>
         </div>
         <div class="filters">
             <input
                 aria-label="Filter workloads"
-                placeholder="Find a workload…"
+                placeholder="Search workloads"
                 bind:value={search}
             /><select aria-label="Sort workloads" bind:value={sort}
-                ><option value="impact">Overall impact</option><option value="cpu">CPU use</option
-                ><option value="memory">Memory use</option></select
+                ><option value="impact">Impact</option><option value="cpu">CPU</option><option
+                    value="memory">Memory</option
+                ></select
             >
         </div>
     </div>
     <div class="workload-header">
-        <span>Workload / inferred purpose</span><span>CPU</span><span>Memory</span>
+        <span>Name / inferred purpose</span><span>CPU</span><span>Memory</span>
     </div>
     {#each rows as workload (workload.id)}
         <button
@@ -137,20 +163,26 @@
             onclick={() => onselect(workload)}
         >
             <div class="workload-main">
-                <span class="workload-icon" aria-hidden="true"
-                    >{workload.category === 'project'
-                        ? '⌘'
-                        : workload.category === 'model'
-                          ? '◈'
-                          : '◌'}</span
+                <span class="workload-icon"
+                    ><Icon
+                        name={workload.category === 'project'
+                            ? 'code'
+                            : workload.category === 'model'
+                              ? 'model'
+                              : 'app'}
+                        size={18}
+                    /></span
                 >
                 <div>
-                    <strong>{workload.label}</strong>
-                    <p>{workload.description}</p>
-                    <span class="tag">{workload.attribution}</span><span class="row-count"
-                        >{workload.process_count}
-                        {workload.process_count === 1 ? 'process' : 'processes'}</span
-                    >
+                    <div class="workload-name">
+                        <strong>{workload.label}</strong><span class="row-count"
+                            >{workload.process_count}
+                            {workload.process_count === 1 ? 'process' : 'processes'}</span
+                        >
+                    </div>
+                    <p title={`${workload.description} (${workload.attribution})`}>
+                        {workload.description}
+                    </p>
                 </div>
             </div>
             <span class="numeric">{percent(workload.cpu_percent)}</span><span class="numeric"
@@ -159,7 +191,7 @@
         </button>
     {:else}<p class="empty">No matching workloads in the current sample.</p>{/each}
     <p class="footnote">
-        Descriptions are rule-based inferences. Process memory is summed RSS and may count shared
-        pages more than once. Hidden or protected process metadata may be unavailable.
+        Purpose is inferred by rules. CPU is a share of total capacity. Memory is summed process
+        RSS; shared pages may be counted more than once.
     </p>
 </section>

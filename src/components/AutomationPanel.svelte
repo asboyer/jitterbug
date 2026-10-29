@@ -166,7 +166,7 @@
                     <small
                         >“Allow” also permits future automatic priority changes for {incident
                             .trigger.target?.label}. It never permits stopping processes. Remove
-                        permission in Providers & policy.</small
+                        permission in Settings.</small
                     >
                 {/if}
             </section>

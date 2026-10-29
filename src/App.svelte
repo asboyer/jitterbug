@@ -3,6 +3,7 @@
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import AutomationPanel from './components/AutomationPanel.svelte';
+    import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
     import Chat from './components/Chat.svelte';
     import ActionResult from './components/ActionResult.svelte';
@@ -109,6 +110,30 @@
                     return;
                 }
                 cleanup.push(simulated);
+                const navigation = await listen<{ page: string; workload: Workload | null }>(
+                    'navigate',
+                    (event) => {
+                        page = event.payload.page;
+                        if (page === 'dashboard') {
+                            demo = false;
+                            demoPressure = false;
+                            alert = null;
+                        }
+                        if (page === 'settings') {
+                            chatOpen = false;
+                            automationOpen = false;
+                        }
+                        if (event.payload.workload) {
+                            demo = false;
+                            select(event.payload.workload);
+                        }
+                    }
+                );
+                if (disposed) {
+                    navigation();
+                    return;
+                }
+                cleanup.push(navigation);
                 live = await invoke('get_snapshot');
                 await refreshBootstrap();
             } catch (cause) {
@@ -202,27 +227,26 @@
             onclick={(event) => {
                 event.preventDefault();
                 page = 'dashboard';
-            }}
-            ><span class="brand-mark" aria-hidden="true">✳</span> jitterbug<span class="version"
-                >EARLY BUILD</span
-            ></a
+            }}><Icon name="bug" size={22} /> Jitterbug</a
         >
         <div class="nav-links">
             <button
                 class:active={page === 'dashboard'}
                 onclick={() => {
                     page = 'dashboard';
-                }}>◫ <span>Workloads</span></button
+                }}><Icon name="activity" /><span>Workloads</span></button
             ><button
                 class:active={page === 'settings'}
                 onclick={() => {
                     page = 'settings';
-                }}>⚙ <span>Providers & policy</span></button
+                    chatOpen = false;
+                    automationOpen = false;
+                }}><Icon name="settings" /><span>Settings</span></button
             >
         </div>
         <div class="sidebar-bottom">
             <span class="tag">{bootstrap.settings.mode.replaceAll('_', ' ')}</span>
-            <p>Observe first.<br />Reason when needed.</p>
+            <p>Resource assistant</p>
             <small
                 >Monitoring every 5 seconds. {bootstrap.settings.automation.enabled
                     ? bootstrap.settings.automation.model_analysis
@@ -236,10 +260,10 @@
         <header class="topbar">
             <span class:demo-badge={demo} class="live-badge"
                 ><i class="status-dot"></i>{demo
-                    ? 'DEMO · SYNTHETIC DATA'
+                    ? 'Demo · synthetic data'
                     : live?.sample_ready
-                      ? 'LIVE · THIS COMPUTER'
-                      : 'CONNECTING TO COLLECTOR'}</span
+                      ? 'Live activity'
+                      : 'Connecting…'}</span
             >
             <div>
                 <button
@@ -248,7 +272,7 @@
                     onclick={() => {
                         automationOpen = true;
                         chatOpen = false;
-                    }}>Incident history ({cases.length})</button
+                    }}>Incidents ({cases.length})</button
                 >
                 <button class="text-button" onclick={simulatePressure}>Simulate pressure</button
                 ><button
@@ -326,7 +350,7 @@
                                 <button
                                     onclick={() => {
                                         chatOpen = true;
-                                    }}>Explain this workload ↗</button
+                                    }}>Ask about this workload</button
                                 ><button
                                     class="icon-button"
                                     aria-label="Close workload details"

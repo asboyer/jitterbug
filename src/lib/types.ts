@@ -74,10 +74,13 @@ export interface Snapshot {
     interval_ms: number;
     cpu_percent: number;
     logical_cpus: number;
+    cpu_cores: number[];
     memory_total_bytes: number;
     memory_available_bytes: number;
     swap_used_bytes: number;
     swap_growth_bytes: number;
+    swap_in_bytes: number | null;
+    swap_out_bytes: number | null;
     process_count: number;
     processes: ProcessRecord[];
     workloads: Workload[];
@@ -86,6 +89,15 @@ export interface Snapshot {
         memory_pressure: string | null;
         thermal: string | null;
         process_actions: boolean;
+        memory: {
+            app_bytes: number;
+            wired_bytes: number;
+            compressed_bytes: number;
+            cached_bytes: number;
+            used_bytes: number;
+            swap_in_total_bytes: number;
+            swap_out_total_bytes: number;
+        } | null;
     };
     pressure: { level: string; reasons: string[]; sustained_samples: number };
     incident: Incident | null;

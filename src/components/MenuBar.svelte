@@ -1,0 +1,120 @@
+<script lang="ts">
+    import { onMount } from 'svelte';
+    import { invoke, isTauri } from '@tauri-apps/api/core';
+    import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+    import { demoSnapshot } from '../lib/demo';
+    import { errorMessage, memory, percent } from '../lib/format';
+    import type { Snapshot } from '../lib/types';
+    import Icon from './Icon.svelte';
+    import ActivityGraph from './ActivityGraph.svelte';
+
+    const desktop = isTauri();
+    let snapshot: Snapshot | null = $state(desktop ? null : demoSnapshot());
+    let error = $state('');
+    onMount(() => {
+        if (!desktop) return;
+        let stop: UnlistenFn | undefined;
+        let disposed = false;
+        async function initialize() {
+            try {
+                stop = await listen<Snapshot>('telemetry', (event) => {
+                    snapshot = event.payload;
+                });
+                if (disposed) {
+                    stop();
+                    return;
+                }
+                snapshot = await invoke('get_quick_snapshot');
+            } catch (cause) {
+                error = errorMessage(cause);
+            }
+        }
+        void initialize();
+        return () => {
+            disposed = true;
+            stop?.();
+        };
+    });
+    async function open(page = 'dashboard', workloadId: string | null = null) {
+        if (!desktop) return;
+        try {
+            await invoke('open_main', { page, workloadId });
+        } catch (cause) {
+            error = errorMessage(cause);
+        }
+    }
+    async function escape(event: KeyboardEvent) {
+        if (event.key === 'Escape' && desktop) await invoke('hide_quick_view');
+    }
+</script>
+
+<svelte:window onkeydown={escape} />
+<div class="quick-view">
+    <header class="quick-header">
+        <Icon name="bug" size={19} /><strong>Jitterbug</strong>
+        <span class="muted">{desktop ? 'Live' : 'Demo'}</span>
+        <button class="icon-button" aria-label="Open settings" onclick={() => open('settings')}
+            ><Icon name="settings" /></button
+        >
+    </header>
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if snapshot && snapshot.memory_total_bytes > 0}
+        <div class="quick-metrics">
+            <div>
+                <small>CPU</small><strong
+                    >{snapshot.sample_ready ? percent(snapshot.cpu_percent) : '…'}</strong
+                ><span class="muted">Total capacity</span>
+            </div>
+            <div>
+                <small>Available memory</small><strong
+                    >{memory(snapshot.memory_available_bytes)}</strong
+                ><span class="muted">of {memory(snapshot.memory_total_bytes)}</span>
+            </div>
+        </div>
+        <div class="quick-pressure">
+            <span class="status-dot" class:warning={snapshot.pressure.level !== 'normal'}
+            ></span>{!snapshot.sample_ready
+                ? 'Collecting samples…'
+                : snapshot.pressure.level === 'normal'
+                  ? 'System looks healthy'
+                  : 'Resource pressure detected'}<span class="muted"
+                >{snapshot.platform.thermal ?? ''}</span
+            >
+        </div>
+        <div class="quick-history"><ActivityGraph {snapshot} /></div>
+        <div class="quick-detail">
+            <span>Compressed memory</span><span
+                >{snapshot.platform.memory
+                    ? memory(snapshot.platform.memory.compressed_bytes)
+                    : 'Unavailable'}</span
+            >
+        </div>
+        <div class="quick-detail">
+            <span>Swap out · last {snapshot.interval_ms / 1000}s</span><span
+                >{snapshot.swap_out_bytes === null
+                    ? 'Unavailable'
+                    : memory(snapshot.swap_out_bytes)}</span
+            >
+        </div>
+        <div class="quick-list-heading">
+            <strong>Top workloads</strong><span>CPU / Memory</span>
+        </div>
+        <div class="quick-workloads">
+            {#each snapshot.workloads.slice(0, 5) as workload (workload.id)}
+                <button
+                    onclick={() => open('dashboard', workload.id)}
+                    title={`Ask about ${workload.label}`}
+                >
+                    <Icon name={workload.category === 'project' ? 'code' : 'app'} size={16} />
+                    <span>{workload.label}</span><small
+                        >{percent(workload.cpu_percent)}<br />{memory(workload.memory_bytes)}</small
+                    >
+                </button>
+            {/each}
+        </div>
+    {:else}<p class="empty">Collecting a fresh sample…</p>{/if}
+    <footer>
+        <button onclick={() => open()}>Open Jitterbug <span aria-hidden="true">↗</span></button
+        ><small>{desktop ? 'Click a workload to investigate' : 'Synthetic preview'}</small>
+    </footer>
+</div>

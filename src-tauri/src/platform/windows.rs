@@ -8,5 +8,6 @@ pub fn readings() -> PlatformReadings {
         memory_pressure: None,
         thermal: None,
         process_actions: false,
+        memory: None,
     }
 }

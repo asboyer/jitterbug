@@ -6,6 +6,18 @@ pub struct PlatformReadings {
     pub memory_pressure: Option<String>,
     pub thermal: Option<String>,
     pub process_actions: bool,
+    pub memory: Option<MemoryBreakdown>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MemoryBreakdown {
+    pub app_bytes: u64,
+    pub wired_bytes: u64,
+    pub compressed_bytes: u64,
+    pub cached_bytes: u64,
+    pub used_bytes: u64,
+    pub swap_in_total_bytes: u64,
+    pub swap_out_total_bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -86,10 +98,13 @@ pub struct Snapshot {
     pub interval_ms: u64,
     pub cpu_percent: f32,
     pub logical_cpus: usize,
+    pub cpu_cores: Vec<f32>,
     pub memory_total_bytes: u64,
     pub memory_available_bytes: u64,
     pub swap_used_bytes: u64,
     pub swap_growth_bytes: u64,
+    pub swap_in_bytes: Option<u64>,
+    pub swap_out_bytes: Option<u64>,
     pub process_count: usize,
     pub processes: Vec<ProcessRecord>,
     pub workloads: Vec<Workload>,
@@ -103,10 +118,42 @@ pub struct Snapshot {
 impl Snapshot {
     /// Keep the frequently emitted dashboard small; retain the wider inventory for questions.
     pub fn dashboard_view(&self) -> Self {
-        let mut view = self.clone();
-        view.processes.truncate(160);
-        view.workloads.truncate(40);
-        view
+        self.view(160, 40)
+    }
+
+    pub fn quick_view(&self) -> Self {
+        self.view(0, 5)
+    }
+
+    fn view(&self, process_limit: usize, workload_limit: usize) -> Self {
+        Self {
+            source: self.source.clone(),
+            captured_at: self.captured_at,
+            sample_ready: self.sample_ready,
+            interval_ms: self.interval_ms,
+            cpu_percent: self.cpu_percent,
+            logical_cpus: self.logical_cpus,
+            cpu_cores: self.cpu_cores.clone(),
+            memory_total_bytes: self.memory_total_bytes,
+            memory_available_bytes: self.memory_available_bytes,
+            swap_used_bytes: self.swap_used_bytes,
+            swap_growth_bytes: self.swap_growth_bytes,
+            swap_in_bytes: self.swap_in_bytes,
+            swap_out_bytes: self.swap_out_bytes,
+            process_count: self.process_count,
+            processes: self.processes.iter().take(process_limit).cloned().collect(),
+            workloads: self
+                .workloads
+                .iter()
+                .take(workload_limit)
+                .cloned()
+                .collect(),
+            platform: self.platform.clone(),
+            pressure: self.pressure.clone(),
+            incident: self.incident.clone(),
+            history: self.history.clone(),
+            collector_ms: self.collector_ms,
+        }
     }
 }
 

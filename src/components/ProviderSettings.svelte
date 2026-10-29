@@ -1,4 +1,5 @@
 <script lang="ts">
+    import notices from '../../THIRD_PARTY_NOTICES.md?raw';
     import AutomationSettings from './AutomationSettings.svelte';
     import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
@@ -64,8 +65,7 @@
 
 <div class="page-heading">
     <div>
-        <p class="eyebrow">YOUR HARDWARE. YOUR BUDGET.</p>
-        <h1>Providers & policy</h1>
+        <h1>Settings</h1>
         <p class="muted">Three interchangeable tiers, with limits before every request.</p>
     </div>
 </div>
@@ -224,3 +224,10 @@
     >
         {error}
     </p>{/if}
+
+<section class="panel settings-panel">
+    <details>
+        <summary>Open-source acknowledgments</summary>
+        <pre class="license-text">{notices}</pre>
+    </details>
+</section>

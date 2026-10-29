@@ -570,6 +570,13 @@ pub fn model_context(snapshot: &Snapshot, workload_id: Option<&str>) -> Value {
     json!({"cpu_percent":snapshot.cpu_percent.round(),"available_memory_mib":snapshot.memory_available_bytes/1048576,
         "total_memory_mib":snapshot.memory_total_bytes/1048576,"swap_growth_mib":snapshot.swap_growth_bytes/1048576,
         "pressure":snapshot.pressure,"thermal":snapshot.platform.thermal,"workloads":workloads,
+        "swap_in_mib_last_interval":snapshot.swap_in_bytes.map(|n| n/1048576),
+        "swap_out_mib_last_interval":snapshot.swap_out_bytes.map(|n| n/1048576),
+        "interval_seconds":snapshot.interval_ms/1000,
+        "memory_breakdown_mib":snapshot.platform.memory.as_ref().map(|m| json!({
+            "app":m.app_bytes/1048576,"wired":m.wired_bytes/1048576,
+            "compressed":m.compressed_bytes/1048576,"cached":m.cached_bytes/1048576
+        })),
         "limitations":"No transcript, GPU utilization, temperature, or task-level ownership is available."})
 }
 
