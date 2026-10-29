@@ -149,8 +149,27 @@ async fn process_action(pid: u32, start_time: u64, action: String) -> Result<Str
 
 #[tauri::command]
 fn simulate_pressure(app: tauri::AppHandle) -> Result<(), String> {
-    app.emit("demo-pressure-incident", pressure::simulated_incident())
-        .map_err(|_| "Could not deliver the demo incident.".into())
+    notify_pressure(
+        &app,
+        "demo-pressure-incident",
+        &pressure::simulated_incident(),
+    )
+}
+
+fn notify_pressure(
+    app: &tauri::AppHandle,
+    event: &str,
+    incident: &types::Incident,
+) -> Result<(), String> {
+    app.emit(event, incident)
+        .map_err(|_| "Could not deliver the pressure incident.")?;
+    if let Some(window) = app.get_webview_window("main") {
+        if !window.is_focused().unwrap_or(false) {
+            let _ = window.show();
+            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+        }
+    }
+    Ok(())
 }
 
 pub fn load_development_env() {
@@ -186,14 +205,7 @@ pub fn run() {
                         let sample = collector.sample();
                         if let Some(incident) = &sample.incident {
                             if last_incident != Some(incident.id) {
-                                let _ = handle.emit("pressure-incident", incident);
-                                if let Some(window) = handle.get_webview_window("main") {
-                                    if !window.is_focused().unwrap_or(false) {
-                                        let _ = window.request_user_attention(Some(
-                                            tauri::UserAttentionType::Informational,
-                                        ));
-                                    }
-                                }
+                                let _ = notify_pressure(&handle, "pressure-incident", incident);
                                 last_incident = Some(incident.id);
                             }
                         }
@@ -243,6 +255,17 @@ pub fn run() {
             process_action,
             simulate_pressure
         ])
-        .run(tauri::generate_context!())
-        .expect("Unable to start Jitterbug");
+        .build(tauri::generate_context!())
+        .expect("Unable to start Jitterbug")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Reopen { .. }) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

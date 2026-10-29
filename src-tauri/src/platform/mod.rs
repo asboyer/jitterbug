@@ -2,13 +2,19 @@ use crate::types::PlatformReadings;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 pub fn readings() -> PlatformReadings {
     #[cfg(target_os = "macos")]
     {
         macos::readings()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::readings()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         PlatformReadings {
             os: std::env::consts::OS.into(),

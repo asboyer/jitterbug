@@ -11,7 +11,7 @@ npm ci
 npm run tauri dev
 ```
 
-The dashboard collects real telemetry every five seconds. Closing the window leaves monitoring running; choose **Quit Jitterbug** from the tray/menu-bar menu to stop it. No model is called automatically by monitoring or alerts.
+The dashboard collects real telemetry every five seconds. Closing the window leaves monitoring running; choose **Quit Jitterbug** from the tray/menu-bar menu to stop it. Sustained pressure reveals the window and opens a contextual assistant; it does not automatically call a model. On macOS, reopening from the Dock also restores a hidden window.
 
 ```sh
 npm run dev          # browser preview: synthetic data only
@@ -65,7 +65,7 @@ src-tauri/src/
   collector.rs          bounded telemetry and deterministic explanations
   attribution.rs        project/app evidence and grouping
   pressure.rs           sustained incidents and local-inference resource gates
-  platform/             native OS readings (macOS first)
+  platform/             native OS adapters (macOS readings; explicit Windows gaps)
   actions.rs            explicit process-action validation
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
   settings.rs           inference modes, model tiers, credentials, reviewed prices
