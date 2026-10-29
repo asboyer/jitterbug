@@ -35,6 +35,8 @@ pub struct RunManifest {
     pub ended_at: Option<u64>,
     pub status: String,
     pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub context: crate::harness::Context,
 }
 
 impl RunManifest {
@@ -42,7 +44,10 @@ impl RunManifest {
         let bounded = |s: &str, limit| {
             !s.trim().is_empty() && s.chars().count() <= limit && !s.chars().any(char::is_control)
         };
-        if self.version != 1
+        if !self.context.valid()
+            || serde_json::to_vec(self)
+                .map_or(true, |bytes| bytes.len() as u64 > MAX_MANIFEST_BYTES)
+            || self.version != 1
             || !bounded(&self.run_id, 100)
             || !self
                 .run_id
@@ -98,6 +103,7 @@ pub struct AgentSession {
     pub peak_process_count: usize,
     pub observed_samples: u64,
     pub roles: Vec<RoleUsage>,
+    pub context: crate::harness::Context,
     pub process_ids: Vec<u32>,
     pub workload_ids: Vec<String>,
 }
@@ -130,6 +136,8 @@ pub struct AgentWorkflow {
     pub observed_samples: u64,
     pub agents: Vec<AgentSession>,
     pub history: Vec<ResourcePoint>,
+    pub peak_roles: Vec<RoleUsage>,
+    pub narrative: crate::workflow_summary::Narrative,
     pub suggestions: Vec<WorkflowSuggestion>,
     pub evidence: Vec<String>,
 }
@@ -269,6 +277,17 @@ pub fn register(directory: &Path, manifest: &RunManifest) -> Result<(), String> 
 }
 
 pub fn finish(directory: &Path, manifest: &mut RunManifest, exit_code: i32) -> Result<(), String> {
+    let lock = registry_lock(directory)?;
+    fs2::FileExt::lock_exclusive(&lock).map_err(|_| "Cannot lock task completion.")?;
+    let path = directory.join(format!("{}.json", manifest.run_id));
+    let latest = fs::symlink_metadata(&path)
+        .ok()
+        .and_then(|m| read_manifest(&path, &m))
+        .ok_or("Task registration disappeared before completion.")?;
+    if latest.root_pid != manifest.root_pid || latest.root_start_time != manifest.root_start_time {
+        return Err("Task registration identity changed.".into());
+    }
+    manifest.context = latest.context;
     manifest.exit_code = Some(exit_code);
     manifest.ended_at = Some(crate::types::now());
     manifest.status = if exit_code == 0 {
@@ -288,6 +307,74 @@ struct CachedManifest {
     modified: Option<SystemTime>,
     size: u64,
     manifest: RunManifest,
+}
+
+fn registry_lock(directory: &Path) -> Result<fs::File, String> {
+    let path = directory.join("registry.lock");
+    if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+        return Err("Private registry lock unavailable.".into());
+    }
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| "Cannot open task registry lock.".into())
+}
+
+/// The event process must be a descendant of this exact live wrapper. In particular, a shared
+/// app-server PID or matching cwd cannot attach a desktop chat to an unrelated CLI launch.
+pub fn record_event(directory: &Path, id: &str, event: &serde_json::Value) -> Result<(), String> {
+    if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("Invalid task registration identifier.".into());
+    }
+    let lock = registry_lock(directory)?;
+    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| "Task registry busy; event skipped.")?;
+    let path = directory.join(format!("{id}.json"));
+    let mut run = fs::symlink_metadata(&path)
+        .ok()
+        .and_then(|m| read_manifest(&path, &m))
+        .ok_or("Private task registration unavailable.")?;
+    if run.status != "active" || !event_belongs_to(&run) {
+        return Err("Harness event is not a descendant of the registered live task.".into());
+    }
+    if crate::harness::apply(&mut run.context, event, crate::types::now())? {
+        run.validate()?;
+        crate::storage::write(&path, &run)?;
+    }
+    Ok(())
+}
+
+fn event_belongs_to(run: &RunManifest) -> bool {
+    let mut system = sysinfo::System::new();
+    let mut pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut child_start = u64::MAX;
+    let mut seen = HashSet::new();
+    for _ in 0..64 {
+        if !seen.insert(pid) {
+            return false;
+        }
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let Some(p) = system.process(pid) else {
+            return false;
+        };
+        if p.start_time() == 0 || p.start_time() > child_start {
+            return false;
+        }
+        if pid.as_u32() == run.root_pid {
+            return p.start_time() == run.root_start_time;
+        }
+        child_start = p.start_time();
+        let Some(parent) = p.parent() else {
+            return false;
+        };
+        pid = parent;
+    }
+    false
 }
 
 pub struct WorkflowTracker {
@@ -524,6 +611,7 @@ impl WorkflowTracker {
                     .ended_at
                     .or_else(|| (!live).then(|| previous.and_then(|s| s.ended_at).unwrap_or(at))),
                 exit_code: run.exit_code,
+                context: run.context.clone(),
                 peak_cpu_percent: previous.map_or(0.0, |s| s.peak_cpu_percent),
                 peak_memory_bytes: previous.map_or(0, |s| s.peak_memory_bytes),
                 peak_process_count: previous.map_or(0, |s| s.peak_process_count),
@@ -595,6 +683,7 @@ impl WorkflowTracker {
                     peak_process_count: old.map_or(0, |w| w.peak_process_count),
                     observed_samples: old.map_or(0, |w| w.observed_samples),
                     history: old.map_or_else(Vec::new, |w| w.history.clone()),
+                    peak_roles: old.map_or_else(Vec::new, |w| w.peak_roles.clone()),
                     suggestions: old.map_or_else(Vec::new, |w| w.suggestions.clone()),
                     ..Default::default()
                 }
@@ -630,6 +719,11 @@ impl WorkflowTracker {
                 workflow.peak_process_count =
                     workflow.peak_process_count.max(workflow.process_count);
                 if sample_ready {
+                    if workflow.observed_samples == 0
+                        || workflow.cpu_percent > workflow.peak_cpu_percent
+                    {
+                        workflow.peak_roles = crate::workflow_summary::current_roles(workflow);
+                    }
                     workflow.observed_samples += 1;
                     workflow.peak_cpu_percent = workflow.peak_cpu_percent.max(workflow.cpu_percent);
                     workflow.history.push(ResourcePoint {
@@ -663,10 +757,11 @@ impl WorkflowTracker {
                     suggestion.current = false;
                 }
             }
+            workflow.narrative = crate::workflow_summary::describe(workflow);
             workflow.evidence = vec![
                 "Opt-in launch registration, verified by current wrapper PID, OS start time, and live parent ancestry. Worktree paths and task labels are user-supplied context, not ownership evidence.".into(),
                 "CPU is normalized to the whole machine. Summed resident memory can count shared pages more than once. Peaks cover observed samples, not the entire run.".into(),
-                "Five-second sampling may miss short-lived commands. Detached or reparented processes lose attribution; command roles are limited tool-name heuristics, not transcript analysis.".into(),
+                "Five-second sampling may miss short-lived commands. Detached or reparented processes lose attribution; command roles are limited tool-name heuristics. Harness activity is self-reported context, not a CPU profiler.".into(),
                 "Suggestions are advisory. No scheduling, configuration, or process changes have been applied.".into(),
             ];
             workflow.agents.sort_by(|a, b| {
@@ -914,6 +1009,7 @@ mod tests {
             ended_at: None,
             status: "active".into(),
             exit_code: None,
+            context: Default::default(),
         }
     }
 
@@ -1052,6 +1148,20 @@ mod tests {
         assert_eq!(workflow.memory_bytes, 0);
         assert_eq!(workflow.process_count, 0);
         assert_eq!(workflow.peak_cpu_percent, 8.0);
+        assert_eq!(
+            workflow
+                .peak_roles
+                .iter()
+                .find(|r| r.role == "test")
+                .unwrap()
+                .cpu_percent,
+            4.0
+        );
+        assert!(workflow
+            .narrative
+            .resources
+            .contains("test processes accounted for 4.0%"));
+        assert!(workflow.narrative.tip_basis.contains("observed earlier"));
         assert_eq!(workflow.peak_memory_bytes, 4 << 20);
         assert_eq!(workflow.observed_samples, 1);
         assert_eq!(workflow.last_seen_at, 110);
@@ -1100,10 +1210,11 @@ mod tests {
     #[test]
     fn model_summary_excludes_private_registration_and_process_identity() {
         let mut tracker = WorkflowTracker::new(None);
-        let runs = [
+        let mut runs = [
             run(65432, "/example/private-worktree"),
             run(65433, "/example/private-worktree-b"),
         ];
+        runs[0].context = crate::harness::Context::supplied("Confidential task request");
         let processes = [process(65432, None, "other"), process(65433, None, "other")];
         let workflows = observe(&mut tracker, &runs, &processes, 110);
         let snapshot = crate::types::Snapshot {
@@ -1112,6 +1223,7 @@ mod tests {
         };
         let value = crate::providers::model_context(&snapshot, None).to_string();
         for secret in [
+            "Confidential task request",
             "EXAMPLE-1",
             "Private example",
             "Private agent",

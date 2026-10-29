@@ -1,8 +1,13 @@
 <script lang="ts">
     import { memory, percent } from '../lib/format';
+    import TaskNarrative from './TaskNarrative.svelte';
     import type { AgentWorkflow, Snapshot, Workload } from '../lib/types';
 
-    let { snapshot, onselect }: { snapshot: Snapshot; onselect: (workload: Workload) => void } =
+    let {
+        snapshot,
+        onselect,
+        onusage,
+    }: { snapshot: Snapshot; onselect: (workload: Workload) => void; onusage: () => void } =
         $props();
 
     function time(value: number): string {
@@ -33,7 +38,7 @@
             <h2>Agent workflows</h2>
             <span class="muted">Tasks across worktrees · verified process ancestry</span>
         </div>
-        <span class="muted">Local attribution · no model call</span>
+        <span class="muted">Local measurements & rules</span>
     </div>
     {#each snapshot.agent_workflows as workflow (workflow.task_id)}
         <article class="workflow">
@@ -52,12 +57,15 @@
                     {workflow.active_agents === 1 ? 'session' : 'sessions'} ·
                     {workflow.process_count} attributed processes
                 {:else}
-                    {workflow.agents.length} registered sessions ·
+                    {workflow.agents.length} registered {workflow.agents.length === 1
+                        ? 'session'
+                        : 'sessions'} ·
                     {workflow.observed_samples > 0
                         ? `last observed ${time(workflow.last_seen_at)}`
                         : 'no resource samples in this app session'}
                 {/if}
             </p>
+            <TaskNarrative {workflow} {onusage} demo={snapshot.source === 'demo'} />
             <div class="workflow-usage">
                 <div>
                     <span class="muted"
@@ -100,83 +108,112 @@
                     <polyline points={history(workflow)} />
                 </svg>
             </div>
-            <div class="agent-list">
-                {#each workflow.agents as agent (agent.run_id)}
-                    <details class="agent">
-                        <summary>
-                            <span class="agent-name"
-                                ><strong>{agent.agent}</strong><small
-                                    >{agent.harness} · {status(agent.status)}</small
-                                ></span
-                            >
-                            <span class="agent-usage">
-                                {#if agent.status === 'active'}
-                                    {percent(agent.cpu_percent)} · {memory(agent.memory_bytes)}
-                                {:else}
-                                    {agent.peak_process_count === 0
-                                        ? 'Not sampled'
-                                        : `Peak ${memory(agent.peak_memory_bytes)}`}
-                                {/if}
-                            </span>
-                        </summary>
-                        <div class="agent-detail">
-                            <dl>
-                                <div>
-                                    <dt>Worktree</dt>
-                                    <dd class="path">{agent.worktree}</dd>
-                                </div>
-                                <div>
-                                    <dt>Launch identity</dt>
-                                    <dd>
-                                        Wrapper PID {agent.root_pid} · started {time(
-                                            agent.root_start_time
-                                        )}
-                                    </dd>
-                                </div>
-                                <div>
-                                    <dt>Observed peak</dt>
-                                    <dd>
-                                        {agent.observed_samples === 0
+            <details class="technical-detail">
+                <summary>Sessions & process evidence ({workflow.agents.length})</summary>
+                <div class="agent-list">
+                    {#each workflow.agents as agent (agent.run_id)}
+                        <details class="agent">
+                            <summary>
+                                <span class="agent-name"
+                                    ><strong>{agent.agent}</strong><small
+                                        >{agent.harness} · {status(agent.status)}</small
+                                    ></span
+                                >
+                                <span class="agent-usage">
+                                    {#if agent.status === 'active'}
+                                        {percent(agent.cpu_percent)} · {memory(agent.memory_bytes)}
+                                    {:else}
+                                        {agent.peak_process_count === 0
                                             ? 'Not sampled'
-                                            : `${percent(agent.peak_cpu_percent)} CPU`} · {memory(
-                                            agent.peak_memory_bytes
-                                        )} · {agent.peak_process_count} processes
-                                    </dd>
-                                </div>
-                                <div>
-                                    <dt>Measurement</dt>
-                                    <dd>
-                                        {agent.observed_samples} samples{agent.exit_code !== null
-                                            ? ` · exit ${agent.exit_code}`
-                                            : ''}
-                                    </dd>
-                                </div>
-                            </dl>
-                            {#if agent.status === 'active' && agent.roles.length > 0}
-                                <div class="roles" aria-label="Observed process roles">
-                                    {#each agent.roles as role}
-                                        <span
-                                            >{role.role} × {role.process_count} · {memory(
-                                                role.memory_bytes
-                                            )}</span
+                                            : `Peak ${memory(agent.peak_memory_bytes)}`}
+                                    {/if}
+                                </span>
+                            </summary>
+                            <div class="agent-detail">
+                                {#if agent.context.request}
+                                    <p><strong>Assignment:</strong> {agent.context.request}</p>
+                                    <p class="muted">
+                                        {agent.context.source === 'hook'
+                                            ? 'Harness request excerpt'
+                                            : 'Provided task description'} · saved {time(
+                                            agent.context.updated_at
+                                        )}
+                                    </p>
+                                {/if}
+                                {#if agent.context.latest_request}
+                                    <p>
+                                        <strong>Latest follow-up:</strong>
+                                        {agent.context.latest_request}
+                                    </p>
+                                {/if}
+                                {#if agent.context.last_activity_at}
+                                    <p class="muted">
+                                        Last reported activity: {agent.context.last_activity} · {time(
+                                            agent.context.last_activity_at
+                                        )}. This may not reflect work still running.
+                                    </p>
+                                {/if}
+                                <dl>
+                                    <div>
+                                        <dt>Worktree</dt>
+                                        <dd class="path">{agent.worktree}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>Launch identity</dt>
+                                        <dd>
+                                            Wrapper PID {agent.root_pid} · started {time(
+                                                agent.root_start_time
+                                            )}
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt>Observed peak</dt>
+                                        <dd>
+                                            {agent.observed_samples === 0
+                                                ? 'Not sampled'
+                                                : `${percent(agent.peak_cpu_percent)} CPU`} · {memory(
+                                                agent.peak_memory_bytes
+                                            )} · {agent.peak_process_count} processes
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt>Measurement</dt>
+                                        <dd>
+                                            {agent.observed_samples} samples{agent.exit_code !==
+                                            null
+                                                ? ` · exit ${agent.exit_code}`
+                                                : ''}
+                                        </dd>
+                                    </div>
+                                </dl>
+                                {#if agent.status === 'active' && agent.roles.length > 0}
+                                    <div class="roles" aria-label="Observed process roles">
+                                        {#each agent.roles as role}
+                                            <span
+                                                >{role.role} × {role.process_count} · {memory(
+                                                    role.memory_bytes
+                                                )}</span
+                                            >
+                                        {/each}
+                                    </div>
+                                {/if}
+                                {#if agent.process_ids.length > 0}
+                                    <p class="muted">
+                                        Observed PIDs: {agent.process_ids.join(', ')}
+                                    </p>
+                                {/if}
+                                <div class="workload-links">
+                                    {#each snapshot.workloads.filter( (workload) => agent.workload_ids.includes(workload.id) ) as workload (workload.id)}
+                                        <button onclick={() => onselect(workload)}
+                                            >Inspect {workload.label} ↗</button
                                         >
                                     {/each}
                                 </div>
-                            {/if}
-                            {#if agent.process_ids.length > 0}
-                                <p class="muted">Observed PIDs: {agent.process_ids.join(', ')}</p>
-                            {/if}
-                            <div class="workload-links">
-                                {#each snapshot.workloads.filter( (workload) => agent.workload_ids.includes(workload.id) ) as workload (workload.id)}
-                                    <button onclick={() => onselect(workload)}
-                                        >Inspect {workload.label} ↗</button
-                                    >
-                                {/each}
                             </div>
-                        </div>
-                    </details>
-                {/each}
-            </div>
+                        </details>
+                    {/each}
+                </div>
+            </details>
             {#if workflow.suggestions.length > 0}
                 <div class="workflow-advice">
                     <h4>Ways to reduce resource use <span>Rule-based suggestions</span></h4>
@@ -197,10 +234,6 @@
                         </details>
                     {/each}
                 </div>
-            {:else}
-                <p class="muted no-advice">
-                    No efficiency recommendation from the samples observed so far.
-                </p>
             {/if}
             <details class="workflow-evidence">
                 <summary>Attribution & measurement limits</summary>
@@ -208,8 +241,9 @@
                     {#each workflow.evidence as evidence}<li>{evidence}</li>{/each}
                 </ul>
                 <p>
-                    Task labels come from the launcher. Ownership requires a matching process ID,
-                    start time, and observed parent chain. Working directories alone are not proof.
+                    Task titles come from the launcher; request excerpts come from opted-in harness
+                    hooks or provided descriptions. Ownership requires a matching process ID, start
+                    time, and observed parent chain. Working directories alone are not proof.
                 </p>
                 <p>
                     Peaks are sampled every {snapshot.interval_ms / 1000} seconds and may miss short bursts.
@@ -227,6 +261,14 @@
 </section>
 
 <style>
+    .technical-detail {
+        margin: 16px 0;
+    }
+    .technical-detail > summary {
+        cursor: pointer;
+        color: var(--muted);
+        margin-bottom: 10px;
+    }
     .workflow-panel {
         margin-bottom: 20px;
     }
@@ -416,9 +458,6 @@
     }
     .workflow-evidence summary {
         cursor: pointer;
-    }
-    .no-advice {
-        margin-bottom: 0;
     }
     .workflow-empty {
         margin: 0;

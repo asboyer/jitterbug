@@ -7,6 +7,7 @@ pub mod collector;
 mod desktop;
 pub mod details;
 pub mod diagnostics;
+pub mod harness;
 pub mod platform;
 pub mod pressure;
 pub mod profiles;
@@ -15,6 +16,7 @@ pub mod settings;
 pub mod storage;
 pub mod supervisor;
 pub mod types;
+pub mod workflow_summary;
 pub mod workflows;
 
 use serde::Serialize;
@@ -154,6 +156,81 @@ async fn explain_application(
         .lock()
         .map_err(|_| "Profile cache unavailable.")?
         .insert(key, profile.clone(), &state.directory)?;
+    Ok(profile)
+}
+
+#[tauri::command]
+fn get_agent_task_summary(
+    state: State<'_, AppState>,
+    task_id: String,
+    task_key: String,
+) -> Result<Option<profiles::Profile>, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?;
+    if !snapshot
+        .agent_workflows
+        .iter()
+        .any(|w| w.task_id == task_id && w.narrative.task_key == task_key)
+    {
+        return Ok(None);
+    }
+    Ok(state
+        .task_summaries
+        .lock()
+        .map_err(|_| "Task cache unavailable.")?
+        .get(&task_key))
+}
+
+#[tauri::command]
+async fn summarize_agent_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    task_key: String,
+) -> Result<profiles::Profile, String> {
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    if snapshot.source != "live" {
+        return Err("Task summaries require a real registered task.".into());
+    }
+    let workflow = snapshot
+        .agent_workflows
+        .iter()
+        .find(|w| w.task_id == task_id)
+        .ok_or("This task is no longer available.")?;
+    if workflow.narrative.task_key != task_key {
+        return Err("The task request changed. Review the latest excerpts and try again.".into());
+    }
+    if let Some(profile) = state
+        .task_summaries
+        .lock()
+        .map_err(|_| "Task cache unavailable.")?
+        .get(&task_key)
+    {
+        return Ok(profile);
+    }
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let profile = state
+        .engine
+        .task_summary(&settings, &snapshot, workflow)
+        .await?;
+    state
+        .task_summaries
+        .lock()
+        .map_err(|_| "Task cache unavailable.")?
+        .insert_memory(task_key, profile.clone());
     Ok(profile)
 }
 
@@ -431,6 +508,8 @@ pub fn run() {
             get_workload_details,
             get_workload_icon,
             explain_application,
+            summarize_agent_task,
+            get_agent_task_summary,
             get_quick_snapshot,
             desktop::open_main,
             desktop::hide_quick_view,

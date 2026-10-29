@@ -1,9 +1,30 @@
 //! Explicit task wrapper. This executable is opt-in and never launches work on its own.
-use jitterbug_lib::workflows::{self, RunManifest};
+use jitterbug_lib::{
+    harness,
+    workflows::{self, RunManifest},
+};
 use std::{ffi::OsString, path::PathBuf, process::Command};
 
 fn run() -> Result<i32, String> {
-    let mut args = std::env::args_os().skip(1);
+    let mut args = std::env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "hook-settings") {
+        println!(
+            "{}",
+            harness::hook_settings(
+                &std::env::current_exe().map_err(|_| "Cannot locate launcher.")?
+            )?
+        );
+        return Ok(0);
+    }
+    if args.peek().is_some_and(|arg| arg == "event") {
+        // A hook never blocks an agent or injects stdout into its model context.
+        if let Err(error) = event() {
+            eprintln!("jitterbug-run: context skipped: {error}");
+        }
+        return Ok(0);
+    }
+    let mut capture_context = false;
+    let mut description = None;
     let mut task_id = None;
     let mut task_title = None;
     let mut agent = None;
@@ -13,8 +34,12 @@ fn run() -> Result<i32, String> {
     let mut command: Vec<OsString> = Vec::new();
     while let Some(flag) = args.next() {
         if flag == "--help" || flag == "-h" {
-            println!("Usage: jitterbug-run --task-id ID --task-title TITLE --agent LABEL --worktree PATH [--harness claude|codex|other] [--role agent|test|build|typecheck|lint|other] -- COMMAND [ARG ...]\n\nRuns COMMAND in PATH with inherited stdin/stdout/stderr. Registers private task metadata in Jitterbug's application-data directory; never stores command arguments or prompts. Keep Jitterbug open to measure resources. No inference, scheduling or process optimization is performed by this wrapper. JITTERBUG_AGENT_RUNS_DIR can override the private registry directory for isolated tests.");
+            println!("Usage: jitterbug-run --task-id ID --task-title TITLE --agent LABEL --worktree PATH [--harness claude|codex|other] [--role agent|test|build|typecheck|lint|other] [--task-description TEXT] [--capture-context] -- COMMAND [ARG ...]\n\nRuns COMMAND in PATH with inherited stdin/stdout/stderr. Registers private task metadata in Jitterbug's application-data directory; never stores command arguments or tool output. --task-description supplies a local task excerpt. --capture-context adds session-only Claude Code hooks that retain the first request and latest follow-up excerpts (600 characters each) and activity counts. No transcript is read. Use hook-settings to print compatible Claude/Codex hook JSON for manual setup. Events outside a verified wrapper are ignored. Keep Jitterbug open to measure resources. No inference, scheduling or process optimization is performed by this wrapper. JITTERBUG_AGENT_RUNS_DIR can override the private registry directory for isolated tests.");
             return Ok(0);
+        }
+        if flag == "--capture-context" {
+            capture_context = true;
+            continue;
         }
         if flag == "--" {
             command.extend(args);
@@ -33,13 +58,42 @@ fn run() -> Result<i32, String> {
         match flag.to_str() {
             Some("--task-id") => task_id = Some(value),
             Some("--task-title") => task_title = Some(value),
+            Some("--task-description") => description = Some(value),
             Some("--agent") => agent = Some(value),
             Some("--harness") => harness = value,
             Some("--role") => role = value,
             _ => return Err("Unknown launcher option; use --help for usage.".into()),
         }
     }
-    let executable = command.first().ok_or("Supply a command after --.")?;
+    let executable = command.first().ok_or("Supply a command after --.")?.clone();
+    if capture_context {
+        if harness != "claude"
+            || !matches!(
+                PathBuf::from(&executable)
+                    .file_stem()
+                    .and_then(|s| s.to_str()),
+                Some("claude")
+            )
+        {
+            return Err("--capture-context currently installs session-only hooks for the claude executable. For other harnesses use hook-settings and their hook setup.".into());
+        }
+        if command
+            .iter()
+            .any(|s| s == "--settings" || s.to_string_lossy().starts_with("--settings="))
+        {
+            return Err("Merge hook-settings into your supplied settings instead of combining --capture-context with --settings.".into());
+        }
+        let config = harness::hook_settings(
+            &std::env::current_exe().map_err(|_| "Cannot locate launcher.")?,
+        )?;
+        command.splice(
+            1..1,
+            [
+                OsString::from("--settings"),
+                OsString::from(config.to_string()),
+            ],
+        );
+    }
     let worktree = worktree
         .ok_or("--worktree is required.")?
         .canonicalize()
@@ -78,11 +132,17 @@ fn run() -> Result<i32, String> {
         ended_at: None,
         status: "active".into(),
         exit_code: None,
+        context: description
+            .as_deref()
+            .map(harness::Context::supplied)
+            .unwrap_or_default(),
     };
     let directory = workflows::registry_directory()?;
     workflows::register(&directory, &manifest)?;
     let result = Command::new(executable)
         .args(&command[1..])
+        .env("JITTERBUG_RUN_ID", &manifest.run_id)
+        .env("JITTERBUG_AGENT_RUNS_DIR", &directory)
         .current_dir(&manifest.worktree)
         .status();
     let exit_code = match result {
@@ -110,6 +170,23 @@ fn run() -> Result<i32, String> {
         eprintln!("jitterbug-run: {error}");
     }
     Ok(exit_code)
+}
+
+fn event() -> Result<(), String> {
+    use std::io::Read;
+    let Ok(id) = std::env::var("JITTERBUG_RUN_ID") else {
+        return Ok(());
+    };
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(harness::MAX_EVENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read harness event.")?;
+    if bytes.len() as u64 > harness::MAX_EVENT_BYTES {
+        return Err("Event exceeds 64 KiB limit.".into());
+    }
+    let value = serde_json::from_slice(&bytes).map_err(|_| "Invalid harness event JSON.")?;
+    workflows::record_event(&workflows::registry_directory()?, &id, &value)
 }
 
 fn main() {

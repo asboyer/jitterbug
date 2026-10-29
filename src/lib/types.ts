@@ -268,6 +268,16 @@ export interface AgentSession {
     peak_memory_bytes: number;
     peak_process_count: number;
     observed_samples: number;
+    context: {
+        session_id: string;
+        request: string;
+        latest_request: string;
+        source: string;
+        updated_at: number;
+        last_activity: string;
+        last_activity_at: number;
+        completed_tools: Record<string, number>;
+    };
     roles: AgentRoleUsage[];
     process_ids: number[];
     workload_ids: string[];
@@ -297,6 +307,15 @@ export interface AgentWorkflow {
     started_at: number;
     last_seen_at: number;
     observed_samples: number;
+    narrative: {
+        assignments: { agent: string; request: string; source: string }[];
+        task_key: string;
+        activity: string;
+        resources: string;
+        tip: string;
+        tip_basis: string;
+    };
+    peak_roles: AgentRoleUsage[];
     agents: AgentSession[];
     history: ResourcePoint[];
     suggestions: WorkflowSuggestion[];

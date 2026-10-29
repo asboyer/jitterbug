@@ -376,7 +376,15 @@
                             }}
                         />
                     {/key}
-                {:else}<Dashboard {snapshot} {selectedId} onselect={select} onask={ask} />{/if}
+                {:else}<Dashboard
+                        {snapshot}
+                        {selectedId}
+                        onselect={select}
+                        onask={ask}
+                        onusage={() => {
+                            void refreshBootstrap().catch(() => {});
+                        }}
+                    />{/if}
             {:else}<div class="empty loading">
                     <span class="brand-mark">✳</span>
                     <h1>Getting to know your workloads</h1>

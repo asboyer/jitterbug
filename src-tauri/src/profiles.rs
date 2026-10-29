@@ -91,6 +91,11 @@ impl Cache {
         self.entries.push_back((id, profile.clone()));
         Some(profile)
     }
+    pub fn insert_memory(&mut self, key: String, profile: Profile) {
+        self.entries.retain(|(id, _)| id != &key);
+        self.entries.push_back((key, profile));
+        self.prune();
+    }
     pub fn insert(
         &mut self,
         key: String,

@@ -10,11 +10,13 @@
         selectedId,
         onselect,
         onask,
+        onusage,
     }: {
         snapshot: Snapshot;
         selectedId: string | null;
         onselect: (workload: Workload) => void;
         onask: () => void;
+        onusage: () => void;
     } = $props();
     let search = $state('');
     let sort = $state('impact');
@@ -136,7 +138,7 @@
             </p>{/if}
     </details>
 </article>
-<AgentWorkflows {snapshot} {onselect} />
+<AgentWorkflows {snapshot} {onselect} {onusage} />
 <section class="panel workload-panel">
     <div class="section-title">
         <div>
