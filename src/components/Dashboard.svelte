@@ -60,7 +60,7 @@
             >Ask Jitterbug <span aria-hidden="true">↗</span></button
         >
     </div>
-    <section class="health-summary" class:busy aria-label="Computer health">
+    <section class="health-summary" class:busy aria-label="Computer health" data-tour="health">
         <span class="health-symbol"><Icon name="activity" size={24} /></span>
         <div>
             <h2>

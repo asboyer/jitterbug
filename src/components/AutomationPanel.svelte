@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory, percent } from '../lib/format';
     import {
@@ -8,6 +9,9 @@
         incidentTitle,
     } from '../lib/incidents';
     import type { AutomationCase } from '../lib/types';
+    import Icon from './Icon.svelte';
+    import InfoTip from './InfoTip.svelte';
+    import OptimizationReview from './OptimizationReview.svelte';
     import ActionResult from './ActionResult.svelte';
     import Investigation from './Investigation.svelte';
 
@@ -29,20 +33,38 @@
         onask: (incident: AutomationCase) => void;
     } = $props();
     let busy = $state(false);
+    let review: { key: string; incident: AutomationCase } | null = $state(null);
+    const proposalKey = $derived(
+        `${incident.id}:${incident.proposal?.process.pid}:${incident.proposal?.process.start_time}:${incident.proposal?.action}`
+    );
+    const reviewCurrent = $derived.by(
+        () => review?.key === proposalKey && incident.stage === 'awaiting_approval'
+    );
     let error = $state('');
+    let reviewButton: HTMLButtonElement | undefined = $state();
+    let panelTitle: HTMLHeadingElement;
+    function closeReview() {
+        review = null;
+        void tick().then(() => {
+            if (reviewButton?.isConnected) reviewButton.focus();
+            else panelTitle?.focus();
+        });
+    }
     const runningAction = $derived(['applying', 'verifying'].includes(incident.stage));
     const canMutate = $derived(desktop && incident.source === 'live' && !busy);
     const success = $derived(['completed', 'resolved'].includes(incident.stage));
 
     async function perform(command: string, args: Record<string, unknown>) {
-        if (!canMutate) return;
+        if (!canMutate) return false;
         busy = true;
         error = '';
         try {
             await invoke(command, args);
             await onrefresh();
+            return true;
         } catch (cause) {
             error = errorMessage(cause);
+            return false;
         } finally {
             busy = false;
         }
@@ -55,7 +77,7 @@
             <p class="eyebrow">
                 {incident.source === 'live' ? 'RESOURCE ASSISTANT · LIVE' : 'SYNTHETIC EXAMPLE'}
             </p>
-            <h2>{incidentTitle(incident)}</h2>
+            <h2 bind:this={panelTitle} tabindex="-1">{incidentTitle(incident)}</h2>
         </div>
         <button class="icon-button" aria-label="Close automatic assistant" onclick={onclose}
             >×</button
@@ -91,84 +113,57 @@
     </div>
     <div class="conversation automatic-conversation">
         {#key incident.id}
-            <section class="incident-summary">
-                <h3>What happened</h3>
-                <p>{incidentObservation(incident)}</p>
-                <small>
-                    {incident.source === 'live' ? 'Observed by Jitterbug' : 'Synthetic telemetry'} · {new Date(
-                        incident.detected_at * 1000
-                    ).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-                </small>
-            </section>
+            <p class="observation">{incidentObservation(incident)}</p>
             {#if incident.proposal}
-                <section class="proposal-card">
-                    <p class="eyebrow">
-                        {incident.report
-                            ? 'ACTION TAKEN'
-                            : incident.automatic
-                              ? 'SAVED PERMISSION'
-                              : 'SUGGESTED ACTION'}
-                    </p>
-                    <h3>Give other apps more CPU time</h3>
-                    <p>
-                        Lower the CPU priority of <strong>{incident.proposal.process.name}</strong>.
-                    </p>
-                    <p class="action-limit">
-                        It keeps running. This changes scheduling preference; it does not free
-                        memory or guarantee lower CPU use.
-                    </p>
+                <section class="proposal-card" data-tour="proposal">
+                    <div class="tip-heading">
+                        <Icon name="bulb" size={20} />
+                        <h3>
+                            {incident.report
+                                ? 'Priority change requested'
+                                : 'Give other apps more room'}
+                        </h3>
+                        <InfoTip label="About this optimization">
+                            <p>
+                                Lower the CPU priority of <strong
+                                    >{incident.proposal.process.name}</strong
+                                > so other work gets scheduling preference. It keeps running.
+                            </p>
+                            <p>
+                                This does not free memory or guarantee lower CPU use. It lasts until
+                                the process exits; undo may require administrator access.
+                            </p>
+                            {#if incident.automatic}<p>
+                                    You previously allowed automatic priority changes for this
+                                    workload.
+                                </p>{/if}
+                        </InfoTip>
+                    </div>
                     {#if incident.stage === 'awaiting_approval'}
-                        <p class="action-limit">
-                            Priority stays lower until the process exits. Restoring it may require
-                            administrator privileges.
-                        </p>
-                        <div class="approval-actions">
-                            <button
-                                class="primary"
-                                disabled={!canMutate}
-                                onclick={() =>
-                                    perform('approve_optimization', {
-                                        id: incident.id,
-                                        remember: false,
-                                    })}>Apply once & measure</button
-                            >
-                            <button
-                                disabled={!canMutate}
-                                onclick={() =>
-                                    perform('approve_optimization', {
-                                        id: incident.id,
-                                        remember: true,
-                                    })}>Always allow for this workload</button
-                            >
-                        </div>
-                        <small>
-                            “Always allow” applies this change now and permits future automatic
-                            priority changes for {incident.trigger.target?.label ??
-                                'this workload'}. It never permits stopping processes. Remove
-                            permission in Settings.
-                        </small>
+                        <button
+                            class="primary review-button"
+                            bind:this={reviewButton}
+                            disabled={busy}
+                            onclick={() => {
+                                error = '';
+                                review = {
+                                    key: proposalKey,
+                                    incident: structuredClone($state.snapshot(incident)),
+                                };
+                            }}>Review change</button
+                        >
                     {/if}
-                    <details class="proposal-detail">
-                        <summary>Why this action & process details</summary>
-                        <p>{incident.proposal.rationale}</p>
-                        <p>
-                            PID {incident.proposal.process.pid} · {percent(
-                                incident.proposal.process.cpu_percent
-                            )} CPU at proposal
-                        </p>
-                    </details>
                 </section>
             {/if}
-            <section class="incident-summary outcome" aria-label="Investigation outcome">
-                <h3>{incident.verification ? 'Result' : 'Where things stand'}</h3>
-                <p>{incidentOutcome(incident)}</p>
-                {#if incident.verification}
-                    <small
-                        >Observed changes do not prove that the action improved performance.</small
-                    >
-                {/if}
-            </section>
-            <div class="incident-details">
+            {#if !['awaiting_approval', 'detected', 'investigating', 'applying', 'verifying'].includes(incident.stage)}
+                <section class="incident-summary outcome" aria-label="Investigation outcome">
+                    <h3>{incident.verification ? 'Result' : 'Outcome'}</h3>
+                    <p>{incidentOutcome(incident)}</p>
+                </section>
+            {/if}
+            <details class="incident-details">
+                <summary class="details-toggle"><Icon name="eye" size={16} /> View details</summary>
+
                 {#if incident.verification || incident.report}
                     <details class="detail-row">
                         <summary>Result & measurements</summary>
@@ -176,6 +171,10 @@
                             {#if incident.verification}
                                 <section aria-label="Automatic verification result">
                                     <p>{incident.verification.summary}</p>
+                                    <p class="muted">
+                                        Observed changes do not prove that the action improved
+                                        performance.
+                                    </p>
                                     {#if incident.verification.system_cpu_after !== null}
                                         <dl class="measurement-list">
                                             <div>
@@ -256,6 +255,13 @@
                     <summary>Detection & evidence</summary>
                     <div class="detail-content">
                         <p>{incident.trigger.reason}</p>
+                        <p class="muted">
+                            {new Date(incident.detected_at * 1000).toLocaleString()} · {incident.source ===
+                            'live'
+                                ? 'Observed telemetry'
+                                : 'Synthetic example'}
+                        </p>
+                        {#if incident.proposal}<p>{incident.proposal.rationale}</p>{/if}
                         {#if incident.evidence}
                             <Investigation
                                 evidence={incident.evidence}
@@ -284,7 +290,7 @@
                         {/each}
                     </ol>
                 </details>
-            </div>
+            </details>
         {/key}
     </div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -294,27 +300,44 @@
             disabled={busy || runningAction}
             onclick={() => onask(incident)}>Ask a follow-up</button
         >
-        <div class="secondary-actions">
-            <button
-                disabled={!canMutate || runningAction || incident.stage === 'dismissed'}
-                onclick={() => perform('dismiss_automation_case', { id: incident.id })}
-                >Dismiss incident</button
+        <details class="more-actions">
+            <summary aria-label="More incident options" title="More incident options"
+                ><Icon name="more" size={20} /></summary
             >
-            <button
-                disabled={!canMutate}
-                onclick={() => perform('snooze_automation', { minutes: 15 })}
-                >Pause automation 15 min</button
-            >
-        </div>
-        <details class="monitoring-note">
-            <summary>Monitoring stays on when you close this panel</summary>
-            <p>
-                Pause prevents new investigations and actions. Already-applied changes remain in
-                effect.
-            </p>
+            <div class="more-menu">
+                <button
+                    disabled={!canMutate || runningAction || incident.stage === 'dismissed'}
+                    onclick={() => perform('dismiss_automation_case', { id: incident.id })}
+                    >Dismiss incident</button
+                >
+                <button
+                    disabled={!canMutate}
+                    onclick={() => perform('snooze_automation', { minutes: 15 })}
+                    >Pause automation 15 min</button
+                >
+                <p>
+                    Closing keeps monitoring on. Pausing prevents new investigations and actions;
+                    earlier changes remain.
+                </p>
+            </div>
         </details>
     </div>
 </aside>
+
+{#if review}
+    <OptimizationReview
+        incident={review.incident}
+        current={reviewCurrent}
+        {busy}
+        {error}
+        canApply={canMutate}
+        onclose={closeReview}
+        onapply={async (remember) => {
+            if (!reviewCurrent || !canMutate) return;
+            if (await perform('approve_optimization', { id: incident.id, remember })) closeReview();
+        }}
+    />
+{/if}
 
 <style>
     .incident-heading {
@@ -366,23 +389,15 @@
     .incident-summary {
         padding: 0 1px 20px;
     }
-    .incident-summary h3,
-    .proposal-card h3 {
+    .incident-summary h3 {
         font-size: 13px;
         margin: 0 0 8px;
     }
     .incident-summary p,
-    .proposal-card p {
-        margin: 0 0 8px;
+    .observation {
+        font-size: 13px;
         line-height: 1.6;
-        font-size: 12px;
-    }
-    .incident-summary small,
-    .proposal-card small {
-        color: var(--muted);
-        line-height: 1.55;
-        font-size: 10px;
-        display: block;
+        margin: 0 0 20px;
     }
     .proposal-card {
         border: 1px solid var(--border);
@@ -391,31 +406,33 @@
         border-radius: 9px;
         margin-bottom: 20px;
     }
-    .proposal-card .eyebrow {
-        font-size: 9px;
-        margin-bottom: 10px;
+    .tip-heading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
     }
-    .proposal-card .action-limit {
-        color: var(--muted);
-        font-size: 11px;
+    .tip-heading h3 {
+        flex: 1;
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.4;
     }
-    .approval-actions {
-        display: grid;
+    .review-button {
+        width: 100%;
+        margin-top: 16px;
+    }
+    .details-toggle {
+        display: flex;
+        align-items: center;
         gap: 8px;
-        margin: 16px 0 10px;
-    }
-    .approval-actions button {
-        padding: 8px 10px;
-        font-size: 11px;
-    }
-    .proposal-detail {
-        margin-top: 14px;
+        padding: 14px 0;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 12px;
+        list-style: none;
+        cursor: pointer;
     }
-    .proposal-detail p {
-        margin-top: 10px;
-        font-size: 11px;
+    .details-toggle::-webkit-details-marker {
+        display: none;
     }
     .outcome {
         padding-bottom: 22px;
@@ -502,28 +519,53 @@
         margin: 7px 0 0;
     }
     .incident-footer {
+        display: flex;
+        gap: 10px;
+        align-items: center;
         border-top: 1px solid var(--border);
         padding-top: 14px;
     }
     .followup-button {
-        width: 100%;
-        padding: 8px 10px;
+        flex: 1;
     }
-    .secondary-actions {
+    .more-actions {
+        position: relative;
+    }
+    .more-actions > summary {
         display: flex;
-        justify-content: space-between;
-        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        list-style: none;
+        cursor: pointer;
+        border-radius: 6px;
+        color: var(--muted);
+    }
+    .more-actions > summary::-webkit-details-marker {
+        display: none;
+    }
+    .more-actions[open] > summary {
+        background: var(--hover);
+    }
+    .more-menu {
+        position: absolute;
+        bottom: 42px;
+        right: 0;
+        width: 240px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 10px;
+        display: grid;
         gap: 8px;
-        margin-top: 10px;
+        background: var(--panel);
+        box-shadow: 0 8px 24px #0003;
+        z-index: 12;
     }
-    .secondary-actions button {
-        font-size: 10px;
+    .more-menu p {
+        margin: 4px;
+        font-size: 11px;
         color: var(--muted);
-    }
-    .monitoring-note {
-        color: var(--muted);
-        font-size: 9px;
         line-height: 1.6;
-        margin-top: 14px;
     }
 </style>

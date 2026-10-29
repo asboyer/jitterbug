@@ -4,10 +4,24 @@
         size = 18,
     }: {
         name:
-            'bug' | 'activity' | 'settings' | 'app' | 'code' | 'model' | 'bulb' | 'queue' | 'inbox';
+            | 'bug'
+            | 'activity'
+            | 'settings'
+            | 'app'
+            | 'code'
+            | 'model'
+            | 'bulb'
+            | 'queue'
+            | 'inbox'
+            | 'info'
+            | 'eye'
+            | 'more';
         size?: number;
     } = $props();
     const paths = {
+        info: 'M12 8h.01M11 11h1v6m-1 0h3M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+        eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12m13 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+        more: 'M5 12h.01M12 12h.01M19 12h.01',
         queue: 'M4 6h16M4 12h10M4 18h6m6-3 3 3-3 3',
         inbox: 'M4 4h16v16H4zM4 13h4l2 3h4l2-3h4',
         bulb: 'M9 18h6m-5 3h4M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2z',

@@ -1,8 +1,10 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import AutomationPanel from './components/AutomationPanel.svelte';
+    import GuidedTour from './components/GuidedTour.svelte';
+    import { tourPreference, tourSteps } from './lib/tour';
     import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
     import Workloads from './components/Workloads.svelte';
@@ -30,6 +32,78 @@
     const desktop = isTauri();
     let page = $state('dashboard');
     let demoMenuOpen = $state(false);
+    let tourIndex = $state<number | null>(null);
+    let tourSeen = $state(true);
+    let beforeTour: {
+        page: string;
+        demo: boolean;
+        demoPressure: boolean;
+        selectedId: string | null;
+        selectedContext: Workload | null;
+        chatOpen: boolean;
+        automationOpen: boolean;
+        automaticId: number | null;
+        alert: Incident | null;
+    } | null = null;
+    onMount(() => {
+        try {
+            tourSeen = localStorage.getItem(tourPreference) === '1';
+        } catch {
+            tourSeen = false;
+        }
+    });
+    function markTourSeen() {
+        tourSeen = true;
+        try {
+            localStorage.setItem(tourPreference, '1');
+        } catch {
+            /* Optional preference only. */
+        }
+    }
+    function showTourStep(index: number) {
+        tourIndex = index;
+        navigate(tourSteps[index].page);
+        if (tourSteps[index].target === 'proposal') showIncident(demoCases[0].id);
+    }
+    function startTour() {
+        if (tourIndex !== null || management || pendingAction || actionBusy) return;
+        beforeTour = {
+            page,
+            demo,
+            demoPressure,
+            selectedId,
+            selectedContext,
+            chatOpen,
+            automationOpen,
+            automaticId,
+            alert,
+        };
+        demo = true;
+        demoPressure = false;
+        alert = null;
+        showTourStep(0);
+    }
+    function finishTour() {
+        tourIndex = null;
+        markTourSeen();
+        if (beforeTour) {
+            ({
+                page,
+                demo,
+                demoPressure,
+                selectedId,
+                selectedContext,
+                chatOpen,
+                automationOpen,
+                automaticId,
+                alert,
+            } = beforeTour);
+            beforeTour = null;
+        }
+        void tick().then(() =>
+            document.querySelector<HTMLButtonElement>('[data-tour-start]')?.focus()
+        );
+    }
     const pages = [
         { id: 'dashboard', label: 'Activity', icon: 'activity' },
         { id: 'workloads', label: 'Workloads', icon: 'app' },
@@ -165,6 +239,7 @@
                 const navigation = await listen<{ page: string; workload: Workload | null }>(
                     'navigate',
                     (event) => {
+                        if (tourIndex !== null) finishTour();
                         navigate(event.payload.page);
                         if (page === 'dashboard') {
                             demoMenuOpen = false;
@@ -303,6 +378,7 @@
         <div class="nav-links">
             {#each pages as item}
                 <button
+                    data-tour={item.id === 'settings' ? 'settings' : undefined}
                     class:active={page === item.id}
                     aria-current={page === item.id ? 'page' : undefined}
                     onclick={() => navigate(item.id)}
@@ -315,14 +391,14 @@
             {/each}
         </div>
         <div class="sidebar-bottom">
-            <span class="tag">{bootstrap.settings.mode.replaceAll('_', ' ')}</span>
-            <p>Resource assistant</p>
-            <small
-                >Monitoring every 5 seconds. {bootstrap.settings.automation.enabled
-                    ? bootstrap.settings.automation.model_analysis
-                        ? 'Automatic diagnosis enabled.'
-                        : 'Automatic observations enabled.'
-                    : 'Automatic assistance disabled.'}</small
+            <button
+                class="text-button tour-trigger"
+                data-tour-start
+                disabled={!!management || !!pendingAction || actionBusy}
+                onclick={startTour}><Icon name="info" size={16} /> Take a tour</button
+            >
+            <span class="tag" title="AI mode. Change this in Settings."
+                >{bootstrap.settings.mode.replaceAll('_', ' ')}</span
             >
         </div>
     </nav>
@@ -404,6 +480,17 @@
             </div>{/if}
         {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
         <div class="page-content">
+            {#if !tourSeen && tourIndex === null && page === 'dashboard' && !selectedId}
+                <div class="tour-invitation">
+                    <span>New to Jitterbug?</span><button class="text-button" onclick={startTour}
+                        >Take a quick tour</button
+                    ><button
+                        class="icon-button"
+                        aria-label="Dismiss tour invitation"
+                        onclick={markTourSeen}>×</button
+                    >
+                </div>
+            {/if}
             {#if page === 'settings'}
                 <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
             {:else if page === 'inbox'}
@@ -529,6 +616,21 @@
             }}
         />{/if}
 </div>
+
+{#if tourIndex !== null}
+    <GuidedTour
+        index={tourIndex}
+        onclose={finishTour}
+        onback={() => {
+            if (tourIndex !== null && tourIndex > 0) showTourStep(tourIndex - 1);
+        }}
+        onnext={() => {
+            if (tourIndex === null) return;
+            if (tourIndex === tourSteps.length - 1) finishTour();
+            else showTourStep(tourIndex + 1);
+        }}
+    />
+{/if}
 
 {#if management && snapshot && !demo}
     <ManageWorkload

@@ -88,11 +88,12 @@ test('simulated pressure and inbox keep explanations concise and demo actions di
     await expect(page.getByRole('heading', { name: 'Inbox', exact: true })).toBeVisible();
     await page.getByRole('region', { name: 'Proposed optimizations' }).getByRole('button').click();
     const assistant = page.getByRole('complementary', { name: 'Automatic resource assistant' });
-    await expect(assistant.getByText('What happened', { exact: true })).toBeVisible();
+    await expect(assistant.locator('.observation')).toBeVisible();
     await expect(assistant.locator('details[open]')).toHaveCount(0);
-    await expect(
-        assistant.getByRole('button', { name: 'Apply once & measure', exact: true })
-    ).toBeDisabled();
+    await assistant.getByRole('button', { name: 'Review change', exact: true }).click();
+    const review = page.getByRole('dialog', { name: 'Review priority change' });
+    await expect(review.getByRole('button', { name: 'Apply once', exact: true })).toBeDisabled();
+    await review.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.clock.install();
     await page.clock.fastForward(10_000);
     expect(externalRequests).toEqual([]);

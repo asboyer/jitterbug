@@ -284,3 +284,15 @@ completed status, simulated pressure, disabled demo actions, and the minimum win
 width. Desktop visual checks also exercise the packaged WebKit UI and real telemetry.
 Screenshots and test output stay ignored. **Demo & testing** in the app provides the
 same synthetic scenarios without generating resource load or inference requests.
+
+**Take a tour** in the sidebar starts a six-step overlay using synthetic examples.
+It covers Activity, Workloads, reviewing a suggestion, agent tasks, the queue, and
+settings. Back, Next, Skip, and Escape work without making model calls or applying
+process changes. Exiting restores the previous page/workload and live/demo mode.
+The first-use invitation can be dismissed; only that local UI preference is saved.
+
+Incident cards keep explanations behind the **ⓘ** button and **View details**.
+**Review change** shows the effects and an unchecked option to allow future automatic
+priority changes. Opening a review grants no permission. Confirmation still passes
+through the existing native process-identity, pressure, and permission checks.
+Synthetic reviews can be explored, but their apply controls stay disabled.

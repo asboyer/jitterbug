@@ -22,7 +22,7 @@
         <p class="muted">Apps and background work. Select one to understand its activity.</p>
     </div>
 </div>
-<section class="panel workload-panel">
+<section class="panel workload-panel" data-tour="workloads">
     <div class="section-title">
         <div>
             <h2>All activity</h2>

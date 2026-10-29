@@ -30,7 +30,7 @@
     }
 </script>
 
-<section class="panel workflow-panel" aria-label="Agent workflows">
+<section class="panel workflow-panel" aria-label="Agent workflows" data-tour="agent-tasks">
     <div class="section-title">
         <div>
             <h2>Recent tasks <span class="task-count">{snapshot.agent_workflows.length}</span></h2>

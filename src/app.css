@@ -1255,3 +1255,27 @@ summary:focus-visible {
         width: 165px;
     }
 }
+
+.tour-trigger {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 0 0 14px -6px;
+    font-size: 12px;
+}
+.tour-invitation {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 8px 12px;
+    color: var(--muted);
+    font-size: 12px;
+    background: var(--panel);
+}
+.tour-invitation > .icon-button {
+    margin-left: auto;
+}
