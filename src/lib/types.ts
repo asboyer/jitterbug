@@ -14,6 +14,7 @@ export interface Settings {
     intelligent: Tier;
     decision_enabled: boolean;
     budget_usd: number;
+    automation: AutomationPolicy;
 }
 
 export interface Spending {
@@ -26,6 +27,8 @@ export interface Bootstrap {
     settings: Settings;
     credentials: Provider[];
     spending: Spending;
+    automation_cases: AutomationCase[];
+    automation_snoozed_until: number;
 }
 
 export interface Workload {
@@ -143,4 +146,50 @@ export interface ActionReport {
     after: ProcessRecord | null;
     measured_after_seconds: number;
     fresh: boolean;
+}
+
+export interface AutomationPolicy {
+    enabled: boolean;
+    model_analysis: boolean;
+    system_cpu_percent: number;
+    available_memory_percent: number;
+    app_cpu_core_percent: number;
+    sustained_samples: number;
+    cooldown_seconds: number;
+    max_investigations_per_hour: number;
+    rules: { workload_id: string; label: string }[];
+}
+
+export type AutomationStage =
+    | 'detected'
+    | 'investigating'
+    | 'awaiting_approval'
+    | 'applying'
+    | 'verifying'
+    | 'completed'
+    | 'resolved'
+    | 'blocked'
+    | 'dismissed';
+export interface AutomationCase {
+    id: number;
+    source: string;
+    detected_at: number;
+    trigger: { key: string; kind: string; title: string; reason: string; target: Target | null };
+    stage: AutomationStage;
+    steps: { at: number; stage: AutomationStage; message: string }[];
+    evidence: Investigation | null;
+    diagnosis: Reply | null;
+    proposal: { process: ProcessRecord; action: string; rationale: string } | null;
+    report: ActionReport | null;
+    verification: {
+        summary: string;
+        system_cpu_before: number;
+        system_cpu_after: number | null;
+        available_memory_before: number;
+        available_memory_after: number | null;
+        pressure_before: string;
+        pressure_after: string | null;
+        priority_verified: boolean;
+    } | null;
+    automatic: boolean;
 }

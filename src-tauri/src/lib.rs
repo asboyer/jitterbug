@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod attribution;
+pub mod automation;
 pub mod budget;
 pub mod collector;
 pub mod diagnostics;
@@ -8,30 +9,22 @@ pub mod pressure;
 pub mod providers;
 pub mod settings;
 pub mod storage;
+pub mod supervisor;
 pub mod types;
 
 use serde::Serialize;
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
-pub struct AppState {
-    snapshot: Arc<RwLock<types::Snapshot>>,
-    settings: Mutex<settings::Settings>,
-    engine: providers::Engine,
-    inference: tokio::sync::Mutex<()>,
-    action: tokio::sync::Mutex<()>,
-    directory: PathBuf,
-}
+pub type AppState = Arc<supervisor::Runtime>;
 
 #[derive(Serialize)]
 pub struct Bootstrap {
     settings: settings::Settings,
     credentials: Vec<String>,
     spending: budget::Ledger,
+    automation_cases: Vec<automation::Case>,
+    automation_snoozed_until: u64,
 }
 
 #[tauri::command]
@@ -61,17 +54,24 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
         .map(|p| p.name().into())
         .collect(),
         spending: state.engine.spending()?,
+        automation_cases: state.cases()?,
+        automation_snoozed_until: state.snoozed_until()?,
     })
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, settings: settings::Settings) -> Result<(), String> {
+fn save_settings(
+    state: State<'_, AppState>,
+    mut settings: settings::Settings,
+) -> Result<(), String> {
     let _guard = state
         .inference
         .try_lock()
         .map_err(|_| "Wait for the active model request before changing policy.")?;
-    settings.validate()?;
     let mut current = state.settings.lock().map_err(|_| "Settings unavailable.")?;
+    // Automation permissions have a separate command so an older provider form cannot overwrite them.
+    settings.automation = current.automation.clone();
+    settings.validate()?;
     storage::write(&state.directory.join("settings.json"), &settings)?;
     *current = settings;
     Ok(())
@@ -141,59 +141,34 @@ async fn process_action(
     start_time: u64,
     action: String,
 ) -> Result<types::ActionReport, String> {
-    let _guard = state
-        .action
-        .try_lock()
-        .map_err(|_| "Another action is being measured. Please wait.")?;
-    let before = state
-        .snapshot
-        .read()
-        .map_err(|_| "Telemetry unavailable.")?
-        .processes
-        .iter()
-        .find(|p| p.pid == pid && p.start_time == start_time)
-        .cloned()
-        .ok_or("This process is no longer in the inventory. Refresh before acting.")?;
-    let operation = action.clone();
-    let message =
-        tauri::async_runtime::spawn_blocking(move || actions::execute(pid, start_time, &operation))
-            .await
-            .map_err(|_| "Process action failed.")??;
-    let applied_at = types::now();
-    // Allow a complete collection interval after the action, without blocking collection or UI.
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if state
-            .snapshot
-            .read()
-            .map_err(|_| "Telemetry unavailable.")?
-            .captured_at
-            >= applied_at + 6
-        {
-            break;
-        }
-    }
-    let snapshot = state
-        .snapshot
-        .read()
-        .map_err(|_| "Telemetry unavailable.")?;
-    let fresh = snapshot.captured_at >= applied_at + 6;
-    Ok(types::ActionReport {
-        action,
-        message,
-        before,
-        after: if fresh {
-            snapshot
-                .processes
-                .iter()
-                .find(|p| p.pid == pid && p.start_time == start_time)
-                .cloned()
-        } else {
-            None
-        },
-        measured_after_seconds: snapshot.captured_at.saturating_sub(applied_at),
-        fresh,
-    })
+    state.inner().process_action(pid, start_time, &action).await
+}
+
+#[tauri::command]
+fn save_automation_policy(
+    state: State<'_, AppState>,
+    policy: automation::Policy,
+) -> Result<(), String> {
+    state.save_policy(policy)
+}
+
+#[tauri::command]
+fn snooze_automation(state: State<'_, AppState>, minutes: u64) -> Result<(), String> {
+    state.snooze(minutes)
+}
+
+#[tauri::command]
+fn dismiss_automation_case(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state.dismiss(id)
+}
+
+#[tauri::command]
+async fn approve_optimization(
+    state: State<'_, AppState>,
+    id: u64,
+    remember: bool,
+) -> Result<(), String> {
+    state.inner().apply(id, true, remember).await
 }
 
 #[tauri::command]
@@ -236,31 +211,35 @@ pub fn run() {
             let directory = app.path().app_data_dir()?;
             let settings = storage::read::<settings::Settings>(&directory.join("settings.json"))?;
             settings.validate()?;
-            let snapshot = Arc::new(RwLock::new(types::Snapshot::default()));
-            app.manage(AppState {
-                snapshot: snapshot.clone(),
-                settings: Mutex::new(settings),
-                engine: providers::Engine::new(&directory),
-                inference: tokio::sync::Mutex::new(()),
-                action: tokio::sync::Mutex::new(()),
+            let events = app.handle().clone();
+            let runtime = supervisor::Runtime::new(
                 directory,
-            });
+                settings,
+                Arc::new(move |case| {
+                    let _ = events.emit("automation-case", &case);
+                    if case.stage == automation::Stage::Detected {
+                        if let Some(window) = events.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.request_user_attention(Some(
+                                tauri::UserAttentionType::Informational,
+                            ));
+                        }
+                    }
+                }),
+            );
+            app.manage(runtime.clone());
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("jitterbug-collector".into())
                 .spawn(move || {
                     let mut collector = collector::Collector::default();
-                    let mut last_incident = None;
                     loop {
                         let sample = collector.sample();
-                        if let Some(incident) = &sample.incident {
-                            if last_incident != Some(incident.id) {
-                                let _ = notify_pressure(&handle, "pressure-incident", incident);
-                                last_incident = Some(incident.id);
-                            }
-                        }
-                        if let Ok(mut state) = snapshot.write() {
-                            *state = sample.clone();
+                        if let Ok(Some(id)) = runtime.observe(&sample) {
+                            let task = runtime.clone();
+                            tauri::async_runtime::spawn(async move {
+                                task.run(id).await;
+                            });
                         }
                         let _ = handle.emit("telemetry", &sample.dashboard_view());
                         std::thread::sleep(Duration::from_secs(5));
@@ -303,7 +282,11 @@ pub fn run() {
             unload_model,
             ask,
             process_action,
-            simulate_pressure
+            simulate_pressure,
+            save_automation_policy,
+            snooze_automation,
+            dismiss_automation_case,
+            approve_optimization
         ])
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")

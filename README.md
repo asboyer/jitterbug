@@ -11,7 +11,7 @@ npm ci
 npm run tauri dev
 ```
 
-The dashboard collects real telemetry every five seconds. Closing the window leaves monitoring running; choose **Quit Jitterbug** from the tray/menu-bar menu to stop it. Sustained pressure reveals the window and opens a contextual assistant; it does not automatically call a model. On macOS, reopening from the Dock also restores a hidden window.
+The dashboard collects real telemetry every five seconds. Closing the window leaves monitoring running; choose **Quit Jitterbug** from the tray/menu-bar menu to stop it. Sustained pressure or unusual workload activity reveals the window and opens the automatic assistant. It investigates through the configured intelligent tier, proposes a supported optimization, and measures its result after approval or an existing workload permission. On macOS, reopening from the Dock also restores a hidden window.
 
 ```sh
 npm run dev          # browser preview: synthetic data only
@@ -26,10 +26,24 @@ npm run tauri build  # desktop package; unsigned unless signing is configured
 
 - Live process CPU, resident memory, disk read/write counters, parent relationships, available memory, and swap usage through `sysinfo`. App/workload history retains the last 24 samples (about two minutes).
 - Project grouping from working directories and project markers; app grouping from executable ancestry on macOS. Descriptions are deterministic inferences, not proof of task ownership.
-- Sustained-pressure detection after three consecutive samples, with a five-minute alert cooldown. macOS adds native memory-pressure and thermal-state readings. Other platforms expose unavailable native sensors explicitly.
+- Sustained-pressure and workload anomaly detection after three consecutive samples, with configurable thresholds, recovery, cooldown, and rate limits. macOS adds native memory-pressure and thermal-state readings. Other platforms expose unavailable native sensors explicitly.
 - Ask about an app by name or a process by PID: “Why is Spotify using so much CPU?” resolves the target locally, supplies recent workload history and up to eight busy processes to the intelligent tier, and displays the measured evidence beside its diagnosis. Follow-ups retain context; ambiguous names prompt a choice. General summaries use anonymous aliases. Specific investigations include the selected app/process names; project labels, paths, command lines, environment variables, unrelated app names, and transcripts are excluded from telemetry sent to models. Your chat messages are sent with basic path/credential redaction.
 - Confirm actions directly from investigation evidence: lower CPU priority for supported user-owned development processes and third-party app processes on macOS; request termination for supported development processes or an app’s main executable. App helpers offer priority changes only. PID, start time, ownership, and protected processes are rechecked before acting. Afterward, a fresh sample shows before/after CPU and memory, or that the identity is no longer observed. A measured change does not prove causation. Actions target a single process; Windows native actions remain unimplemented.
 - Provider settings, native credential storage, and a persistent conservative spending ledger.
+
+## Automatic assistance
+
+The native loop runs while the window is hidden:
+
+1. **Detect:** three consecutive five-second samples above a configured limit. Defaults: 85% whole-machine CPU, less than 12% available memory, OS memory/thermal pressure, or one core of app CPU. A workload can also trigger after CPU rises at least 3× its baseline and 25% of one core, or memory grows at least 50% and 512 MiB. Baselines need at least nine samples. High activity is evidence to investigate, not proof of a fault.
+2. **Investigate:** show the popup and ask the intelligent tier once, using the selected workload's real processes and recent history. Mode, local resource guards, and the spending ceiling still apply. Disable automatic model analysis to use observations only; unavailable models produce an explicitly labeled rules fallback.
+3. **Propose:** deterministic policy can propose lowering a busy, eligible process's CPU priority. Model text is advisory and cannot execute commands. Memory incidents receive diagnosis without an irrelevant priority change.
+4. **Apply:** choose **Apply once & measure**, or **Allow for this workload & apply**. The latter saves permission for future priority changes in that workload. No workloads are allowed initially. Automatic termination is never allowed. Current trigger, PID/start time, ownership, protection, and permission are rechecked immediately before the OS action.
+5. **Verify:** wait for a complete fresh sampling interval, compare resources, and read back OS scheduling priority. The result explicitly reports when CPU did not improve or evidence is unavailable. Lower priority helps contention; it does not cap CPU, free RAM, or guarantee a speedup. It lasts until process exit and cannot always be reversed without privileges.
+
+Use **Providers & policy** to change limits, disable model analysis or automation, and remove permissions. The popup can dismiss an incident or pause new investigations/actions for 15 minutes. Closing it leaves monitoring active. Dismissal cannot cancel an action already applied. Repeated alerts require recovery and a cooldown (five minutes by default), with a global 60-second gap and at most four investigations per hour per session. Only one model request and one measured action run at a time. Up to 12 incidents, with 12 steps each, stay in memory and disappear on quit. Existing lifetime spending reservations survive restarts.
+
+Automatic process changes currently work on **macOS only**. Windows can detect, investigate, and display evidence, but has no native action adapter yet. This is workload reprioritization, not moving arbitrary running work between machines.
 
 ## Models and credentials
 
@@ -49,13 +63,13 @@ Jitterbug never downloads models. Local inference requires at least 4 GiB and 20
 
 Meta and Claude use fixed official endpoints. Jev is wired for the decision tier only and requires its own key; it is not required for the app. Cloud model IDs and prices are reviewed in `src-tauri/src/settings.rs`; unknown prices fail closed. Contributor/training-discount variants are not enabled.
 
-Cloud calls are manual, bounded, and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests and retained on failures or restarts. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
+Cloud calls come from chat requests or enabled automatic incident investigations. They are bounded and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests and retained on failures or restarts. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
 
 ## What is a demo or future work
 
-**Explore demo** and **Simulate pressure** use synthetic fixtures. In the desktop app, pressure simulation feeds three synthetic samples through the real Rust detector and delivers its incident through the real event channel. It does not generate CPU/memory load, call models, or change processes. Browser preview is always a demo. The source badge and assistant message labels make this visible.
+**Explore demo** and **Simulate pressure** use synthetic fixtures. In the desktop app, pressure simulation feeds three synthetic samples through the real Rust detector and delivers its incident through the real event channel. It does not generate CPU/memory load, call models, or change processes. Exploring the demo does not pause the native monitor; a real incident switches the desktop UI back to LIVE. Browser preview is always a demo. The source badge and assistant message labels make this visible.
 
-Agent-harness hooks, transcript correlation, GPU utilization, exact per-task ownership, model-fit recommendations, arbitrary job offloading, and automatic remediation are future work. There is no hidden implementation of these features. No process history or chat transcript is persisted. Global history is bounded to 120 samples; per-workload history to 24 samples for up to 512 workloads. The internal process inventory retains up to 4,096 processes; dashboard updates show the top 40 workloads and 160 processes. Name/PID resolution uses the wider internal inventory.
+Agent-harness hooks, transcript correlation, GPU utilization, exact per-task ownership, model-fit recommendations, arbitrary job offloading, CPU caps, and app-specific automatic repairs are future work. There is no hidden implementation of these features. No process history or chat transcript is persisted. Global history is bounded to 120 samples; per-workload history to 24 samples for up to 512 workloads. The internal process inventory retains up to 4,096 processes; dashboard updates show the top 40 workloads and 160 processes. Name/PID resolution uses the wider internal inventory.
 
 Diagnosis is evidence-based troubleshooting, not a profiler: Jitterbug cannot inspect an app’s settings, call stacks, GPU activity, or network traffic yet. It can identify the busy process and resource trend, propose a hypothesis and a test, and perform the supported process actions after confirmation. Changing Spotify settings, clearing caches, restarting apps, and other app-specific repairs remain manual suggestions, never falsely reported as completed.
 
@@ -69,7 +83,9 @@ src-tauri/src/
   diagnostics.rs        app/PID resolution and scoped investigation evidence
   pressure.rs           sustained incidents and local-inference resource gates
   platform/             native OS adapters (macOS readings; explicit Windows gaps)
-  actions.rs            explicit process-action validation
+  automation.rs         sustained thresholds, anomaly detection, permissions, verification
+  supervisor.rs         background investigation → proposal → action → measurement
+  actions.rs            native process-action validation and OS priority verification
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
   settings.rs           inference modes, model tiers, credentials, reviewed prices
   budget.rs             locked, persistent pre-request spending reservations
@@ -83,7 +99,7 @@ Application settings and spending totals live in the OS application-data directo
 
 CI checks formatting, TypeScript/Svelte, Rust unit tests, Clippy, and native compilation on macOS and Windows. No API credentials or machine telemetry are used in CI. Windows interactive behavior still needs a teammate's hands-on check; Windows process actions and native pressure/thermal sensors are not implemented.
 
-On macOS, the native desktop feedback loop has been exercised with live collection, workload filtering, simulated sustained pressure, a real Meta answer, provider-mode persistence, a zero-budget cloud denial, and a confirmation-driven stop of a disposable worker. The worker was observed in telemetry and disappeared after the action. Separate live probes exercise priority changes and stale process identity rejection.
+On macOS, the native desktop feedback loop has been exercised with live collection, workload filtering, simulated sustained pressure, a real Meta answer, provider-mode persistence, a zero-budget cloud denial, and a confirmation-driven stop of a disposable worker. The worker was observed in telemetry and disappeared after the action. The automatic workflow has also been exercised with a bounded real app fixture: anomaly detection, automatic Meta investigation, saved workload permission, priority application, and fresh verification. The displayed result correctly reported no clear CPU reduction. Pause/resume and permission removal were checked through the desktop UI. A separate native probe exercises the complete automatic flow with an existing permission, rules-only investigation, and no cloud calls.
 
 ```sh
 # Safe by default: sample real telemetry, without logging private values.
@@ -96,6 +112,11 @@ cargo build --manifest-path src-tauri/Cargo.toml --examples
 # lowers its priority, then terminates only that worker. Repeats with an app-bundle fixture.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --actions
 
+# macOS only: runs the real supervisor against an owned 32 MiB fixture,
+# observes a sustained CPU anomaly, automatically lowers its allowed priority,
+# then verifies OS priority and a fresh sample. No model/API requests.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-autopilot-probe
+
 # Uses a synthetic credential in a separate test service, then deletes it.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --credential-store
 
@@ -104,6 +125,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --lo
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --decision-model
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --meta-model
 ```
+
+The automation fixture first waits 35 seconds for a baseline, then uses a 70% duty cycle on one thread, rechecks memory/thermal limits, and exits within 115 seconds. Its probe scopes the real inventory to its own child and retains private evidence only in ignored `.local/verification/automation/`.
 
 The action fixture allocates 32 MiB only when at least 4 GiB is available, produces a three-second single-thread CPU pulse, and exits within 90 seconds even without an action. Model probes retain responses only in ignored `.local/verification/` and use a separate $0.25 conservative lifetime ledger. Local Qwen and Tev routing and Meta generation have been exercised against real endpoints. Claude and hosted Jev adapters have protocol tests but have not been tested with live credentials. Jev remains optional and no Jev request is made without an explicit configuration and key.
 

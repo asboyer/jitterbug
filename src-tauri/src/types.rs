@@ -32,7 +32,7 @@ pub struct ResourcePoint {
     pub memory_bytes: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActionReport {
     pub action: String,
     pub message: String,

@@ -6,6 +6,7 @@
     import ActionResult from './ActionResult.svelte';
     import type {
         ActionReport,
+        AutomationCase,
         ChatMessage,
         ProcessRecord,
         Reply,
@@ -16,6 +17,7 @@
 
     let {
         snapshot,
+        incident,
         workload,
         desktop,
         onclose,
@@ -25,6 +27,7 @@
         actionBusy,
     }: {
         snapshot: Snapshot;
+        incident: AutomationCase | null;
         workload: Workload | null;
         desktop: boolean;
         onclose: () => void;
@@ -37,7 +40,9 @@
     let tier = $state('auto');
     let busy = $state(false);
     let error = $state('');
-    let conversation: { message: ChatMessage; reply?: Reply }[] = $state([]);
+    let conversation: { message: ChatMessage; reply?: Reply; nativeSummary?: boolean }[] = $state(
+        []
+    );
     let previousContext = $state('');
     let focused: Target | null = $state(null);
     let conversationElement: HTMLDivElement;
@@ -62,14 +67,46 @@
     });
 
     $effect(() => {
-        const context = `${snapshot.source}:${workload?.id ?? 'system'}`;
+        const context = `${snapshot.source}:${workload?.id ?? 'system'}:${incident?.id ?? ''}`;
         if (context !== previousContext) {
             conversation = [];
+            if (incident?.diagnosis) {
+                conversation.push({
+                    message: { role: 'assistant', content: incident.diagnosis.text },
+                    reply: incident.diagnosis,
+                });
+            }
+            if (incident) {
+                // Only fixed native summary text enters context; never serialize the raw case,
+                // workload label, or its private evidence as a chat message.
+                const content =
+                    incident.verification?.summary ??
+                    (incident.report || incident.steps.some((step) => step.stage === 'verifying')
+                        ? 'A priority change was applied; its resource effect has not been verified.'
+                        : 'No optimization was applied for this incident.');
+                conversation.push({
+                    message: { role: 'assistant', content },
+                    nativeSummary: true,
+                    reply: {
+                        text: content,
+                        source: 'guidance',
+                        tier: 'rules',
+                        provider: null,
+                        model: null,
+                        route: ['Native incident result; no model call.'],
+                        estimated_cost_usd: 0,
+                        investigation: null,
+                        choices: [],
+                    },
+                });
+            }
             focused = null;
             previousContext = context;
-            question = workload
-                ? `Why is ${workload.label} using these resources? What can we improve?`
-                : 'Why is my computer struggling?';
+            question = incident
+                ? 'What should we try next based on this result?'
+                : workload
+                  ? `Why is ${workload.label} using these resources? What can we improve?`
+                  : 'Why is my computer struggling?';
         }
     });
 
@@ -89,7 +126,12 @@
         try {
             // Rules-only replies can contain private process/project labels. Keep them on-device.
             let messages = conversation
-                .filter((entry) => entry.message.role === 'user' || entry.reply?.source === 'model')
+                .filter(
+                    (entry) =>
+                        entry.message.role === 'user' ||
+                        entry.reply?.source === 'model' ||
+                        entry.nativeSummary
+                )
                 .slice(-8)
                 .map((entry) => ({
                     ...entry.message,
@@ -149,7 +191,7 @@
         <span class="status-dot"></span>
         {snapshot.source === 'demo'
             ? 'Synthetic context · mocked replies'
-            : 'Live context · no automatic model calls'}
+            : 'Live context · ask about an app or process'}
         <p>
             For a specific investigation, models receive that app’s name, process names, metrics,
             recent history, and your messages. Paths, environment variables, transcripts, and

@@ -64,6 +64,7 @@ pub struct Settings {
     pub intelligent: Tier,
     pub decision_enabled: bool,
     pub budget_usd: f64,
+    pub automation: crate::automation::Policy,
 }
 
 impl Default for Settings {
@@ -84,12 +85,14 @@ impl Default for Settings {
             },
             decision_enabled: false,
             budget_usd: 2.0,
+            automation: crate::automation::Policy::default(),
         }
     }
 }
 
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
+        self.automation.validate()?;
         if !self.budget_usd.is_finite() || !(0.0..=100.0).contains(&self.budget_usd) {
             return Err("Budget must be between $0 and $100.".into());
         }

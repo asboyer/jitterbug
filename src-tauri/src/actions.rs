@@ -108,6 +108,38 @@ pub fn execute(pid: u32, start_time: u64, action: &str) -> Result<String, String
     }
 }
 
+/// Read OS priority only for the same process identity; never request elevated privileges.
+pub fn priority(pid: u32, start_time: u64) -> Result<i32, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        if system
+            .process(Pid::from_u32(pid))
+            .is_none_or(|p| p.start_time() != start_time)
+        {
+            return Err("Process identity changed or exited.".into());
+        }
+        unsafe {
+            *libc::__error() = 0;
+            let value = libc::getpriority(libc::PRIO_PROCESS, pid);
+            if *libc::__error() != 0 {
+                return Err("Cannot read OS scheduling priority.".into());
+            }
+            Ok(value)
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, start_time);
+        Err("OS priority verification is unavailable on this platform.".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import AutomationSettings from './AutomationSettings.svelte';
     import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory } from '../lib/format';
@@ -68,6 +69,7 @@
         <p class="muted">Three interchangeable tiers, with limits before every request.</p>
     </div>
 </div>
+<AutomationSettings {bootstrap} {desktop} {onrefresh} />
 <section class="panel settings-panel">
     <h2>Where should inference run?</h2>
     <div class="mode-options">

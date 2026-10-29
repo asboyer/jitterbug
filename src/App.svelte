@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+    import AutomationPanel from './components/AutomationPanel.svelte';
     import Dashboard from './components/Dashboard.svelte';
     import Chat from './components/Chat.svelte';
     import ActionResult from './components/ActionResult.svelte';
@@ -10,6 +11,7 @@
     import { errorMessage, memory, percent } from './lib/format';
     import type {
         ActionReport,
+        AutomationCase,
         Bootstrap,
         Incident,
         ProcessRecord,
@@ -25,20 +27,32 @@
     let bootstrap: Bootstrap = $state(structuredClone(demoBootstrap));
     let selectedId: string | null = $state(null);
     let chatOpen = $state(false);
+    let followUpContext: AutomationCase | null = $state(null);
+    let automationOpen = $state(false);
+    let automaticId: number | null = $state(null);
+    let cases: AutomationCase[] = $state([]);
+    let selectedContext: Workload | null = $state(null);
+    const automaticCase = $derived(cases.find((c) => c.id === automaticId) ?? cases[0] ?? null);
     let error = $state('');
     let actionReport: ActionReport | null = $state(null);
     let alert: Incident | null = $state(null);
-    let snoozedUntil = $state(0);
     let pendingAction: { process: ProcessRecord; action: string } | null = $state(null);
     let actionBusy = $state(false);
     const snapshot = $derived(demo ? demoSnapshot(demoPressure) : live);
-    const selected = $derived(snapshot?.workloads.find((w) => w.id === selectedId) ?? null);
+    const selected = $derived.by(
+        () =>
+            snapshot?.workloads.find((w) => w.id === selectedId) ??
+            (selectedContext?.id === selectedId ? selectedContext : null)
+    );
     const selectedProcesses = $derived(
         snapshot?.processes.filter((p) => p.workload_id === selectedId) ?? []
     );
 
     async function refreshBootstrap() {
-        if (desktop) bootstrap = await invoke('get_bootstrap');
+        if (desktop) {
+            bootstrap = await invoke('get_bootstrap');
+            cases = bootstrap.automation_cases;
+        }
     }
 
     onMount(() => {
@@ -55,17 +69,34 @@
                     return;
                 }
                 cleanup.push(telemetry);
-                const pressure = await listen<Incident>('pressure-incident', (event) => {
-                    if (!demo && Date.now() > snoozedUntil) {
-                        alert = event.payload;
-                        chatOpen = true;
+                const automatic = await listen<AutomationCase>('automation-case', (event) => {
+                    const incident = event.payload;
+                    cases = [incident, ...cases.filter((c) => c.id !== incident.id)].slice(0, 12);
+                    if (incident.stage === 'detected') {
+                        demo = false;
+                        demoPressure = false;
+                        alert = null;
+                        automaticId = incident.id;
+                        automationOpen = true;
+                        chatOpen = false;
+                    }
+                    if (
+                        [
+                            'completed',
+                            'resolved',
+                            'blocked',
+                            'dismissed',
+                            'awaiting_approval',
+                        ].includes(incident.stage)
+                    ) {
+                        void refreshBootstrap().catch(() => {});
                     }
                 });
                 if (disposed) {
-                    pressure();
+                    automatic();
                     return;
                 }
-                cleanup.push(pressure);
+                cleanup.push(automatic);
                 const simulated = await listen<Incident>('demo-pressure-incident', (event) => {
                     demo = true;
                     demoPressure = true;
@@ -92,14 +123,44 @@
     });
 
     function select(workload: Workload) {
+        followUpContext = null;
         selectedId = workload.id;
+        selectedContext = workload;
+        automationOpen = false;
         chatOpen = true;
     }
     function ask() {
+        followUpContext = null;
+        automationOpen = false;
+        selectedContext = null;
         selectedId = null;
         chatOpen = true;
     }
+    function followUp(incident: AutomationCase) {
+        const target = incident.trigger.target;
+        if (target) {
+            select(
+                snapshot?.workloads.find((w) => w.id === target.workload_id) ?? {
+                    id: target.workload_id,
+                    label: target.label,
+                    category: 'other',
+                    description: '',
+                    attribution: 'Incident context',
+                    cpu_percent: incident.evidence?.cpu_percent ?? 0,
+                    memory_bytes: incident.evidence?.memory_bytes ?? 0,
+                    process_count: incident.evidence?.process_count ?? 0,
+                    history: incident.evidence?.history ?? [],
+                }
+            );
+        } else {
+            ask();
+        }
+        followUpContext = incident;
+        actionReport = incident.report;
+    }
     async function simulatePressure() {
+        followUpContext = null;
+        automationOpen = false;
         if (desktop) {
             try {
                 await invoke('simulate_pressure');
@@ -162,7 +223,13 @@
         <div class="sidebar-bottom">
             <span class="tag">{bootstrap.settings.mode.replaceAll('_', ' ')}</span>
             <p>Observe first.<br />Reason when needed.</p>
-            <small>Local monitoring every 5 seconds. No background AI calls.</small>
+            <small
+                >Monitoring every 5 seconds. {bootstrap.settings.automation.enabled
+                    ? bootstrap.settings.automation.model_analysis
+                        ? 'Automatic diagnosis enabled.'
+                        : 'Automatic observations enabled.'
+                    : 'Automatic assistance disabled.'}</small
+            >
         </div>
     </nav>
     <main>
@@ -175,6 +242,14 @@
                       : 'CONNECTING TO COLLECTOR'}</span
             >
             <div>
+                <button
+                    class="text-button"
+                    disabled={!cases.length || demo}
+                    onclick={() => {
+                        automationOpen = true;
+                        chatOpen = false;
+                    }}>Incident history ({cases.length})</button
+                >
                 <button class="text-button" onclick={simulatePressure}>Simulate pressure</button
                 ><button
                     class="text-button"
@@ -206,8 +281,7 @@
                     class="text-button"
                     onclick={() => {
                         alert = null;
-                        snoozedUntil = Date.now() + 300000;
-                    }}>Dismiss for 5 minutes</button
+                    }}>Dismiss demo</button
                 >
             </div>{/if}
         {#if error}<div class="banner error" role="alert">
@@ -219,6 +293,22 @@
                 >
             </div>{/if}
         {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
+        {#if cases.length && !demo}<div class="incident-strip">
+                {#each cases.slice(0, 4) as incident}
+                    <button
+                        onclick={() => {
+                            automaticId = incident.id;
+                            automationOpen = true;
+                            chatOpen = false;
+                        }}
+                    >
+                        {incident.trigger.target?.label ?? 'System'} · {incident.stage.replaceAll(
+                            '_',
+                            ' '
+                        )}
+                    </button>
+                {/each}
+            </div>{/if}
         <div class="page-content">
             {#if page === 'settings'}
                 <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
@@ -316,9 +406,22 @@
                 </div>{/if}
         </div>
     </main>
-    {#if chatOpen && snapshot}<Chat
+    {#if automationOpen && automaticCase && !demo}<AutomationPanel
+            incident={automaticCase}
+            {cases}
+            onselect={(id) => {
+                automaticId = id;
+            }}
+            {desktop}
+            onrefresh={refreshBootstrap}
+            onclose={() => {
+                automationOpen = false;
+            }}
+            onask={followUp}
+        />{:else if chatOpen && snapshot}<Chat
             {snapshot}
             workload={selected}
+            incident={followUpContext}
             {desktop}
             onclose={() => {
                 chatOpen = false;
