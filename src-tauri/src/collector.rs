@@ -31,14 +31,16 @@ impl Collector {
     pub fn sample(&mut self) -> Snapshot {
         let started = Instant::now();
         let metadata = self.samples.is_multiple_of(6);
-        let mut refresh = ProcessRefreshKind::nothing()
+        let refresh = ProcessRefreshKind::nothing()
             .with_cpu()
             .with_memory()
             .with_user(UpdateKind::OnlyIfNotSet)
-            .with_exe(UpdateKind::OnlyIfNotSet);
-        if metadata {
-            refresh = refresh.with_cwd(UpdateKind::Always);
-        }
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cwd(if metadata {
+                UpdateKind::Always
+            } else {
+                UpdateKind::OnlyIfNotSet
+            });
         self.system
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
         self.system.refresh_memory();

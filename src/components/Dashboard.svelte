@@ -58,7 +58,7 @@
     <article class="metric">
         <div class="metric-label">Memory <span>Available</span></div>
         <strong>{memory(snapshot.memory_available_bytes)}</strong>
-        <div class="meter blue"><i style={`width:${usedPercent}%`}></i></div>
+        <div class="meter blue"><i style={`width:${100 - usedPercent}%`}></i></div>
         <small
             >{memory(snapshot.memory_total_bytes)} total · {memory(snapshot.swap_used_bytes)} swap</small
         >
@@ -89,7 +89,7 @@
 <article class="timeline panel">
     <div class="section-title">
         <h2>Recent activity</h2>
-        <span class="muted">CPU · up to 10 minutes · memory-only history</span>
+        <span class="muted">CPU · up to 10 minutes</span>
     </div>
     <svg
         viewBox="0 0 600 90"

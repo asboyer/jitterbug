@@ -56,10 +56,8 @@ impl Budget {
         Ok(ledger)
     }
     pub fn reserve(&self, amount: f64, configured_limit: f64) -> Result<(), String> {
-        let environment_limit = std::env::var("JITTERBUG_SPEND_LIMIT_USD")
-            .ok()
-            .map(|s| s.parse::<f64>().unwrap_or(0.0))
-            .unwrap_or(100.0);
+        let environment_limit =
+            environment_ceiling(std::env::var("JITTERBUG_SPEND_LIMIT_USD").ok())?;
         let limit = configured_limit.min(environment_limit).min(100.0);
         if !limit.is_finite() || !amount.is_finite() || amount <= 0.0 || amount > 0.10 {
             return Err("Invalid budget or request exceeds the $0.10 per-call ceiling.".into());
@@ -82,9 +80,28 @@ impl Budget {
     }
 }
 
+fn environment_ceiling(value: Option<String>) -> Result<f64, String> {
+    match value {
+        None => Ok(100.0),
+        Some(value) => value
+            .parse::<f64>()
+            .ok()
+            .filter(|limit| limit.is_finite() && *limit >= 0.0)
+            .ok_or_else(|| "Invalid environment spending ceiling; cloud calls are blocked.".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_environment_ceiling_cannot_disable_the_limit() {
+        for value in ["NaN", "inf", "-1", "invalid", ""] {
+            assert!(environment_ceiling(Some(value.into())).is_err());
+        }
+        assert_eq!(environment_ceiling(Some("0".into())).unwrap(), 0.0);
+        assert_eq!(environment_ceiling(None).unwrap(), 100.0);
+    }
     #[test]
     fn reservations_survive_restarts_and_corruption_fails_closed() {
         let path =

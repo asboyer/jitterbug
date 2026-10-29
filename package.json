@@ -11,7 +11,7 @@
         "tauri": "tauri",
         "test": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
         "verify": "npm run build && npm test",
-        "smoke": "cargo run --manifest-path src-tauri/Cargo.toml --bin jitterbug-probe",
+        "smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe",
         "format": "prettier --write . && cargo fmt --manifest-path src-tauri/Cargo.toml",
         "format:check": "prettier --check . && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check"
     },

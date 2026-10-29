@@ -312,6 +312,7 @@ main {
     margin-bottom: 15px;
 }
 .metric small {
+    display: block;
     font-size: 10px;
 }
 .meter {

@@ -11,6 +11,21 @@ async fn main() {
     println!("Live collector smoke passed: sample, process inventory, workload attribution, and bounded history.");
 
     let option = std::env::args().nth(1);
+    if option.as_deref() == Some("--credential-store") {
+        let account = format!("verification-{}", std::process::id());
+        let entry = keyring::Entry::new("com.jitterbug.verification", &account).unwrap();
+        entry
+            .set_password("synthetic-verification-value")
+            .expect("Native credential write failed");
+        let read = entry.get_password();
+        entry
+            .delete_credential()
+            .expect("Verification credential cleanup failed");
+        assert_eq!(read.unwrap(), "synthetic-verification-value");
+        assert!(entry.get_password().is_err());
+        println!("Native credential store smoke passed: synthetic value stored, read, and deleted. No provider credential was touched.");
+        return;
+    }
     if option.as_deref() == Some("--actions") {
         action_smoke();
         return;
