@@ -10,6 +10,7 @@ pub struct Collector {
     attribution: Attribution,
     detector: Detector,
     history: VecDeque<MetricPoint>,
+    workload_history: HashMap<String, VecDeque<ResourcePoint>>,
     previous_swap: Option<u64>,
     samples: u64,
 }
@@ -21,6 +22,7 @@ impl Default for Collector {
             attribution: Attribution::default(),
             detector: Detector::default(),
             history: VecDeque::new(),
+            workload_history: HashMap::new(),
             previous_swap: None,
             samples: 0,
         }
@@ -34,6 +36,7 @@ impl Collector {
         let refresh = ProcessRefreshKind::nothing()
             .with_cpu()
             .with_memory()
+            .with_disk_usage()
             .with_user(UpdateKind::OnlyIfNotSet)
             .with_exe(UpdateKind::OnlyIfNotSet)
             .with_cwd(if metadata {
@@ -62,6 +65,8 @@ impl Collector {
             group.cpu_percent += cpu;
             group.memory_bytes = group.memory_bytes.saturating_add(p.memory());
             group.process_count += 1;
+            let actions = crate::actions::permitted(p, &self.system);
+            let disk = p.disk_usage();
             processes.push(ProcessRecord {
                 pid: p.pid().as_u32(),
                 start_time: p.start_time(),
@@ -72,7 +77,14 @@ impl Collector {
                 workload_id: label.id,
                 description: label.description,
                 evidence: label.evidence,
-                actionable: crate::actions::allowed(p, &self.system),
+                actionable: !actions.is_empty(),
+                actions,
+                disk_read_bytes: if self.samples > 0 { disk.read_bytes } else { 0 },
+                disk_written_bytes: if self.samples > 0 {
+                    disk.written_bytes
+                } else {
+                    0
+                },
             });
         }
         let total = self.system.total_memory().max(1);
@@ -81,16 +93,36 @@ impl Collector {
             score(b.cpu_percent, b.memory_bytes).total_cmp(&score(a.cpu_percent, a.memory_bytes))
         });
         // Payloads and history remain bounded even on busy development machines.
-        processes.truncate(160);
+        processes.truncate(4096);
         let mut workloads: Vec<_> = groups.into_values().collect();
         workloads.sort_by(|a, b| {
             score(b.cpu_percent, b.memory_bytes).total_cmp(&score(a.cpu_percent, a.memory_bytes))
         });
-        workloads.truncate(40);
+        workloads.truncate(512);
+        let captured_at = now();
+        self.workload_history
+            .retain(|id, _| workloads.iter().any(|w| &w.id == id));
+        for workload in &mut workloads {
+            let history = self
+                .workload_history
+                .entry(workload.id.clone())
+                .or_default();
+            if self.samples > 0 {
+                history.push_back(ResourcePoint {
+                    time: captured_at,
+                    cpu_percent: workload.cpu_percent,
+                    memory_bytes: workload.memory_bytes,
+                });
+                if history.len() > 24 {
+                    history.pop_front();
+                }
+            }
+            workload.history = history.iter().cloned().collect();
+        }
         let swap = self.system.used_swap();
         let mut snapshot = Snapshot {
             source: "live".into(),
-            captured_at: now(),
+            captured_at,
             sample_ready: self.samples > 0,
             interval_ms: 5000,
             cpu_percent: self.system.global_cpu_usage().clamp(0.0, 100.0),

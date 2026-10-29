@@ -37,6 +37,7 @@ export interface Workload {
     cpu_percent: number;
     memory_bytes: number;
     process_count: number;
+    history: ResourcePoint[];
 }
 
 export interface ProcessRecord {
@@ -50,6 +51,9 @@ export interface ProcessRecord {
     description: string;
     evidence: string[];
     actionable: boolean;
+    actions: string[];
+    disk_read_bytes: number;
+    disk_written_bytes: number;
 }
 
 export interface Incident {
@@ -93,16 +97,50 @@ export interface ChatMessage {
 
 export interface Reply {
     text: string;
-    source: 'rules' | 'model' | 'demo';
+    source: 'rules' | 'model' | 'demo' | 'guidance';
     provider: string | null;
     model: string | null;
     tier: string;
     route: string[];
     estimated_cost_usd: number;
+    investigation: Investigation | null;
+    choices: Target[];
 }
 
 export interface LocalModel {
     name: string;
     size_bytes: number;
     eligible: boolean;
+}
+
+export interface ResourcePoint {
+    time: number;
+    cpu_percent: number;
+    memory_bytes: number;
+}
+
+export interface Target {
+    workload_id: string;
+    label: string;
+    pid: number | null;
+}
+
+export interface Investigation {
+    target: Target;
+    captured_at: number;
+    cpu_percent: number;
+    memory_bytes: number;
+    process_count: number;
+    history: ResourcePoint[];
+    processes: ProcessRecord[];
+    limits: string;
+}
+
+export interface ActionReport {
+    action: string;
+    message: string;
+    before: ProcessRecord;
+    after: ProcessRecord | null;
+    measured_after_seconds: number;
+    fresh: boolean;
 }

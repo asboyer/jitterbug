@@ -2,6 +2,7 @@ pub mod actions;
 pub mod attribution;
 pub mod budget;
 pub mod collector;
+pub mod diagnostics;
 pub mod platform;
 pub mod pressure;
 pub mod providers;
@@ -22,6 +23,7 @@ pub struct AppState {
     settings: Mutex<settings::Settings>,
     engine: providers::Engine,
     inference: tokio::sync::Mutex<()>,
+    action: tokio::sync::Mutex<()>,
     directory: PathBuf,
 }
 
@@ -37,7 +39,7 @@ fn get_snapshot(state: State<'_, AppState>) -> Result<types::Snapshot, String> {
     state
         .snapshot
         .read()
-        .map(|s| s.clone())
+        .map(|s| s.dashboard_view())
         .map_err(|_| "Telemetry state unavailable.".into())
 }
 
@@ -120,14 +122,6 @@ async fn ask(
     if !snapshot.sample_ready || snapshot.captured_at + 20 < types::now() {
         return Err("Wait for a fresh telemetry sample.".into());
     }
-    if workload_id
-        .as_ref()
-        .is_some_and(|id| !snapshot.workloads.iter().any(|w| &w.id == id))
-    {
-        return Err(
-            "This workload is no longer in the current sample. Select a current workload.".into(),
-        );
-    }
     state
         .engine
         .chat(
@@ -141,10 +135,65 @@ async fn ask(
 }
 
 #[tauri::command]
-async fn process_action(pid: u32, start_time: u64, action: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || actions::execute(pid, start_time, &action))
-        .await
-        .map_err(|_| "Process action failed.")?
+async fn process_action(
+    state: State<'_, AppState>,
+    pid: u32,
+    start_time: u64,
+    action: String,
+) -> Result<types::ActionReport, String> {
+    let _guard = state
+        .action
+        .try_lock()
+        .map_err(|_| "Another action is being measured. Please wait.")?;
+    let before = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .processes
+        .iter()
+        .find(|p| p.pid == pid && p.start_time == start_time)
+        .cloned()
+        .ok_or("This process is no longer in the inventory. Refresh before acting.")?;
+    let operation = action.clone();
+    let message =
+        tauri::async_runtime::spawn_blocking(move || actions::execute(pid, start_time, &operation))
+            .await
+            .map_err(|_| "Process action failed.")??;
+    let applied_at = types::now();
+    // Allow a complete collection interval after the action, without blocking collection or UI.
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if state
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .captured_at
+            >= applied_at + 6
+        {
+            break;
+        }
+    }
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?;
+    let fresh = snapshot.captured_at >= applied_at + 6;
+    Ok(types::ActionReport {
+        action,
+        message,
+        before,
+        after: if fresh {
+            snapshot
+                .processes
+                .iter()
+                .find(|p| p.pid == pid && p.start_time == start_time)
+                .cloned()
+        } else {
+            None
+        },
+        measured_after_seconds: snapshot.captured_at.saturating_sub(applied_at),
+        fresh,
+    })
 }
 
 #[tauri::command]
@@ -193,6 +242,7 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 engine: providers::Engine::new(&directory),
                 inference: tokio::sync::Mutex::new(()),
+                action: tokio::sync::Mutex::new(()),
                 directory,
             });
             let handle = app.handle().clone();
@@ -212,7 +262,7 @@ pub fn run() {
                         if let Ok(mut state) = snapshot.write() {
                             *state = sample.clone();
                         }
-                        let _ = handle.emit("telemetry", &sample);
+                        let _ = handle.emit("telemetry", &sample.dashboard_view());
                         std::thread::sleep(Duration::from_secs(5));
                     }
                 })?;

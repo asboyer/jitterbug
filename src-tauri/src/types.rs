@@ -8,7 +8,7 @@ pub struct PlatformReadings {
     pub process_actions: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessRecord {
     pub pid: u32,
     pub start_time: u64,
@@ -20,6 +20,26 @@ pub struct ProcessRecord {
     pub description: String,
     pub evidence: Vec<String>,
     pub actionable: bool,
+    pub actions: Vec<String>,
+    pub disk_read_bytes: u64,
+    pub disk_written_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ResourcePoint {
+    pub time: u64,
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ActionReport {
+    pub action: String,
+    pub message: String,
+    pub before: ProcessRecord,
+    pub after: Option<ProcessRecord>,
+    pub measured_after_seconds: u64,
+    pub fresh: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -32,6 +52,7 @@ pub struct Workload {
     pub cpu_percent: f32,
     pub memory_bytes: u64,
     pub process_count: usize,
+    pub history: Vec<ResourcePoint>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -77,6 +98,16 @@ pub struct Snapshot {
     pub incident: Option<Incident>,
     pub history: Vec<MetricPoint>,
     pub collector_ms: f64,
+}
+
+impl Snapshot {
+    /// Keep the frequently emitted dashboard small; retain the wider inventory for questions.
+    pub fn dashboard_view(&self) -> Self {
+        let mut view = self.clone();
+        view.processes.truncate(160);
+        view.workloads.truncate(40);
+        view
+    }
 }
 
 pub fn now() -> u64 {

@@ -24,16 +24,16 @@ npm run tauri build  # desktop package; unsigned unless signing is configured
 
 ## What is real
 
-- Live process CPU, resident memory, parent relationships, available memory, and swap usage through `sysinfo`.
+- Live process CPU, resident memory, disk read/write counters, parent relationships, available memory, and swap usage through `sysinfo`. App/workload history retains the last 24 samples (about two minutes).
 - Project grouping from working directories and project markers; app grouping from executable ancestry on macOS. Descriptions are deterministic inferences, not proof of task ownership.
 - Sustained-pressure detection after three consecutive samples, with a five-minute alert cooldown. macOS adds native memory-pressure and thermal-state readings. Other platforms expose unavailable native sensors explicitly.
-- User-requested contextual explanations using rules or configured models. Model telemetry uses anonymous workload aliases; names, paths, command lines, and transcripts are not included. Your chat messages are sent to the selected model, with basic path/credential redaction.
-- Explicit lower-priority and termination-request actions for supported user-owned development processes on macOS. PID, start time, ownership, and protected processes are checked again before acting. Actions target a single process. Windows native process actions remain unimplemented.
+- Ask about an app by name or a process by PID: “Why is Spotify using so much CPU?” resolves the target locally, supplies recent workload history and up to eight busy processes to the intelligent tier, and displays the measured evidence beside its diagnosis. Follow-ups retain context; ambiguous names prompt a choice. General summaries use anonymous aliases. Specific investigations include the selected app/process names; project labels, paths, command lines, environment variables, unrelated app names, and transcripts are excluded from telemetry sent to models. Your chat messages are sent with basic path/credential redaction.
+- Confirm actions directly from investigation evidence: lower CPU priority for supported user-owned development processes and third-party app processes on macOS; request termination for supported development processes or an app’s main executable. App helpers offer priority changes only. PID, start time, ownership, and protected processes are rechecked before acting. Afterward, a fresh sample shows before/after CPU and memory, or that the identity is no longer observed. A measured change does not prove causation. Actions target a single process; Windows native actions remain unimplemented.
 - Provider settings, native credential storage, and a persistent conservative spending ledger.
 
 ## Models and credentials
 
-The default policy is hybrid: a tiny local model for easy requests and Meta for intelligent analysis. Optional decision-model routing is off initially. Every tier can be configured independently; local-only and cloud-only are enforced in Rust before inference. Simple requests can escalate once to the intelligent tier. Diagnoses never silently downgrade to the cheap tier. If no eligible model can answer, the app labels its fallback as deterministic observations. Tiny models can still make factual mistakes; their output is advisory.
+The default policy is hybrid: a tiny local model for clearly bounded definitions and Meta for intelligent analysis. Optional decision-model routing is off initially. Every tier can be configured independently; local-only and cloud-only are enforced in Rust before inference. Simple requests can escalate once to the intelligent tier. Process investigations bypass the optional decision model and go to the intelligent tier. Diagnoses never silently downgrade to the cheap tier. Explicit cheap-tier diagnosis requests return observations and explain how to select the intelligent tier. Capability questions such as “Can I ask about a particular process?” are answered locally, without an inference call. If no eligible model can answer, the app labels its fallback as deterministic observations. Tiny models can still make factual mistakes; their output is advisory.
 
 For development, copy `.env.example` to `.env`, set `META_API_KEY`, and restrict the file to your user (`chmod 600 .env` on Unix). `.env` is ignored and is loaded by debug builds only. Never prefix secrets with `VITE_`. Packaged apps use keys entered in **Providers & policy**, stored in the native credential store. Development environment keys take precedence.
 
@@ -55,7 +55,9 @@ Cloud calls are manual, bounded, and have no automatic HTTP retries. The default
 
 **Explore demo** and **Simulate pressure** use synthetic fixtures. In the desktop app, pressure simulation feeds three synthetic samples through the real Rust detector and delivers its incident through the real event channel. It does not generate CPU/memory load, call models, or change processes. Browser preview is always a demo. The source badge and assistant message labels make this visible.
 
-Agent-harness hooks, transcript correlation, GPU utilization, exact per-task ownership, model-fit recommendations, arbitrary job offloading, and automatic remediation are future work. There is no hidden implementation of these features. No process history or chat transcript is persisted; metric history is bounded to 120 in-memory samples.
+Agent-harness hooks, transcript correlation, GPU utilization, exact per-task ownership, model-fit recommendations, arbitrary job offloading, and automatic remediation are future work. There is no hidden implementation of these features. No process history or chat transcript is persisted. Global history is bounded to 120 samples; per-workload history to 24 samples for up to 512 workloads. The internal process inventory retains up to 4,096 processes; dashboard updates show the top 40 workloads and 160 processes. Name/PID resolution uses the wider internal inventory.
+
+Diagnosis is evidence-based troubleshooting, not a profiler: Jitterbug cannot inspect an app’s settings, call stacks, GPU activity, or network traffic yet. It can identify the busy process and resource trend, propose a hypothesis and a test, and perform the supported process actions after confirmation. Changing Spotify settings, clearing caches, restarting apps, and other app-specific repairs remain manual suggestions, never falsely reported as completed.
 
 ## Structure
 
@@ -64,6 +66,7 @@ src/                    Svelte + TypeScript desktop UI; synthetic demo fixtures
 src-tauri/src/
   collector.rs          bounded telemetry and deterministic explanations
   attribution.rs        project/app evidence and grouping
+  diagnostics.rs        app/PID resolution and scoped investigation evidence
   pressure.rs           sustained incidents and local-inference resource gates
   platform/             native OS adapters (macOS readings; explicit Windows gaps)
   actions.rs            explicit process-action validation
@@ -90,7 +93,7 @@ npm run smoke
 cargo build --manifest-path src-tauri/Cargo.toml --examples
 
 # macOS only: creates one disposable worker, observes its real CPU/RAM,
-# lowers its priority, then terminates only that worker.
+# lowers its priority, then terminates only that worker. Repeats with an app-bundle fixture.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --actions
 
 # Uses a synthetic credential in a separate test service, then deletes it.
@@ -104,7 +107,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --me
 
 The action fixture allocates 32 MiB only when at least 4 GiB is available, produces a three-second single-thread CPU pulse, and exits within 90 seconds even without an action. Model probes retain responses only in ignored `.local/verification/` and use a separate $0.25 conservative lifetime ledger. Local Qwen and Tev routing and Meta generation have been exercised against real endpoints. Claude and hosted Jev adapters have protocol tests but have not been tested with live credentials. Jev remains optional and no Jev request is made without an explicit configuration and key.
 
-To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select a workload, and open its explanation. Use **Simulate pressure** to exercise the alert and mocked chat without stressing the host, then **Return to live**. In Providers, save each privacy mode and verify excluded tiers return observations with a routing explanation. Set the budget to zero and verify a cloud request is blocked without increasing the ledger; restore the intended mode and budget afterward.
+To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select a workload, to open its assistant. Ask “Can I ask you about a particular process?”, then name an app or PID. Verify the resolved target, model tier, history, and process evidence. For actions, use only the disposable worker; confirm an action and check the follow-up measurement. Use **Simulate pressure** to exercise the alert and mocked chat without stressing the host, then **Return to live**. In Providers, save each privacy mode and verify excluded tiers return observations with a routing explanation. Set the budget to zero and verify a cloud request is blocked without increasing the ledger; restore the intended mode and budget afterward.
 
 ## Next increments
 

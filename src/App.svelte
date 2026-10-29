@@ -4,10 +4,18 @@
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import Dashboard from './components/Dashboard.svelte';
     import Chat from './components/Chat.svelte';
+    import ActionResult from './components/ActionResult.svelte';
     import ProviderSettings from './components/ProviderSettings.svelte';
     import { demoBootstrap, demoSnapshot } from './lib/demo';
     import { errorMessage, memory, percent } from './lib/format';
-    import type { Bootstrap, Incident, ProcessRecord, Snapshot, Workload } from './lib/types';
+    import type {
+        ActionReport,
+        Bootstrap,
+        Incident,
+        ProcessRecord,
+        Snapshot,
+        Workload,
+    } from './lib/types';
 
     const desktop = isTauri();
     let page = $state('dashboard');
@@ -18,7 +26,7 @@
     let selectedId: string | null = $state(null);
     let chatOpen = $state(false);
     let error = $state('');
-    let notice = $state('');
+    let actionReport: ActionReport | null = $state(null);
     let alert: Incident | null = $state(null);
     let snoozedUntil = $state(0);
     let pendingAction: { process: ProcessRecord; action: string } | null = $state(null);
@@ -85,6 +93,7 @@
 
     function select(workload: Workload) {
         selectedId = workload.id;
+        chatOpen = true;
     }
     function ask() {
         selectedId = null;
@@ -110,7 +119,7 @@
         actionBusy = true;
         error = '';
         try {
-            notice = await invoke('process_action', {
+            actionReport = await invoke('process_action', {
                 pid: pendingAction.process.pid,
                 startTime: pendingAction.process.start_time,
                 action: pendingAction.action,
@@ -209,14 +218,7 @@
                     }}>Dismiss</button
                 >
             </div>{/if}
-        {#if notice}<div class="banner success" role="status">
-                {notice}<button
-                    class="text-button"
-                    onclick={() => {
-                        notice = '';
-                    }}>Dismiss</button
-                >
-            </div>{/if}
+        {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
         <div class="page-content">
             {#if page === 'settings'}
                 <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
@@ -246,9 +248,9 @@
                         </div>
                         <p>{selected.description}</p>
                         <p class="muted">
-                            Model context alias: Workload {snapshot.workloads.findIndex(
-                                (w) => w.id === selectedId
-                            ) + 1}. Exact agent task ownership is not available yet.
+                            Select a process action or ask the assistant to investigate this
+                            workload’s recent history. Exact agent task ownership is not available
+                            yet.
                         </p>
                         <div class="process-table">
                             <table>
@@ -272,22 +274,25 @@
                                                 >{#if process.actionable && !demo}<div
                                                         class="process-actions"
                                                     >
-                                                        <button
-                                                            onclick={() => {
-                                                                pendingAction = {
-                                                                    process,
-                                                                    action: 'lower_priority',
-                                                                };
-                                                            }}>Lower priority</button
-                                                        ><button
-                                                            class="danger-text"
-                                                            onclick={() => {
-                                                                pendingAction = {
-                                                                    process,
-                                                                    action: 'terminate',
-                                                                };
-                                                            }}>Stop…</button
-                                                        >
+                                                        {#if process.actions.includes('lower_priority')}<button
+                                                                disabled={actionBusy}
+                                                                onclick={() => {
+                                                                    pendingAction = {
+                                                                        process,
+                                                                        action: 'lower_priority',
+                                                                    };
+                                                                }}>Lower priority</button
+                                                            >{/if}
+                                                        {#if process.actions.includes('terminate')}<button
+                                                                disabled={actionBusy}
+                                                                class="danger-text"
+                                                                onclick={() => {
+                                                                    pendingAction = {
+                                                                        process,
+                                                                        action: 'terminate',
+                                                                    };
+                                                                }}>Stop…</button
+                                                            >{/if}
                                                     </div>{:else}<span class="muted"
                                                         >{demo
                                                             ? 'Disabled in demo'
@@ -318,6 +323,12 @@
             onclose={() => {
                 chatOpen = false;
             }}
+            {actionReport}
+            {actionBusy}
+            onaction={(process, action) => {
+                error = '';
+                pendingAction = { process, action };
+            }}
             onusage={() => {
                 void refreshBootstrap().catch(() => {});
             }}
@@ -345,6 +356,7 @@
                     : 'The operating system will favor other work when CPU is contested. This does not free memory and is not automatically reversed.'}
             </p>
             <p class="muted">Jitterbug rechecks ownership and process start time before acting.</p>
+            {#if error}<p class="error" role="alert">{error}</p>{/if}
             <div class="form-actions">
                 <button
                     disabled={actionBusy}
@@ -352,7 +364,7 @@
                         pendingAction = null;
                     }}>Cancel</button
                 ><button class="primary" disabled={actionBusy} onclick={confirmAction}
-                    >{actionBusy ? 'Applying…' : 'Confirm action'}</button
+                    >{actionBusy ? 'Applying & measuring…' : 'Confirm action'}</button
                 >
             </div>
         </div>

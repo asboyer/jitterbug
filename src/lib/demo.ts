@@ -12,6 +12,7 @@ export function demoSnapshot(pressure = false): Snapshot {
             attribution: 'Simulated project-directory match',
             cpu_percent: pressure ? 72 : 18,
             memory_bytes: 2.4 * 1024 ** 3,
+            history: [],
             process_count: 3,
         },
         {
@@ -22,6 +23,7 @@ export function demoSnapshot(pressure = false): Snapshot {
             attribution: 'Simulated application ancestry',
             cpu_percent: 5,
             memory_bytes: 1.2 * 1024 ** 3,
+            history: [],
             process_count: 8,
         },
         {
@@ -32,6 +34,7 @@ export function demoSnapshot(pressure = false): Snapshot {
             attribution: 'Synthetic fixture',
             cpu_percent: 0,
             memory_bytes: 0.8 * 1024 ** 3,
+            history: [],
             process_count: 1,
         },
     ];
@@ -59,6 +62,9 @@ export function demoSnapshot(pressure = false): Snapshot {
             description: w.description,
             evidence: ['Synthetic example; no real process is associated with this row.'],
             actionable: false,
+            actions: [],
+            disk_read_bytes: 0,
+            disk_written_bytes: 0,
         })),
         platform: {
             os: 'demo',

@@ -527,6 +527,8 @@ td small {
     margin: 7px 0 0;
 }
 .conversation {
+    position: relative;
+    overflow-x: hidden;
     flex: 1;
     overflow-y: auto;
     padding: 20px 0;
@@ -778,4 +780,29 @@ td small {
     .metric strong {
         font-size: 22px;
     }
+}
+
+.investigation {
+    margin: 14px 0;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(130, 160, 100, 0.05);
+}
+.investigation h3 {
+    margin: 6px 0;
+}
+.investigation p {
+    margin: 8px 0;
+}
+.investigation-process {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+}
+.investigation-process small {
+    display: block;
+    margin: 5px 0;
+}
+.conversation .process-actions {
+    flex-wrap: wrap;
 }

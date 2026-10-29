@@ -103,39 +103,60 @@ fn action_smoke() {
     let executable = std::env::current_exe()
         .unwrap()
         .with_file_name("jitterbug-worker");
-    let mut fixture = Fixture(
-        Command::new(executable)
-            .arg("--run-bounded-fixture")
-            .spawn()
-            .expect("Build jitterbug-worker before running the action probe"),
-    );
-    let mut collector = jitterbug_lib::collector::Collector::default();
-    collector.sample();
-    std::thread::sleep(Duration::from_millis(750));
-    let snapshot = collector.sample();
-    let process = snapshot
-        .processes
-        .iter()
-        .find(|p| p.pid == fixture.0.id())
-        .expect("Fixture must appear in real telemetry");
-    assert!(process.memory_bytes >= 24 * 1024 * 1024 && process.cpu_percent > 0.0);
-    assert!(process.actionable);
-    assert!(
-        jitterbug_lib::actions::execute(process.pid, process.start_time + 1, "terminate").is_err()
-    );
-    jitterbug_lib::actions::execute(process.pid, process.start_time, "lower_priority").unwrap();
-    #[cfg(target_os = "macos")]
-    assert!(unsafe { libc::getpriority(libc::PRIO_PROCESS, process.pid) } >= 10);
-    jitterbug_lib::actions::execute(process.pid, process.start_time, "terminate").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while fixture.0.try_wait().unwrap().is_none() {
-        assert!(
-            Instant::now() < deadline,
-            "Fixture should exit after termination request"
+    let application = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../.local/verification/Example.app/Contents/MacOS/Example");
+    std::fs::create_dir_all(application.parent().unwrap()).unwrap();
+    std::fs::copy(&executable, &application).unwrap();
+    // Verify the new application policy too, using only a copy of our disposable fixture.
+    for executable in [executable, application] {
+        let mut fixture = Fixture(
+            Command::new(executable)
+                .arg("--run-bounded-fixture")
+                .spawn()
+                .expect("Build jitterbug-worker before running the action probe"),
         );
-        std::thread::sleep(Duration::from_millis(50));
+        let mut collector = jitterbug_lib::collector::Collector::default();
+        collector.sample();
+        std::thread::sleep(Duration::from_millis(750));
+        let snapshot = collector.sample();
+        let process = snapshot
+            .processes
+            .iter()
+            .find(|p| p.pid == fixture.0.id())
+            .expect("Fixture must appear in real telemetry");
+        assert!(process.memory_bytes >= 24 * 1024 * 1024 && process.cpu_percent > 0.0);
+        assert!(process.actionable);
+        assert_eq!(process.actions.len(), 2);
+        let resolved = jitterbug_lib::diagnostics::resolve(
+            &snapshot,
+            &[&format!("Why is PID {} using CPU?", process.pid)],
+            None,
+        );
+        let jitterbug_lib::diagnostics::Resolution::Found(target) = resolved else {
+            panic!("Fixture PID did not resolve");
+        };
+        let evidence = jitterbug_lib::diagnostics::investigate(&snapshot, target);
+        assert_eq!(evidence.processes.len(), 1);
+        assert_eq!(evidence.processes[0].pid, process.pid);
+        assert!(!evidence.history.is_empty());
+        assert!(
+            jitterbug_lib::actions::execute(process.pid, process.start_time + 1, "terminate")
+                .is_err()
+        );
+        jitterbug_lib::actions::execute(process.pid, process.start_time, "lower_priority").unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(unsafe { libc::getpriority(libc::PRIO_PROCESS, process.pid) } >= 10);
+        jitterbug_lib::actions::execute(process.pid, process.start_time, "terminate").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while fixture.0.try_wait().unwrap().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "Fixture should exit after termination request"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
-    println!("Action smoke passed: real bounded CPU/RAM fixture observed, stale identity rejected, priority lowered, and only the fixture terminated.");
+    println!("Action smoke passed for a development worker and application bundle: bounded CPU/RAM observed, PID diagnosis resolved, stale identity rejected, priority lowered, and only disposable fixtures terminated.");
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -1,13 +1,13 @@
 use sysinfo::{Pid, Process, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 
-pub fn allowed(p: &Process, system: &System) -> bool {
+pub fn permitted(p: &Process, system: &System) -> Vec<String> {
     if !cfg!(target_os = "macos") || p.pid().as_u32() <= 100 || !crate::platform::same_user(p) {
-        return false;
+        return vec![];
     }
     let mut parent = Some(Pid::from_u32(std::process::id()));
     for _ in 0..32 {
         if parent == Some(p.pid()) {
-            return false;
+            return vec![];
         }
         parent = parent
             .and_then(|pid| system.process(pid))
@@ -16,8 +16,14 @@ pub fn allowed(p: &Process, system: &System) -> bool {
             break;
         }
     }
+    if let Some(exe) = p.exe().filter(|exe| {
+        exe.ancestors()
+            .any(|p| p.extension().is_some_and(|e| e == "app"))
+    }) {
+        return application_actions(exe);
+    }
     let name = p.name().to_string_lossy().to_lowercase();
-    [
+    let development = [
         "python",
         "node",
         "bun",
@@ -27,7 +33,39 @@ pub fn allowed(p: &Process, system: &System) -> bool {
         "jitterbug-worker",
     ]
     .iter()
-    .any(|name_prefix| name.starts_with(name_prefix))
+    .any(|name_prefix| name.starts_with(name_prefix));
+    if development {
+        return vec!["lower_priority".into(), "terminate".into()];
+    }
+    p.exe().map(application_actions).unwrap_or_default()
+}
+
+fn application_actions(exe: &std::path::Path) -> Vec<String> {
+    if ["/System", "/usr", "/bin", "/sbin", "/Library"]
+        .iter()
+        .any(|prefix| exe.starts_with(prefix))
+    {
+        return vec![];
+    }
+    let Some(bundle) = exe
+        .ancestors()
+        .filter(|p| p.extension().is_some_and(|e| e == "app"))
+        .last()
+    else {
+        return vec![];
+    };
+    if bundle
+        .file_stem()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("jitterbug"))
+    {
+        return vec![];
+    }
+    let mut actions = vec!["lower_priority".into()];
+    // Helpers may be reprioritized, but stopping arbitrary app helpers is not a useful repair.
+    if exe.parent() == Some(bundle.join("Contents/MacOS").as_path()) {
+        actions.push("terminate".into());
+    }
+    actions
 }
 
 pub fn execute(pid: u32, start_time: u64, action: &str) -> Result<String, String> {
@@ -48,8 +86,8 @@ pub fn execute(pid: u32, start_time: u64, action: &str) -> Result<String, String
     if p.start_time() != start_time {
         return Err("Process identity changed. Refresh before taking an action.".into());
     }
-    if !allowed(p, &system) {
-        return Err("Actions are restricted to supported development processes owned by your user. Jitterbug, its ancestors, and system processes are protected.".into());
+    if !permitted(p, &system).iter().any(|a| a == action) {
+        return Err("This action is unavailable for this process. Actions require a supported development process or application owned by your user. Jitterbug, its ancestors, and system processes are protected.".into());
     }
     if action == "terminate" {
         return match p.kill_with(Signal::Term) { Some(true) => Ok("Termination requested. A process may handle or ignore this request; watch the next sample.".into()), _ => Err("The operating system rejected the termination request.".into()) };
@@ -73,6 +111,31 @@ pub fn execute(pid: u32, start_time: u64, action: &str) -> Result<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_helpers_only_offer_priority_changes() {
+        use std::path::Path;
+        assert_eq!(
+            application_actions(Path::new(
+                "/Applications/Example.app/Contents/MacOS/Example"
+            ))
+            .len(),
+            2
+        );
+        assert_eq!(
+            application_actions(Path::new(
+                "/Applications/Example.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"
+            )),
+            ["lower_priority"]
+        );
+        assert!(application_actions(Path::new(
+            "/System/Applications/Example.app/Contents/MacOS/Example"
+        ))
+        .is_empty());
+        assert!(application_actions(Path::new(
+            "/Applications/Jitterbug.app/Contents/MacOS/jitterbug"
+        ))
+        .is_empty());
+    }
     #[test]
     fn rejects_unknown_actions_and_stale_identity() {
         assert!(execute(std::process::id(), 0, "shell").is_err());
