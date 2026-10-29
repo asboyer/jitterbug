@@ -845,9 +845,9 @@ fn suggestions(
     if validation > cores.max(4) || workflow.process_count >= active.len().max(1) * 8 {
         advice.push(WorkflowSuggestion {
             id: "worker-amplification".into(),
-            title: "Cap each agent's worker pool".into(),
-            recommendation: "Set the supported worker/job limit in each test runner or compiler so all agents share a single machine-wide worker budget. Start with one or two workers per concurrent validation run and measure elapsed time before raising it.".into(),
-            evidence: vec![format!("{} attributed processes, including {validation} validation-tool processes, across {} active sessions on {cores} logical CPUs.", workflow.process_count, active.len())],
+            title: "Review combined worker limits".into(),
+            recommendation: "Check the existing worker/job limits in each test runner or compiler against a machine-wide budget. One or two workers per concurrent validation run is a conservative starting point. If limits are already low and headroom is healthy, keep them and measure elapsed time before changing anything.".into(),
+            evidence: vec![format!("{} attributed processes, including {validation} validation-tool processes, across {} active session(s) on {cores} logical CPUs.", workflow.process_count, active.len())],
             uncertainty: "Process count is an indicator, not a CPU-thread measurement. Idle helpers and shared memory can inflate totals; this is not proof that every process is a competing worker.".into(),
             ..Default::default()
         });

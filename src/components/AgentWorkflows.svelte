@@ -228,6 +228,11 @@
     .workflow-panel {
         margin-bottom: 20px;
     }
+    .workflow-panel > .section-title {
+        padding: 16px 18px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
     .workflow {
         padding: 18px;
         border-top: 1px solid var(--border);
