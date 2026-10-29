@@ -97,6 +97,34 @@ pub fn local_eligible(snapshot: &Snapshot) -> Result<(), String> {
     Ok(())
 }
 
+/// Exercises the actual detector without placing load on the host computer.
+pub fn simulated_incident() -> Incident {
+    let mut detector = Detector::default();
+    let mut snapshot = Snapshot {
+        source: "demo".into(),
+        captured_at: crate::types::now(),
+        sample_ready: true,
+        cpu_percent: 92.0,
+        memory_total_bytes: 16 << 30,
+        memory_available_bytes: 1 << 30,
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        detector.update(&snapshot);
+        snapshot.captured_at += 5;
+    }
+    let mut incident = detector
+        .update(&snapshot)
+        .1
+        .expect("Three pressure samples produce an incident");
+    incident.title = "Demo: your computer is under sustained pressure".into();
+    incident.reasons.insert(
+        0,
+        "Synthetic samples passed through the real detector. No host load was generated.".into(),
+    );
+    incident
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,7 +21,9 @@ pub struct Label {
 
 pub fn category(name: &str) -> (&'static str, &'static str) {
     let n = name.to_lowercase();
-    if n.contains("ollama") || n.contains("llama") {
+    if n == "jitterbug-worker" || n == "jitterbug-worker.exe" {
+        ("test", "Opt-in Jitterbug verification fixture: bounded memory allocation and a short CPU pulse.")
+    } else if n.contains("ollama") || n.contains("llama") {
         (
             "model",
             "Local model runtime. Loaded model weights and inference can use memory and compute.",
@@ -89,6 +91,14 @@ fn opaque_id(value: &str) -> String {
     format!("w-{:x}", h.finish())
 }
 
+fn application_bundle(executable: &Path) -> Option<&Path> {
+    // Helpers are often nested .app bundles. Attribute them to the outer application.
+    executable
+        .ancestors()
+        .filter(|p| p.extension().is_some_and(|e| e == "app"))
+        .last()
+}
+
 impl Attribution {
     pub fn label(&mut self, p: &Process, system: &System) -> Label {
         let name = p.name().to_string_lossy();
@@ -102,7 +112,9 @@ impl Attribution {
                 .or_insert_with(|| project_root(cwd))
                 .clone()
         });
-        if let Some(root) = project.filter(|_| matches!(cat, "build" | "python" | "javascript")) {
+        if let Some(root) =
+            project.filter(|_| matches!(cat, "build" | "python" | "javascript" | "test"))
+        {
             let label = root
                 .file_name()
                 .map(|x| x.to_string_lossy().chars().take(60).collect())
@@ -113,22 +125,20 @@ impl Attribution {
         let mut ancestor = p;
         for _ in 0..8 {
             if let Some(exe) = ancestor.exe() {
-                if let Some(app) = exe
-                    .ancestors()
-                    .find(|a| a.extension().is_some_and(|e| e == "app"))
-                {
-                    let label = app
+                if let Some(app) = application_bundle(exe) {
+                    let label: String = app
                         .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .chars()
                         .take(60)
                         .collect();
+                    let (app_category, app_description) = category(&label);
                     return Label {
                         id: opaque_id(&format!("app:{}", app.display())),
                         label,
-                        category: cat.into(),
-                        description: description.into(),
+                        category: app_category.into(),
+                        description: app_description.into(),
                         evidence: vec![
                             "Executable or ancestor belongs to this application bundle.".into(),
                         ],
@@ -166,5 +176,15 @@ mod tests {
     #[test]
     fn project_identifiers_do_not_contain_paths() {
         assert!(!opaque_id("/private/example/project").contains("private"));
+    }
+    #[test]
+    fn nested_helpers_share_the_outer_application() {
+        let executable = Path::new(
+            "/Applications/Example.app/Contents/Frameworks/Helper.app/Contents/MacOS/helper",
+        );
+        assert_eq!(
+            application_bundle(executable),
+            Some(Path::new("/Applications/Example.app"))
+        );
     }
 }

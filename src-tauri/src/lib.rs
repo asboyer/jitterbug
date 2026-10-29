@@ -147,6 +147,12 @@ async fn process_action(pid: u32, start_time: u64, action: String) -> Result<Str
         .map_err(|_| "Process action failed.")?
 }
 
+#[tauri::command]
+fn simulate_pressure(app: tauri::AppHandle) -> Result<(), String> {
+    app.emit("demo-pressure-incident", pressure::simulated_incident())
+        .map_err(|_| "Could not deliver the demo incident.".into())
+}
+
 pub fn load_development_env() {
     #[cfg(debug_assertions)]
     {
@@ -234,7 +240,8 @@ pub fn run() {
             list_local_models,
             unload_model,
             ask,
-            process_action
+            process_action,
+            simulate_pressure
         ])
         .run(tauri::generate_context!())
         .expect("Unable to start Jitterbug");

@@ -58,6 +58,18 @@
                     return;
                 }
                 cleanup.push(pressure);
+                const simulated = await listen<Incident>('demo-pressure-incident', (event) => {
+                    demo = true;
+                    demoPressure = true;
+                    selectedId = null;
+                    alert = event.payload;
+                    chatOpen = true;
+                });
+                if (disposed) {
+                    simulated();
+                    return;
+                }
+                cleanup.push(simulated);
                 live = await invoke('get_snapshot');
                 await refreshBootstrap();
             } catch (cause) {
@@ -78,7 +90,15 @@
         selectedId = null;
         chatOpen = true;
     }
-    function simulatePressure() {
+    async function simulatePressure() {
+        if (desktop) {
+            try {
+                await invoke('simulate_pressure');
+            } catch (cause) {
+                error = errorMessage(cause);
+            }
+            return;
+        }
         demo = true;
         demoPressure = true;
         selectedId = null;

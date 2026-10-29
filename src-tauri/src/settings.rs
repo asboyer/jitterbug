@@ -121,7 +121,6 @@ pub fn price(tier: &Tier) -> Result<(f64, f64), String> {
     match (&tier.provider, tier.model.as_str()) {
         (Provider::Ollama, _) => Ok((0.0, 0.0)),
         (Provider::Meta, "muse-spark-1.3" | "muse-spark-1.2" | "muse-spark-1.1") => Ok((1.25, 4.25)),
-        (Provider::Meta, "muse-wonder-1.0") => Ok((4.0, 20.0)),
         (Provider::Anthropic, "claude-haiku-5-5") => Ok((0.10, 0.50)),
         (Provider::Anthropic, "claude-sonnet-5-5") => Ok((2.0, 10.0)),
         (Provider::Jev, "jev-1.14.0") => Ok((0.042, 0.0)),

@@ -39,13 +39,18 @@
         busy = true;
         error = '';
         const content = question.trim();
+        const requestContext = previousContext;
         conversation = [...conversation, { message: { role: 'user', content } }];
         question = '';
         try {
-            let messages = conversation.slice(-8).map((entry) => ({
-                ...entry.message,
-                content: entry.message.content.slice(0, 2000),
-            }));
+            // Rules-only replies can contain private process/project labels. Keep them on-device.
+            let messages = conversation
+                .filter((entry) => entry.message.role === 'user' || entry.reply?.source === 'model')
+                .slice(-8)
+                .map((entry) => ({
+                    ...entry.message,
+                    content: entry.message.content.slice(0, 2000),
+                }));
             while (
                 messages.length > 1 &&
                 new TextEncoder().encode(JSON.stringify(messages)).length > 5500
@@ -63,13 +68,14 @@
                           estimated_cost_usd: 0,
                       }
                     : await invoke('ask', { messages, workloadId: workload?.id ?? null, tier });
+            onusage();
+            if (requestContext !== previousContext) return;
             conversation = [
                 ...conversation,
                 { message: { role: 'assistant' as const, content: reply.text }, reply },
             ].slice(-10);
-            onusage();
         } catch (cause) {
-            error = errorMessage(cause);
+            if (requestContext === previousContext) error = errorMessage(cause);
         } finally {
             busy = false;
         }

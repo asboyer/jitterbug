@@ -127,9 +127,9 @@
     <datalist id="model-suggestions"
         ><option value="tev1:0.8b"></option><option value="qwen3.5:0.8b"></option><option
             value="muse-spark-1.3"
-        ></option><option value="muse-spark-1.2"></option><option value="muse-wonder-1.0"
-        ></option><option value="claude-haiku-5-5"></option><option value="claude-sonnet-5-5"
-        ></option><option value="jev-1.14.0"></option></datalist
+        ></option><option value="muse-spark-1.2"></option><option value="claude-haiku-5-5"
+        ></option><option value="claude-sonnet-5-5"></option><option value="jev-1.14.0"
+        ></option></datalist
     >
     <div class="budget-row">
         <label
