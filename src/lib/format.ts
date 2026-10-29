@@ -6,7 +6,7 @@ export function memory(bytes: number): string {
 }
 
 export function percent(value: number): string {
-    return `${value.toFixed(1)}%`;
+    return value > 0 && value < 0.1 ? '<0.1%' : `${value.toFixed(1)}%`;
 }
 
 export function errorMessage(error: unknown): string {

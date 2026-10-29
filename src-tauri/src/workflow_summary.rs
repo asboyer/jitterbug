@@ -138,9 +138,13 @@ pub fn describe(workflow: &AgentWorkflow) -> Narrative {
                 "agent" => "The agent harness coordinates model requests and local tools; this does not establish where model inference runs",
                 _ => "These are unclassified local tools",
             };
-            format!(" {purpose}. The {} processes accounted for {:.1}% of total CPU capacity and {} MiB resident memory in that sample.", role.role, role.cpu_percent, role.memory_bytes / 1048576)
+            format!(" {purpose}. The {} processes accounted for {} of total CPU capacity and {} MiB resident memory in that sample.", role.role, cpu_label(role.cpu_percent), role.memory_bytes / 1048576)
         }).unwrap_or_else(|| " The observed processes have no recognized tool role, so the specific activity is unknown.".into());
-        format!("{prefix}, this task used {cpu:.1}% of total CPU capacity.{detail} This locates resource use; it does not identify a code hotspot or prove waste.")
+        if cpu == 0.0 {
+            "No CPU activity registered in the captured samples. Short-lived work can fall between samples, so this does not mean the task did no work. Resident memory can remain allocated while processes wait.".into()
+        } else {
+            format!("{prefix}, this task used {} of total CPU capacity.{detail} This locates resource use; it does not identify a code hotspot or prove waste.", cpu_label(cpu))
+        }
     };
     let recommendation = workflow.suggestions.iter().max_by_key(|s| {
         (
@@ -166,6 +170,14 @@ pub fn describe(workflow: &AgentWorkflow) -> Narrative {
     }
 }
 
+fn cpu_label(value: f32) -> String {
+    if value > 0.0 && value < 0.1 {
+        "<0.1%".into()
+    } else {
+        format!("{value:.1}%")
+    }
+}
+
 /// Explicit task-summary requests use only the excerpts previewed in the UI. Normal chat and
 /// automatic investigations continue to receive anonymous metrics, never this payload.
 pub fn model_payload(workflow: &AgentWorkflow) -> serde_json::Value {
@@ -176,6 +188,25 @@ pub fn model_payload(workflow: &AgentWorkflow) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::{harness::Context, workflows::AgentSession};
+    #[test]
+    fn unsampled_zero_and_tiny_cpu_have_distinct_explanations() {
+        let mut workflow = AgentWorkflow {
+            status: "completed".into(),
+            ..Default::default()
+        };
+        assert!(describe(&workflow)
+            .resources
+            .contains("No resource samples"));
+        workflow.observed_samples = 3;
+        assert!(describe(&workflow)
+            .resources
+            .contains("No CPU activity registered"));
+        assert!(describe(&workflow).resources.contains("between samples"));
+        workflow.peak_cpu_percent = 0.025;
+        assert!(describe(&workflow).resources.contains("<0.1%"));
+        assert!(!describe(&workflow).resources.contains("used 0.0%"));
+    }
+
     #[test]
     fn purpose_cache_changes_with_request_not_metrics_and_excludes_identity() {
         let mut w = AgentWorkflow {

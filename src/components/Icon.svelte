@@ -2,9 +2,12 @@
     let {
         name,
         size = 18,
-    }: { name: 'bug' | 'activity' | 'settings' | 'app' | 'code' | 'model'; size?: number } =
-        $props();
+    }: {
+        name: 'bug' | 'activity' | 'settings' | 'app' | 'code' | 'model' | 'bulb';
+        size?: number;
+    } = $props();
     const paths = {
+        bulb: 'M9 18h6m-5 3h4M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2z',
         bug: 'M8 7h8M9 3l1 3m5-3-1 3M8 10H4m12 0h4M8 14H4m12 0h4M8 18l-3 2m11-2 3 2M12 8v12M7 12c0-4 2-6 5-6s5 2 5 6v3c0 4-2 6-5 6s-5-2-5-6z',
         activity: 'M3 12h4l3-8 4 16 3-8h4',
         settings:

@@ -1,3 +1,4 @@
+import { demoWorkflow } from './demo-workflow';
 import type { Bootstrap, Snapshot, WorkloadDetails } from './types';
 
 export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
@@ -63,7 +64,7 @@ export function demoSnapshot(pressure = false): Snapshot {
             cpu_percent: pressure ? 72 : 18,
             memory_bytes: 2.4 * 1024 ** 3,
             history: [],
-            process_count: 3,
+            process_count: 6,
         },
         {
             id: 'demo-browser',
@@ -104,7 +105,7 @@ export function demoSnapshot(pressure = false): Snapshot {
         swap_out_bytes: pressure ? 48 * 1024 ** 2 : 0,
         process_count: 120,
         workloads,
-        agent_workflows: [],
+        agent_workflows: [demoWorkflow(time, pressure)],
         processes: workloads.map((w, index) => ({
             pid: 9000 + index,
             start_time: time - 60,

@@ -1,7 +1,8 @@
 <script lang="ts">
     import { memory, percent } from '../lib/format';
+    import WorkflowResources from './WorkflowResources.svelte';
     import TaskNarrative from './TaskNarrative.svelte';
-    import type { AgentWorkflow, Snapshot, Workload } from '../lib/types';
+    import type { Snapshot, Workload } from '../lib/types';
 
     let {
         snapshot,
@@ -17,16 +18,6 @@
         });
     }
 
-    function history(workflow: AgentWorkflow): string {
-        return workflow.history
-            .map((point, index) => {
-                const x = (index / Math.max(workflow.history.length - 1, 1)) * 280;
-                const y = 38 - (Math.min(Math.max(point.cpu_percent, 0), 100) / 100) * 36;
-                return `${x},${y}`;
-            })
-            .join(' ');
-    }
-
     function status(value: string): string {
         return value.charAt(0).toUpperCase() + value.slice(1);
     }
@@ -35,14 +26,15 @@
 <section class="panel workflow-panel" aria-label="Agent workflows">
     <div class="section-title">
         <div>
-            <h2>Agent workflows</h2>
-            <span class="muted">Tasks across worktrees · verified process ancestry</span>
+            <h2>Agent tasks <span class="task-count">{snapshot.agent_workflows.length}</span></h2>
         </div>
-        <span class="muted">Local measurements & rules</span>
+        <span class="muted"
+            >{snapshot.source === 'demo' ? 'Synthetic example' : 'On this device'}</span
+        >
     </div>
-    {#each snapshot.agent_workflows as workflow (workflow.task_id)}
-        <article class="workflow">
-            <div class="workflow-heading">
+    {#each snapshot.agent_workflows as workflow, index (workflow.task_id)}
+        <details class="workflow" open={workflow.status === 'active' || index === 0}>
+            <summary class="workflow-heading">
                 <div>
                     <span class="task-id">{workflow.task_id}</span>
                     <h3>{workflow.task_title}</h3>
@@ -50,7 +42,8 @@
                 <span class:active={workflow.status === 'active'} class="run-status">
                     {status(workflow.status)}
                 </span>
-            </div>
+                <span class="workflow-chevron" aria-hidden="true">›</span>
+            </summary>
             <p class="workflow-summary">
                 {#if workflow.status === 'active'}
                     {workflow.active_agents} active
@@ -65,51 +58,10 @@
                         : 'no resource samples in this app session'}
                 {/if}
             </p>
+            <WorkflowResources {workflow} interval={snapshot.interval_ms} />
             <TaskNarrative {workflow} {onusage} demo={snapshot.source === 'demo'} />
-            <div class="workflow-usage">
-                <div>
-                    <span class="muted"
-                        >{workflow.status === 'active' ? 'CPU now' : 'Peak CPU'}</span
-                    >
-                    <strong
-                        >{workflow.observed_samples === 0
-                            ? workflow.status === 'active'
-                                ? 'Sampling…'
-                                : 'Not sampled'
-                            : percent(
-                                  workflow.status === 'active'
-                                      ? workflow.cpu_percent
-                                      : workflow.peak_cpu_percent
-                              )}</strong
-                    >
-                    <small>of total capacity</small>
-                </div>
-                <div>
-                    <span class="muted"
-                        >{workflow.status === 'active' ? 'Memory now' : 'Peak memory'}</span
-                    >
-                    <strong
-                        >{workflow.status !== 'active' && workflow.peak_process_count === 0
-                            ? 'Not sampled'
-                            : memory(
-                                  workflow.status === 'active'
-                                      ? workflow.memory_bytes
-                                      : workflow.peak_memory_bytes
-                              )}</strong
-                    >
-                    <small>summed process RSS</small>
-                </div>
-                <svg
-                    viewBox="0 0 280 40"
-                    role="img"
-                    aria-label="Task CPU history, zero to one hundred percent of total capacity"
-                >
-                    <line x1="0" y1="39" x2="280" y2="39" />
-                    <polyline points={history(workflow)} />
-                </svg>
-            </div>
             <details class="technical-detail">
-                <summary>Sessions & process evidence ({workflow.agents.length})</summary>
+                <summary>Sessions & evidence · {workflow.agents.length}</summary>
                 <div class="agent-list">
                     {#each workflow.agents as agent (agent.run_id)}
                         <details class="agent">
@@ -121,7 +73,9 @@
                                 >
                                 <span class="agent-usage">
                                     {#if agent.status === 'active'}
-                                        {percent(agent.cpu_percent)} · {memory(agent.memory_bytes)}
+                                        {agent.observed_samples
+                                            ? percent(agent.cpu_percent)
+                                            : 'Sampling…'} · {memory(agent.memory_bytes)}
                                     {:else}
                                         {agent.peak_process_count === 0
                                             ? 'Not sampled'
@@ -171,9 +125,10 @@
                                         <dd>
                                             {agent.observed_samples === 0
                                                 ? 'Not sampled'
-                                                : `${percent(agent.peak_cpu_percent)} CPU`} · {memory(
-                                                agent.peak_memory_bytes
-                                            )} · {agent.peak_process_count} processes
+                                                : `${percent(agent.peak_cpu_percent)} sampled CPU`} ·
+                                            {agent.peak_process_count
+                                                ? memory(agent.peak_memory_bytes)
+                                                : 'memory not sampled'} · {agent.peak_process_count} processes
                                         </dd>
                                     </div>
                                     <div>
@@ -213,79 +168,108 @@
                         </details>
                     {/each}
                 </div>
+                {#if workflow.suggestions.length > 0}
+                    <div class="workflow-advice">
+                        <h4>Ways to reduce resource use <span>Rule-based suggestions</span></h4>
+                        {#each workflow.suggestions as suggestion (suggestion.id)}
+                            <details class="suggestion">
+                                <summary
+                                    ><strong>{suggestion.title}</strong><small
+                                        >{suggestion.current
+                                            ? 'Observed now'
+                                            : `Observed at ${time(suggestion.observed_at)}`}</small
+                                    ></summary
+                                >
+                                <p>{suggestion.recommendation}</p>
+                                <ul>
+                                    {#each suggestion.evidence as evidence}<li>
+                                            {evidence}
+                                        </li>{/each}
+                                </ul>
+                                <p class="muted">{suggestion.uncertainty}</p>
+                            </details>
+                        {/each}
+                    </div>
+                {/if}
+                <details class="workflow-evidence">
+                    <summary>Attribution & measurement limits</summary>
+                    <ul>
+                        {#each workflow.evidence as evidence}<li>{evidence}</li>{/each}
+                    </ul>
+                    <p>
+                        Task titles come from the launcher; request excerpts come from opted-in
+                        harness hooks or provided descriptions. Ownership requires a matching
+                        process ID, start time, and observed parent chain. Working directories alone
+                        are not proof.
+                    </p>
+                    <p>
+                        Peaks are sampled every {snapshot.interval_ms / 1000} seconds and may miss short
+                        bursts. Shared memory may be counted more than once. Completed measurements remain
+                        in memory for this app session. Suggestions do not change your agents or tests.
+                    </p>
+                </details>
             </details>
-            {#if workflow.suggestions.length > 0}
-                <div class="workflow-advice">
-                    <h4>Ways to reduce resource use <span>Rule-based suggestions</span></h4>
-                    {#each workflow.suggestions as suggestion (suggestion.id)}
-                        <details class="suggestion">
-                            <summary
-                                ><strong>{suggestion.title}</strong><small
-                                    >{suggestion.current
-                                        ? 'Observed now'
-                                        : `Observed at ${time(suggestion.observed_at)}`}</small
-                                ></summary
-                            >
-                            <p>{suggestion.recommendation}</p>
-                            <ul>
-                                {#each suggestion.evidence as evidence}<li>{evidence}</li>{/each}
-                            </ul>
-                            <p class="muted">{suggestion.uncertainty}</p>
-                        </details>
-                    {/each}
-                </div>
-            {/if}
-            <details class="workflow-evidence">
-                <summary>Attribution & measurement limits</summary>
-                <ul>
-                    {#each workflow.evidence as evidence}<li>{evidence}</li>{/each}
-                </ul>
-                <p>
-                    Task titles come from the launcher; request excerpts come from opted-in harness
-                    hooks or provided descriptions. Ownership requires a matching process ID, start
-                    time, and observed parent chain. Working directories alone are not proof.
-                </p>
-                <p>
-                    Peaks are sampled every {snapshot.interval_ms / 1000} seconds and may miss short bursts.
-                    Shared memory may be counted more than once. Completed measurements remain in memory
-                    for this app session. Suggestions do not change your agents or tests.
-                </p>
-            </details>
-        </article>
+        </details>
     {:else}
         <p class="workflow-empty">
-            No registered agent tasks yet. Launch a workflow with <code>jitterbug-run</code> to connect
-            its agents, worktrees, and tests to one task. Unregistered processes still appear below.
+            Launch with <code>jitterbug-run</code> to see tasks, agents, and tests together.
         </p>
     {/each}
 </section>
 
 <style>
     .technical-detail {
-        margin: 16px 0;
+        margin: 12px 0 0;
     }
     .technical-detail > summary {
         cursor: pointer;
         color: var(--muted);
-        margin-bottom: 10px;
+        font-size: 11px;
+    }
+    .technical-detail[open] > summary {
+        margin-bottom: 12px;
     }
     .workflow-panel {
         margin-bottom: 20px;
     }
     .workflow-panel > .section-title {
-        padding: 16px 18px;
+        padding: 12px 16px;
+        margin-bottom: 0;
         flex-wrap: wrap;
         gap: 8px;
     }
     .workflow {
-        padding: 18px;
+        padding: 16px;
         border-top: 1px solid var(--border);
     }
     .workflow-heading {
+        color: var(--text);
         display: flex;
-        align-items: start;
+        align-items: center;
+        padding: 0;
+        list-style: none;
+        cursor: pointer;
         justify-content: space-between;
         gap: 14px;
+    }
+    .workflow-heading::-webkit-details-marker {
+        display: none;
+    }
+    .workflow-heading > div {
+        flex: 1;
+    }
+    .workflow-chevron {
+        font-size: 18px;
+        color: var(--muted);
+    }
+    .workflow[open] > .workflow-heading .workflow-chevron {
+        transform: rotate(90deg);
+    }
+    .task-count {
+        font-size: 10px;
+        font-weight: 500;
+        color: var(--muted);
+        margin-left: 6px;
     }
     .task-id {
         font-size: 11px;
@@ -294,7 +278,7 @@
     }
     h3 {
         margin: 5px 0 0;
-        font-size: 15px;
+        font-size: 14px;
         line-height: 1.4;
     }
     .run-status {
@@ -310,43 +294,8 @@
     }
     .workflow-summary {
         color: var(--muted);
-        margin: 7px 0 18px;
-    }
-    .workflow-usage {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1.4fr;
-        gap: 16px;
-        align-items: center;
-        margin-bottom: 20px;
-    }
-    .workflow-usage > div {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-    .workflow-usage strong {
-        font-size: 22px;
-        font-weight: 550;
-        font-variant-numeric: tabular-nums;
-    }
-    .workflow-usage small {
-        color: var(--muted);
+        margin: 6px 0 0;
         font-size: 11px;
-    }
-    svg {
-        width: 100%;
-        height: 40px;
-        overflow: visible;
-    }
-    line {
-        stroke: var(--border);
-    }
-    polyline {
-        fill: none;
-        stroke: var(--accent);
-        stroke-width: 1.8;
-        stroke-linecap: round;
-        stroke-linejoin: round;
     }
     .agent-list {
         border: 1px solid var(--border);
@@ -466,12 +415,6 @@
         color: var(--muted);
     }
     @media (max-width: 720px) {
-        .workflow-usage {
-            grid-template-columns: 1fr 1fr;
-        }
-        svg {
-            display: none;
-        }
         .agent-usage {
             font-size: 11px;
         }

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { invoke, isTauri } from '@tauri-apps/api/core';
+    import Icon from './Icon.svelte';
     import { errorMessage } from '../lib/format';
     import type { AgentWorkflow, AppProfile } from '../lib/types';
 
@@ -58,130 +59,255 @@
             onusage();
         }
     }
+    const activity = $derived.by(() => {
+        const totals: Record<string, number> = {};
+        for (const agent of workflow.agents) {
+            for (const [role, count] of Object.entries(agent.context.completed_tools)) {
+                totals[role] = (totals[role] ?? 0) + count;
+            }
+        }
+        const names: Record<string, string> = {
+            read: 'reads / searches',
+            edit: 'edits',
+            command: 'commands',
+            other: 'other calls',
+        };
+        return Object.entries(totals).map(([role, count]) => ({
+            label: names[role] ?? role,
+            count,
+        }));
+    });
+    const recommendation = $derived.by(() => {
+        const priority = (id: string) =>
+            id === 'memory-headroom'
+                ? 4
+                : id.startsWith('overlapping-')
+                  ? 3
+                  : id === 'worker-amplification'
+                    ? 2
+                    : 1;
+        return [...workflow.suggestions].sort(
+            (a, b) => Number(b.current) - Number(a.current) || priority(b.id) - priority(a.id)
+        )[0];
+    });
 </script>
 
 <div class="narrative">
-    <section aria-label="What this task is building">
-        <h4>What this task is building <span>Intended work</span></h4>
-        {#if summary}
-            <p>{summary.text}</p>
-            <small class="muted"
-                >AI summary · {summary.provider} / {summary.model} · saved for this app session</small
-            >
-        {:else if narrative.assignments.length === 0}
-            <p>{workflow.task_title}</p>
-            <small class="muted">Launcher title only · no harness request captured</small>
-        {/if}
-        {#if narrative.assignments.length > 0}
-            <details open={!summary} class="assignments">
-                <summary>Task excerpts · kept locally</summary>
-                {#each narrative.assignments as assignment, index (index)}
-                    <div class="assignment">
-                        <strong>{assignment.agent}</strong>
-                        <p>{assignment.request}</p>
-                        <small class="muted"
-                            >{assignment.source === 'hook'
-                                ? 'Harness request and latest follow-up'
-                                : 'Provided description'} · excerpt, not an AI explanation</small
-                        >
-                    </div>
-                {/each}
-            </details>
-            {#if !demo && !summary}
+    <details class="intent">
+        <summary>
+            <span class="intent-icon"><Icon name="code" size={16} /></span>
+            <span class="intent-copy">
+                <small
+                    >{summary
+                        ? 'AI summary · intended work'
+                        : narrative.assignments.length
+                          ? 'Task request · excerpt'
+                          : 'Task context'}</small
+                >
+                <span class="preview"
+                    >{summary?.text ??
+                        narrative.assignments[0]?.request ??
+                        'No task request captured for this launch.'}</span
+                >
+            </span>
+            <span class="chevron" aria-hidden="true">›</span>
+        </summary>
+        <div class="intent-body">
+            {#if summary}
+                <p>{summary.text}</p>
+                <small class="muted"
+                    >AI · {summary.provider} / {summary.model} · cached for this app session. Describes
+                    intended work, not completion.</small
+                >
+            {/if}
+            {#each narrative.assignments as assignment, index (index)}
+                <div class="assignment">
+                    <strong>{assignment.agent}</strong>
+                    <p>{assignment.request}</p>
+                    <small class="muted"
+                        >{assignment.source === 'hook'
+                            ? 'Harness request and latest follow-up'
+                            : 'Provided description'} · kept locally</small
+                    >
+                </div>
+            {/each}
+            {#if narrative.assignments.length > 0 && !demo && !summary}
                 <div class="summary-action">
+                    <p class="muted">
+                        Summarizing sends the excerpts above to your intelligent provider, which may
+                        use cloud. Budget and resource limits apply. The result is cached until the
+                        request changes.
+                    </p>
                     <button disabled={pending || cacheLoading} onclick={summarize}>
                         {pending
                             ? 'Summarizing…'
                             : cacheLoading
-                              ? 'Checking saved summary…'
-                              : 'Summarize task with AI'}
+                              ? 'Checking cache…'
+                              : 'Summarize with AI'}
                     </button>
-                    <small class="muted"
-                        >Sends the excerpts above to your intelligent provider, which may use cloud.
-                        Cached until the request changes; budget and local resource limits apply.</small
-                    >
                 </div>
             {/if}
-            {#if result && !summary}
-                <small class="muted"
-                    >The task request changed; its earlier AI summary is no longer shown.</small
-                >
-            {/if}
+            {#if demo}<small class="muted">Synthetic example · no model called.</small>{/if}
+            {#if result && !summary}<p class="muted">
+                    The request changed; its earlier AI summary is no longer shown.
+                </p>{/if}
             {#if error}<p class="error" role="alert">{error}</p>{/if}
-        {/if}
-        <p class="activity muted">{narrative.activity}</p>
-    </section>
-    <section aria-label="Why this task uses resources">
-        <h4>Where the resources went <span>Measured · role interpretation</span></h4>
-        <p>{narrative.resources}</p>
-    </section>
-    <section class="tip" aria-label="Task efficiency tip">
-        <h4>Efficiency tip</h4>
-        <p>{narrative.tip}</p>
-        <small class="muted">{narrative.tip_basis}</small>
-    </section>
+            <p class="muted">{narrative.activity}</p>
+        </div>
+    </details>
+    {#if activity.length}
+        <div class="activity" aria-label="Reported harness tool events">
+            <span class="muted">Reported</span>
+            {#each activity as item}<span><strong>{item.count}</strong> {item.label}</span>{/each}
+        </div>
+    {/if}
+    {#if recommendation}
+        <details class="tip">
+            <summary>
+                <span class="tip-icon"><Icon name="bulb" size={17} /></span>
+                <span class="tip-copy"
+                    ><small
+                        >Suggestion · {recommendation.current
+                            ? 'observed now'
+                            : 'observed earlier'}</small
+                    ><strong>{recommendation.title}</strong></span
+                >
+                <span class="chevron" aria-hidden="true">›</span>
+            </summary>
+            <div class="tip-body">
+                <p>{recommendation.recommendation}</p>
+                <ul>
+                    {#each recommendation.evidence as evidence}<li>{evidence}</li>{/each}
+                </ul>
+                <p class="muted">{recommendation.uncertainty}</p>
+                <small class="muted">Local rules · suggestion only · no action applied</small>
+            </div>
+        </details>
+    {:else}
+        <div class="no-tip">
+            <Icon name="bulb" size={14} /><span
+                >{workflow.observed_samples
+                    ? 'No optimization suggested by these samples'
+                    : 'Measure a running task to get suggestions'}</span
+            >
+        </div>
+    {/if}
 </div>
 
 <style>
     .narrative {
-        display: grid;
-        gap: 16px;
-        margin: 18px 0;
+        margin-top: 12px;
     }
-    h4 {
-        margin: 0 0 7px;
-        font-size: 12px;
-        font-weight: 650;
+    summary {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        list-style: none;
     }
-    h4 span {
-        margin-left: 6px;
-        font-weight: 400;
+    summary::-webkit-details-marker {
+        display: none;
+    }
+    .intent > summary {
+        padding: 10px 0;
+    }
+    .intent-icon,
+    .tip-icon {
         color: var(--muted);
-        font-size: 11px;
+        flex-shrink: 0;
+        display: flex;
     }
-    p {
-        margin: 5px 0 8px;
-        line-height: 1.55;
-        overflow-wrap: anywhere;
+    .intent-copy,
+    .tip-copy {
+        min-width: 0;
+        flex: 1;
+        display: grid;
+        gap: 4px;
     }
     small {
+        color: var(--muted);
+        font-size: 10px;
         line-height: 1.5;
     }
-    .assignments {
-        margin-top: 10px;
+    .preview {
+        color: var(--text);
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
+        line-height: 1.5;
+        font-size: 12px;
+        overflow-wrap: anywhere;
     }
-    .assignments > summary {
-        cursor: pointer;
+    .chevron {
         color: var(--muted);
+        font-size: 18px;
+    }
+    details[open] > summary .chevron {
+        transform: rotate(90deg);
+    }
+    .intent-body {
+        margin-left: 26px;
+        padding-bottom: 8px;
+    }
+    p {
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+        margin: 6px 0 10px;
         font-size: 12px;
     }
     .assignment {
-        margin: 12px 0;
-        padding-left: 12px;
         border-left: 2px solid var(--border);
+        margin: 12px 0;
+        padding-left: 10px;
     }
     .assignment strong {
-        font-size: 12px;
+        font-size: 11px;
     }
     .summary-action {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 10px;
         margin: 12px 0;
     }
-    .summary-action small {
-        flex: 1;
-        min-width: 180px;
-    }
     .activity {
-        font-size: 12px;
-        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 14px;
+        margin: 0 0 12px 26px;
+        font-size: 10px;
+        color: var(--muted);
+    }
+    .activity strong {
+        color: var(--text);
+        font-weight: 550;
+        font-variant-numeric: tabular-nums;
     }
     .tip {
-        border-radius: 8px;
+        border-radius: 6px;
         background: var(--hover);
-        padding: 12px;
+        margin-top: 8px;
+    }
+    .tip > summary {
+        padding: 10px 12px;
+    }
+    .tip-copy strong {
+        font-size: 12px;
+        font-weight: 550;
+    }
+    .tip-body {
+        padding: 0 12px 12px 39px;
+    }
+    ul {
+        padding-left: 16px;
+        font-size: 11px;
+        line-height: 1.6;
+    }
+    .no-tip {
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        margin: 10px 0 4px;
     }
     .error {
         color: var(--warning);
