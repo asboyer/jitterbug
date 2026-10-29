@@ -1,0 +1,22 @@
+# Secrets and private local state
+.env
+.env.*
+!.env.example
+.local/
+*.log
+*.sqlite*
+*.db
+*.pid
+screenshots/
+test-results/
+playwright-report/
+
+# Build output
+node_modules/
+dist/
+target/
+src-tauri/gen/
+.DS_Store
+*.local
+.idea/
+.vscode/

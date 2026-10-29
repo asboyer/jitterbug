@@ -1,0 +1,11 @@
+## The idea
+
+In an ever evolving world where AI capabilities are scaling, this means development is scaling. Yet we are all on the same laptops and compute has never been more expensive. Working on parallel tasks is all fun and games until you are out of memory, your laptop is melting your lap it's so hot, and the fans are louder than a hiss.
+
+Agentic engineering is supposed to be the next layer of abstraction, yet we still need to "manage our memory": watch the resources on our computer, keep an eye on Activity Monitor. But if we've abstracted the layer of knowing every process that's going on, how can we look at 5 different Python processes all at 100% usage and determine what is actually happening? Don't even start about running local models: how in the world do I know what model my computer can handle?
+
+Introducing Jitterbug: an always-on, resource-efficient agent (that uses local models or bring your own API key) to reason through the different processes on your computer, help when your computer is struggling, offload resources, propose efficiency gains, and give you insight into what is actually using resources and why.
+
+## Technical direction
+
+Build a small Tauri desktop app: shared Rust collection, attribution, pressure detection, policy, and provider logic; a TypeScript UI; and explicit macOS/Windows adapters. Start with a live workload dashboard and a contextual assistant. Use deterministic rules first, then interchangeable decision, cheap, and intelligent model tiers through local or cloud providers. Enforce hybrid, local-only, and cloud-only modes before inference. Keep model calls event-driven, history bounded, and resource overhead measurable. Validate user-triggered process actions against fresh process identity; models never execute arbitrary commands. Label real telemetry, inferred explanations, and demos clearly. Use conventional commits. This repository is public: never commit secrets, machine details, process snapshots, transcripts, or private runtime data. Store credentials outside tracked files and enforce cloud spending limits.
