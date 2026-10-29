@@ -14,6 +14,52 @@ or considering a remote runner. Suggestions do not move or stop anything.
 
 ## Register a validation
 
+### From the desktop
+
+Choose **Manage this workload** from a workload detail page or an agent task. The queue's
+**Manage workloads** button also accepts a project folder or a manually entered command.
+Discovery reads a bounded selection of current process arguments only on request, with
+PID/start-time checks. Arguments never enter the regular telemetry stream or model prompts.
+It suggests recognized finite commands, npm-compatible package scripts, and Cargo checks.
+Known watch scripts are omitted. A discovered script is a suggestion, not a guarantee that
+it terminates or is safe. Ordinary apps and services remain observed.
+
+1. Select a command and review its executable, individual arguments, working folder, and
+   memory estimate. Observed commands use sampled workload memory plus headroom; project
+   scripts start at an explicitly unmeasured 2 GiB. You can edit the estimate.
+2. Optionally select Claude Code, Codex, or Muse Code. Review the exact MCP entry and its
+   target path. No project instruction files or public repository files are changed.
+3. Approve the fixed command to execute as your OS user. Approval does not launch it.
+4. Use **Run validation**, a terminal queue client, or the connected harness to submit it.
+   **Managed**, **Waiting**, **Running**, and **Needs review** distinguish approval from
+   scheduling and execution. **Revoke** removes approval and cancels waiting jobs; existing
+   running work continues.
+
+Connections use one `jitterbug-managed` stdio server per client, scoped to the profiles
+explicitly approved for that client. The installed desktop executable serves MCP directly;
+there is no extra daemon, download, or model call. The MCP initialization instructions tell
+agents to list profiles, match the exact worktree and command, submit heavy checks, and
+wait for the result. Participation is cooperative, not interception of shell tools.
+
+Client settings are merged into private user files: `~/.claude.json`,
+`$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`), and
+`$XDG_CONFIG_HOME/muse/settings.json` (normally `~/.config/muse/settings.json`).
+Normal client tool approval and workspace-trust controls are preserved. Restart clients
+after connecting. **Configured** means the saved entry still matches; **contact observed**
+means a client initialized MCP with that profile in scope, not that every session uses it.
+Moving the app or editing the MCP entry can require reconnecting. Unchecked clients are
+unchanged; revoking a profile removes its ability to run even in already-connected clients.
+
+Previews expire after ten minutes and are single-use. Changed settings or project manifests
+invalidate the preview. Existing unrelated settings are retained; the UI only shows the
+Jitterbug entry, not unrelated credentials. Symbolic-link settings and custom Claude config
+directories require manual setup. A conflicting `jitterbug-managed` entry is never silently
+replaced. Private recovery copies from the latest setup are kept in `setup-backup` under
+the queue directory. Requested MCP results, profile commands, and full worktree paths are
+visible to the requesting harness and may be sent to its model provider.
+
+### From a terminal
+
 Build the runner once, then use an absolute path to it in client configurations:
 
 ```sh
@@ -108,9 +154,10 @@ project files, or MCP settings. Add to your private Muse settings:
 
 ```json
 {
-    "mcp_servers": {
+    "schema_version": 1,
+    "mcpServers": {
         "jitterbug": {
-            "transport": "stdio",
+            "type": "stdio",
             "command": "/absolute/path/to/jitterbug-run",
             "args": ["mcp", "--profiles", "project-tests", "--harness", "meta"]
         }
@@ -118,8 +165,10 @@ project files, or MCP settings. Add to your private Muse settings:
 }
 ```
 
-For per-launch overrides, address `mcp_servers.jitterbug` rather than replacing the
-entire server map. [Muse's MCP and headless guide](https://dev.meta.ai/docs/muse-code/extending)
+The persisted settings format uses `schema_version: 1`, `mcpServers`, and `type`, as
+specified in the [Muse SDK MCP guide](https://meta-models.github.io/muse-code-sdk/next/guides/extend/mcp-servers/).
+Per-launch overrides use the different runtime spelling `mcp_servers.jitterbug` with
+`transport`; do not copy that spelling into settings.json or replace the entire server map. [Muse's MCP and headless guide](https://dev.meta.ai/docs/muse-code/extending)
 describes approval behavior and `--max-model-steps`. The queue makes no model calls;
 the harness's own provider/subscription pays for its reasoning. Jitterbug's model
 budget ledger does not govern an external harness.
@@ -184,15 +233,23 @@ pressure admission, removed profiles, source changes before/during execution, mi
 workers, credential stripping, MCP profile scope, and the stdio handshake. Fixtures
 use synthetic telemetry without stressing the host.
 
+Enrollment tests also exercise all three configuration formats, preservation of unrelated
+settings and TOML comments, approval without execution, stale previews, connection drift,
+scope rejection, symlink refusal, and MCP handshakes through the actual desktop executable.
+
 On macOS, real Claude Code, Codex CLI, and Muse Code sessions each submitted a fixed
 Node assertion in separate Git worktrees and read a passing result over MCP. Claude
 and Codex overlapped as clients while their validation jobs ran sequentially. The
 desktop pause, queued cancellation, resume, and result views were checked against the
 same live queue. Claude/Codex used existing subscription authentication; Muse used a
-locally bounded API test. Desktop client MCP setup is documented from each vendor's
-supported configuration, but separate Claude/Codex desktop-agent sessions have not
-been exercised end to end. Native Windows interaction remains unverified; Windows
-builds and process-level integration tests run in CI.
+locally bounded API test. The desktop enrollment flow was then exercised from project
+script discovery through preview, approval, execution, and revocation. A real Claude Code
+desktop session submitted a check through the generated connection and read its passing
+result; Codex CLI did the same using the generated transport. Muse's saved settings were
+verified with its offline echo provider, including a recorded MCP handshake and no model
+request. Codex desktop UI testing was blocked by the computer-use environment, so that
+client flow remains unverified. Native Windows interaction also remains unverified;
+Windows builds and process-level integration tests run in CI.
 
 ## Boundaries
 

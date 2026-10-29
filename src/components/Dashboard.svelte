@@ -6,6 +6,7 @@
     import AppIcon from './AppIcon.svelte';
     import AgentWorkflows from './AgentWorkflows.svelte';
     import ValidationQueue from './ValidationQueue.svelte';
+    import type { ManagementSelection } from '../lib/manage';
 
     let {
         snapshot,
@@ -13,12 +14,14 @@
         onselect,
         onask,
         onusage,
+        onmanage,
     }: {
         snapshot: Snapshot;
         selectedId: string | null;
         onselect: (workload: Workload) => void;
         onask: () => void;
         onusage: () => void;
+        onmanage: (selection: ManagementSelection) => void;
     } = $props();
     let search = $state('');
     let sort = $state('impact');
@@ -158,9 +161,9 @@
             </details>
         </article>
     </section>
-    <ValidationQueue {snapshot} {onselect} />
+    <ValidationQueue {snapshot} {onselect} {onmanage} />
     <div class="activity-columns">
-        <AgentWorkflows {snapshot} {onselect} {onusage} />
+        <AgentWorkflows {snapshot} {onselect} {onusage} {onmanage} />
         <section class="panel workload-panel">
             <div class="section-title">
                 <div>

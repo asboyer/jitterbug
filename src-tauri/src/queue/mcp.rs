@@ -50,7 +50,7 @@ pub fn call(
     let state = inspect(directory)?;
     match name {
         "validation_profiles" => Ok(
-            json!({"profiles":state.profiles.iter().filter(|p| allowed.contains(&p.name)).map(|p| json!({"name":p.name,"worktree":p.worktree.file_name().unwrap_or_default().to_string_lossy(),"memory_estimate_mib":p.memory_bytes / 1024 / 1024})).collect::<Vec<_>>(),"queue_reason":state.view().reason,"capacity":1}),
+            json!({"profiles":state.profiles.iter().filter(|p| allowed.contains(&p.name)).map(|p| json!({"name":p.name,"worktree":p.worktree,"command":p.command,"memory_estimate_mib":p.memory_bytes / 1024 / 1024})).collect::<Vec<_>>(),"queue_reason":state.view().reason,"capacity":1,"routing":"Use only a profile matching this session's exact working directory and intended command. Submit heavy checks here instead of launching duplicates. If none matches, ask the user to approve a profile in Jitterbug."}),
         ),
         "validation_submit" => {
             let profile = get("profile")?;
@@ -112,11 +112,13 @@ pub fn call(
 pub fn serve(args: &[String]) -> Result<i32, String> {
     let mut allowed = Vec::new();
     let mut harness = "other".to_string();
+    let mut connection = None;
     for pair in args.chunks(2) {
         let value = pair.get(1).ok_or("Missing MCP option value.")?;
         match pair[0].as_str() {
             "--profiles" => allowed = value.split(',').map(str::to_string).collect(),
             "--harness" => harness = value.clone(),
+            "--connection" => connection = Some(value.clone()),
             _ => return Err("Unknown MCP option.".into()),
         }
     }
@@ -128,6 +130,12 @@ pub fn serve(args: &[String]) -> Result<i32, String> {
     }
     label(&harness, 40)?;
     let directory = directory()?;
+    if connection
+        .as_ref()
+        .is_some_and(|c| !manage::connections::CLIENTS.contains(&c.as_str()) || c != &harness)
+    {
+        return Err("Invalid managed connection label.".into());
+    }
     let input = std::io::stdin();
     let mut reader = input.lock();
     let output = std::io::stdout();
@@ -158,9 +166,14 @@ pub fn serve(args: &[String]) -> Result<i32, String> {
         };
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         let result = match method {
-            "initialize" => Ok(
-                json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"jitterbug-validation","version":"0.1.0"},"instructions":"Use approved validation profiles for heavy checks. Jobs share a machine-wide slot across sessions; only submitted commands are governed. Read the result before reporting success."}),
-            ),
+            "initialize" => {
+                if let Some(client) = &connection {
+                    manage::connections::contact(&directory, client, &allowed)?;
+                }
+                Ok(
+                    json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"jitterbug-validation","version":"0.1.0"},"instructions":"Before running heavy tests or builds, call validation_profiles. Use a profile only when its exact worktree and command match the intended check. Submit through validation_submit, continue independent work while queued, and read validation_result before reporting success. Do not launch a duplicate check outside the queue. If no profile matches, ask the user to approve one in Jitterbug. These are cooperative instructions, not shell interception. Jobs share one machine-wide slot across all participating sessions."}),
+                )
+            }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(tools()),
             "tools/call" => {

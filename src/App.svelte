@@ -6,6 +6,8 @@
     import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
     import WorkloadDetails from './components/WorkloadDetails.svelte';
+    import ManageWorkload from './components/ManageWorkload.svelte';
+    import type { ManagementSelection } from './lib/manage';
     import Chat from './components/Chat.svelte';
     import ActionResult from './components/ActionResult.svelte';
     import ProviderSettings from './components/ProviderSettings.svelte';
@@ -23,6 +25,7 @@
 
     const desktop = isTauri();
     let page = $state('dashboard');
+    let management: ManagementSelection | null = $state(null);
     let live: Snapshot | null = $state(null);
     let demo = $state(!desktop);
     let demoPressure = $state(false);
@@ -357,6 +360,9 @@
                             {snapshot}
                             workload={selected}
                             {actionBusy}
+                            onmanage={(selection) => {
+                                management = selection;
+                            }}
                             onback={() => {
                                 selectedId = null;
                                 chatOpen = false;
@@ -379,6 +385,9 @@
                 {:else}<Dashboard
                         {snapshot}
                         {selectedId}
+                        onmanage={(selection) => {
+                            management = selection;
+                        }}
                         onselect={select}
                         onask={ask}
                         onusage={() => {
@@ -424,6 +433,16 @@
             }}
         />{/if}
 </div>
+
+{#if management && snapshot && !demo}
+    <ManageWorkload
+        selection={management}
+        {snapshot}
+        onclose={() => {
+            management = null;
+        }}
+    />
+{/if}
 
 {#if pendingAction}<div class="modal-backdrop">
         <div

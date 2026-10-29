@@ -11,6 +11,7 @@
         WorkloadDetails,
     } from '../lib/types';
     import AppIcon from './AppIcon.svelte';
+    import type { ManagementSelection } from '../lib/manage';
 
     let {
         snapshot,
@@ -20,6 +21,7 @@
         onask,
         onaction,
         onusage,
+        onmanage,
     }: {
         snapshot: Snapshot;
         workload: Workload;
@@ -28,6 +30,7 @@
         onask: (process: ProcessRecord | null) => void;
         onaction: (process: ProcessRecord, action: string) => void;
         onusage: () => void;
+        onmanage: (selection: ManagementSelection) => void;
     } = $props();
     let detail: WorkloadDetails | null = $state(null);
     let selected: { pid: number; start_time: number } | null = $state(null);
@@ -113,6 +116,9 @@
         <p class="muted">{workload.attribution}</p>
     </div>
     <button class="primary" onclick={() => onask(null)}>Ask about this workload ↗</button>
+    <button disabled={demo} onclick={() => onmanage({ workload_id: workload.id })}
+        >Manage this workload</button
+    >
 </div>
 <div class="detail-stats" aria-label="Workload resource use">
     <div><span>CPU · total capacity</span><strong>{percent(current.cpu_percent)}</strong></div>
@@ -236,6 +242,15 @@
                 </div>
                 <button disabled={!!error} onclick={() => onask(process)}
                     >Investigate this process ↗</button
+                >
+                <button
+                    disabled={demo || !!error}
+                    onclick={() =>
+                        onmanage({
+                            workload_id: workload.id,
+                            pid: process.pid,
+                            start_time: process.start_time,
+                        })}>Manage this command</button
                 >
             </div>
             <h3>Where did it come from?</h3>

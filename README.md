@@ -55,6 +55,11 @@ repeated `top` subprocesses are imported.
 
 ## Application icons and process origins
 
+**Manage this workload** turns an observed finite command or a project check into a reviewed
+validation profile. Preview the command, memory estimate, and optional Claude/Codex/Muse MCP
+changes before approving it. Run, inspect, or revoke profiles from the desktop. See the
+[shared validation setup guide](docs/validation-queue.md#from-the-desktop).
+
 Workloads show artwork from the installed app: `NSWorkspace` on macOS and the Windows shell
 on Windows. Jitterbug rasterizes small PNGs on demand, caches at most 128 icons in memory,
 and limits frontend requests to two at a time. No icon search, download, or model call occurs.

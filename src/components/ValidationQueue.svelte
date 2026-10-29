@@ -4,8 +4,17 @@
     import { errorMessage, memory, percent } from '../lib/format';
     import type { Snapshot, Workload } from '../lib/types';
     import AppIcon from './AppIcon.svelte';
+    import type { ManagementSelection } from '../lib/manage';
 
-    let { snapshot, onselect }: { snapshot: Snapshot; onselect: (w: Workload) => void } = $props();
+    let {
+        snapshot,
+        onselect,
+        onmanage,
+    }: {
+        snapshot: Snapshot;
+        onselect: (w: Workload) => void;
+        onmanage: (selection: ManagementSelection) => void;
+    } = $props();
     let queue: ValidationQueue | null = $state(null);
     let error = $state('');
     let busy = $state(false);
@@ -84,6 +93,7 @@
             <p>{queue?.reason ?? 'Reading queue status…'}</p>
         </div>
         <span class="count">{active.length}/1 running · {waiting.length} waiting</span>
+        <button disabled={demo} onclick={() => onmanage({})}>Manage workloads</button>
         <button
             disabled={demo || busy || !queue}
             onclick={() => control(queue?.paused ? 'resume' : 'pause')}

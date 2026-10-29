@@ -27,6 +27,79 @@ use tauri::{Emitter, Manager, State};
 pub type AppState = Arc<supervisor::Runtime>;
 
 #[tauri::command]
+async fn discover_managed_workload(
+    state: State<'_, AppState>,
+    selection: queue::manage::discovery::Selection,
+) -> Result<queue::manage::discovery::Discovery, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        queue::manage::discovery::discover(&snapshot, &selection)
+    })
+    .await
+    .map_err(|_| "Discovery unavailable.")?
+}
+
+#[tauri::command]
+async fn preview_managed_workload(
+    request: queue::manage::Request,
+) -> Result<queue::manage::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        queue::manage::prepare(
+            &queue::directory()?,
+            &queue::manage::connections::Locations::current()?,
+            &std::env::current_exe().map_err(|_| "Cannot locate the app.")?,
+            request,
+        )
+    })
+    .await
+    .map_err(|_| "Setup unavailable.")?
+}
+
+#[tauri::command]
+fn discard_managed_preview(token: String) {
+    queue::manage::discard(&token);
+}
+
+#[tauri::command]
+async fn approve_managed_workload(token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || queue::manage::apply(&token))
+        .await
+        .map_err(|_| "Setup unavailable.")?
+}
+
+#[tauri::command]
+async fn get_managed_workloads() -> Result<Vec<queue::manage::ManagedProfile>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        queue::manage::overview(
+            &queue::directory()?,
+            &queue::manage::connections::Locations::current()?,
+        )
+    })
+    .await
+    .map_err(|_| "Setup unavailable.")?
+}
+
+#[tauri::command]
+async fn run_managed_workload(name: String) -> Result<queue::JobView, String> {
+    tauri::async_runtime::spawn_blocking(move || queue::manage::submit_profile(&name))
+        .await
+        .map_err(|_| "Queue unavailable.")?
+}
+
+#[tauri::command]
+async fn revoke_managed_workload(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        queue::manage::revoke_profile(&queue::directory()?, &name)
+    })
+    .await
+    .map_err(|_| "Queue unavailable.")?
+}
+
+#[tauri::command]
 async fn get_validation_queue() -> Result<queue::View, String> {
     tauri::async_runtime::spawn_blocking(|| queue::inspect(&queue::directory()?).map(|s| s.view()))
         .await
@@ -539,6 +612,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            discover_managed_workload,
+            discard_managed_preview,
+            preview_managed_workload,
+            approve_managed_workload,
+            get_managed_workloads,
+            run_managed_workload,
+            revoke_managed_workload,
             get_validation_queue,
             control_validation_queue,
             get_snapshot,

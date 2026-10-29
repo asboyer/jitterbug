@@ -9,7 +9,7 @@
         "preview": "vite preview --host 127.0.0.1",
         "check": "svelte-check --tsconfig ./tsconfig.json",
         "tauri": "tauri",
-        "test": "cargo test --manifest-path src-tauri/Cargo.toml --lib --test workflow_launcher --test validation_queue",
+        "test": "cargo test --manifest-path src-tauri/Cargo.toml --lib --test workflow_launcher --test validation_queue --test managed_workloads",
         "verify": "npm run build && npm test",
         "smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe",
         "format": "prettier --write . && cargo fmt --manifest-path src-tauri/Cargo.toml",

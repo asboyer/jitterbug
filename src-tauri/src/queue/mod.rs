@@ -2,6 +2,7 @@
 //! The desktop publishes headroom and schedules. Clients can request only saved profiles.
 pub mod cli;
 pub mod inputs;
+pub mod manage;
 pub mod mcp;
 pub mod resources;
 mod worker;

@@ -3,13 +3,19 @@
     import WorkflowResources from './WorkflowResources.svelte';
     import TaskNarrative from './TaskNarrative.svelte';
     import type { Snapshot, Workload } from '../lib/types';
+    import type { ManagementSelection } from '../lib/manage';
 
     let {
         snapshot,
         onselect,
         onusage,
-    }: { snapshot: Snapshot; onselect: (workload: Workload) => void; onusage: () => void } =
-        $props();
+        onmanage,
+    }: {
+        snapshot: Snapshot;
+        onselect: (workload: Workload) => void;
+        onusage: () => void;
+        onmanage: (selection: ManagementSelection) => void;
+    } = $props();
 
     function time(value: number): string {
         return new Date(value * 1000).toLocaleTimeString([], {
@@ -60,6 +66,10 @@
             </p>
             <WorkflowResources {workflow} interval={snapshot.interval_ms} />
             <TaskNarrative {workflow} {onusage} demo={snapshot.source === 'demo'} />
+            <button
+                disabled={snapshot.source === 'demo'}
+                onclick={() => onmanage({ task_id: workflow.task_id })}>Manage this workload</button
+            >
             <details class="technical-detail">
                 <summary>Sessions & evidence · {workflow.agents.length}</summary>
                 <div class="agent-list">
