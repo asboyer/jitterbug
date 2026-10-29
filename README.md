@@ -258,3 +258,29 @@ To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select 
 Extend cooperative queue integration with harness-specific enforcement and verify desktop-agent setup end to end. Keep any transcript parsing local and preserve identity checks. Implement Windows-specific sensors and process actions, measure release-build overhead across representative machines, and evaluate small-model accuracy before broadening local responsibilities. Offloading requires explicit job/runtime integrations; an arbitrary running process cannot simply be moved to the cloud.
 
 Provider references: [Meta Chat Completions](https://dev.meta.ai/docs/protocols/chat-completions), [Meta pricing](https://dev.meta.ai/docs/pricing-rate-limits), [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Ollama Chat API](https://docs.ollama.com/api/chat), [Tev](https://ollama.com/library/tev1:0.8b), and [Jev System One](https://docs.typesafe.ai/introduction/quickstart). Provider account settings determine retention and any free-credit data terms; Jitterbug does not change those settings.
+
+### Interface regression checks
+
+The main **Activity** view focuses on computer health and current resource users.
+Use the sidebar for the full **Workloads** list, **Agent tasks**, **Validation queue**,
+and the **Inbox** of proposed optimizations and incident history. Open a task to see
+its request, suggestions, resource measurements, and session evidence. Disclosures
+stay in the state you choose during live refreshes. Completed task records are green;
+that status does not independently prove the requested product change was correct.
+
+The incident assistant leads with the observed change, proposed action, and result.
+Full model output, routing, measurements, and action logs remain expandable. New
+incidents do not replace an open workload, setup dialog, chat, or specialist view.
+
+Run the isolated UI scenarios with synthetic fixtures (no models or process actions):
+
+```sh
+npx playwright install chromium --only-shell
+npm run test:ui
+```
+
+These checks cover navigation, task and session disclosures across telemetry refreshes,
+completed status, simulated pressure, disabled demo actions, and the minimum window
+width. Desktop visual checks also exercise the packaged WebKit UI and real telemetry.
+Screenshots and test output stay ignored. **Demo & testing** in the app provides the
+same synthetic scenarios without generating resource load or inference requests.

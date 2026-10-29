@@ -12,7 +12,7 @@ export function demoWorkflow(time: number, pressure: boolean): AgentWorkflow {
         (agent, index) => ({
             run_id: `demo-run-${index}`,
             agent,
-            harness: 'Example harness',
+            harness: index === 0 ? 'claude' : 'codex',
             worktree: `/example/worktrees/task-${index}`,
             role: 'agent',
             status: 'active',

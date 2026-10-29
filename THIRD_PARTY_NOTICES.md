@@ -34,3 +34,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Harness logos
+
+Claude, OpenAI, and Meta SVG marks in `src/assets/harnesses/` come from
+[Simple Icons 14.15.0](https://github.com/simple-icons/simple-icons/tree/14.15.0/icons),
+released under [CC0 1.0](https://github.com/simple-icons/simple-icons/blob/14.15.0/LICENSE.md).
+The license is included alongside the assets. These marks identify their respective
+harnesses; trademarks belong to their owners and do not imply endorsement.

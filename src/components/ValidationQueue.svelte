@@ -121,7 +121,7 @@
                     </span>
                     <strong>{job.task}</strong>
                     <span class="muted harness">{job.harness}</span>
-                    <span class="stage">{job.stage}</span>
+                    <span class="stage" class:passed={job.stage === 'passed'}>{job.stage}</span>
                 </summary>
                 <div class="job-detail">
                     <p>{job.message}</p>
@@ -201,10 +201,7 @@
             </details>
         {/if}
         {#if queue.resources.suggestions.length > 0 && queue.resources.captured_at + 15 >= Math.floor(Date.now() / 1000)}
-            <details
-                class="contention"
-                open={!queue.paused && waiting.length > 0 && active.length === 0}
-            >
+            <details class="contention">
                 <summary
                     >Make room <span class="muted"
                         >{queue.resources.suggestions.length} competing workloads</span
@@ -265,13 +262,20 @@
 </section>
 
 <style>
+    .stage.passed {
+        color: var(--success);
+    }
+
     .validation-panel {
-        padding: 14px 18px;
+        padding: 18px;
+        container-type: inline-size;
+        container-name: validation;
     }
     .queue-heading {
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 14px 12px;
+        flex-wrap: wrap;
     }
     .slot {
         display: grid;
@@ -296,7 +300,7 @@
         stroke-linejoin: round;
     }
     .queue-title {
-        flex: 1;
+        flex: 1 1 260px;
         min-width: 0;
     }
     .queue-title h2 {
@@ -429,7 +433,7 @@
     .remaining-job > span:first-child {
         flex: 1;
     }
-    @container dashboard (max-width: 700px) {
+    @container validation (max-width: 700px) {
         .count {
             display: none;
         }

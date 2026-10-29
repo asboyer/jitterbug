@@ -108,7 +108,7 @@
     }
 </script>
 
-<button class="text-button back" onclick={onback}>‹ All workloads</button>
+<button class="text-button back" onclick={onback}>‹ Back</button>
 <div class="detail-heading">
     <AppIcon workloadId={workload.id} category={workload.category} size={56} {demo} />
     <div class="heading-copy">

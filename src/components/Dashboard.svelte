@@ -4,39 +4,51 @@
     import ActivityGraph from './ActivityGraph.svelte';
     import ResourceRing from './ResourceRing.svelte';
     import AppIcon from './AppIcon.svelte';
-    import AgentWorkflows from './AgentWorkflows.svelte';
-    import ValidationQueue from './ValidationQueue.svelte';
-    import type { ManagementSelection } from '../lib/manage';
+    import Icon from './Icon.svelte';
 
     let {
         snapshot,
-        selectedId,
         onselect,
         onask,
-        onusage,
-        onmanage,
+        onworkloads,
     }: {
         snapshot: Snapshot;
-        selectedId: string | null;
         onselect: (workload: Workload) => void;
         onask: () => void;
-        onusage: () => void;
-        onmanage: (selection: ManagementSelection) => void;
+        onworkloads: () => void;
     } = $props();
-    let search = $state('');
-    let sort = $state('impact');
+    const memoryTight = $derived(
+        snapshot.memory_available_bytes / snapshot.memory_total_bytes < 0.15
+    );
+    const busy = $derived(snapshot.pressure.level !== 'normal');
+    const leaders = $derived(
+        [...snapshot.workloads]
+            .sort((a, b) =>
+                memoryTight
+                    ? b.memory_bytes - a.memory_bytes
+                    : b.cpu_percent - a.cpu_percent || b.memory_bytes - a.memory_bytes
+            )
+            .slice(0, 5)
+    );
+    const categories: Record<string, string> = {
+        app: 'Application',
+        browser: 'Browser processes',
+        project: 'Development work',
+        agent: 'Coding tool',
+        editor: 'Editor or coding tool',
+        build: 'Build tooling',
+        python: 'Python process',
+        javascript: 'JavaScript process',
+        jitterbug: 'Resource assistant',
+        test: 'Test process',
+        model: 'Local model',
+        system: 'System work',
+        other: 'App or system process',
+    };
     const usedPercent = $derived(
         100 * (1 - snapshot.memory_available_bytes / snapshot.memory_total_bytes)
     );
     const breakdown = $derived(snapshot.platform.memory);
-    const rows = $derived.by(() => {
-        const filtered = snapshot.workloads.filter((w) =>
-            `${w.label} ${w.category}`.toLowerCase().includes(search.toLowerCase())
-        );
-        if (sort === 'cpu') return filtered.sort((a, b) => b.cpu_percent - a.cpu_percent);
-        if (sort === 'memory') return filtered.sort((a, b) => b.memory_bytes - a.memory_bytes);
-        return filtered;
-    });
 </script>
 
 <div class="dashboard">
@@ -48,6 +60,27 @@
             >Ask Jitterbug <span aria-hidden="true">↗</span></button
         >
     </div>
+    <section class="health-summary" class:busy aria-label="Computer health">
+        <span class="health-symbol"><Icon name="activity" size={24} /></span>
+        <div>
+            <h2>
+                {!snapshot.sample_ready
+                    ? 'Getting a reading…'
+                    : busy
+                      ? 'Your computer is working hard'
+                      : 'Your computer has room to work'}
+            </h2>
+            <p>
+                {!snapshot.sample_ready
+                    ? 'CPU needs a second sample before we can assess activity.'
+                    : memoryTight
+                      ? 'Memory is tight. Start with the largest apps below.'
+                      : busy
+                        ? 'Review the busiest workloads or ask Jitterbug to investigate.'
+                        : 'No system pressure detected. Here’s where resources are going.'}
+            </p>
+        </div>
+    </section>
     <section class="system-panel panel" aria-label="System resources">
         <div class="metrics">
             <article class="metric">
@@ -161,112 +194,51 @@
             </details>
         </article>
     </section>
-    <ValidationQueue {snapshot} {onselect} {onmanage} />
-    <div class="activity-columns">
-        <AgentWorkflows {snapshot} {onselect} {onusage} {onmanage} />
-        <section class="panel workload-panel">
-            <div class="section-title">
-                <div>
-                    <h2>Workloads</h2>
-                    <span class="muted">{snapshot.process_count} processes · up to 40 groups</span>
-                </div>
-                <div class="filters">
-                    <input
-                        aria-label="Filter workloads"
-                        placeholder="Search"
-                        bind:value={search}
-                    /><select aria-label="Sort workloads" bind:value={sort}
-                        ><option value="impact">Impact</option><option value="cpu">CPU</option
-                        ><option value="memory">Memory</option></select
-                    >
-                </div>
+    <section class="panel contributors" aria-label="Top resource users">
+        <div class="section-title">
+            <div>
+                <h2>{memoryTight ? 'Using the most memory' : 'Using the most CPU'}</h2>
+                <p class="muted">Select an app to see what it’s doing and what you can change.</p>
             </div>
-            <div class="workload-header">
-                <span>Application / workload</span><span>CPU</span><span>Memory</span>
-            </div>
-            {#each rows as workload (workload.id)}
-                <button
-                    class:chosen={selectedId === workload.id}
-                    class="workload-row"
-                    onclick={() => onselect(workload)}
-                    title={`${workload.description} · Click to investigate`}
+            <button class="text-button" onclick={onworkloads}>All workloads ↗</button>
+        </div>
+        {#each leaders as workload (workload.id)}
+            <button class="contributor" onclick={() => onselect(workload)}>
+                <AppIcon
+                    workloadId={workload.id}
+                    category={workload.category}
+                    demo={snapshot.source === 'demo'}
+                />
+                <span class="contributor-copy"
+                    ><strong>{workload.label}</strong><small
+                        >{categories[workload.category] ?? 'Workload'} · {memoryTight
+                            ? `${workload.process_count} processes`
+                            : `${memory(workload.memory_bytes)} memory`}</small
+                    ></span
                 >
-                    <div class="workload-main">
-                        <AppIcon
-                            workloadId={workload.id}
-                            category={workload.category}
-                            demo={snapshot.source === 'demo'}
-                        />
-                        <div>
-                            <div class="workload-name">
-                                <strong>{workload.label}</strong><span class="row-count"
-                                    >{workload.process_count}
-                                    {workload.process_count === 1 ? 'process' : 'processes'}</span
-                                >
-                            </div>
-                        </div>
-                    </div>
-                    <span class="numeric usage-cell"
-                        ><span>{snapshot.sample_ready ? percent(workload.cpu_percent) : '—'}</span
-                        ><span class="usage-bar" aria-hidden="true"
-                            ><i
-                                style={`width:${snapshot.sample_ready ? Math.min(workload.cpu_percent, 100) : 0}%`}
-                            ></i></span
-                        ></span
-                    ><span class="numeric">{memory(workload.memory_bytes)}</span>
-                </button>
-            {:else}<p class="empty">No matching workloads in the current sample.</p>{/each}
-            <p class="footnote">
-                CPU: share of all cores · Memory: summed RSS, including shared pages. Select a row
-                to investigate.
-            </p>
-        </section>
-    </div>
+                <span class="contributor-value"
+                    >{memoryTight
+                        ? memory(workload.memory_bytes)
+                        : snapshot.sample_ready
+                          ? percent(workload.cpu_percent)
+                          : '—'}<small>{memoryTight ? 'memory' : 'CPU'}</small></span
+                >
+                <span class="muted" aria-hidden="true">›</span>
+            </button>
+        {:else}<p class="empty">Waiting for workload samples.</p>{/each}
+        <div class="activity-footer">
+            <Icon name="bulb" size={16} /><span>Something feels slow?</span><button
+                class="text-button"
+                onclick={onask}>Help me find out why ↗</button
+            >
+        </div>
+    </section>
 </div>
 
 <style>
     .dashboard {
         container-type: inline-size;
         container-name: dashboard;
-    }
-    .activity-columns {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 16px;
-        align-items: start;
-    }
-    .workload-panel .section-title {
-        gap: 10px;
-    }
-    .filters {
-        flex: 1;
-        justify-content: flex-end;
-    }
-    .filters input {
-        width: 120px;
-    }
-    .workload-name {
-        display: block;
-    }
-    .workload-name strong {
-        display: block;
-    }
-    .workload-header,
-    .workload-row {
-        grid-template-columns: minmax(0, 1fr) 54px 72px;
-        column-gap: 14px;
-    }
-    .workload-name strong {
-        font-size: 12px;
-    }
-    .row-count {
-        display: block;
-        margin: 3px 0 0;
-    }
-    @container dashboard (min-width: 860px) {
-        .activity-columns {
-            grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
-        }
     }
     @container dashboard (max-width: 620px) {
         .metric :global(.resource-ring),
@@ -363,26 +335,6 @@
     .detail-label {
         float: right;
     }
-    .usage-cell {
-        display: grid;
-        gap: 5px;
-    }
-    .usage-bar {
-        height: 3px;
-        border-radius: 2px;
-        background: var(--track);
-        overflow: hidden;
-    }
-    .usage-bar i {
-        display: block;
-        height: 100%;
-        background: var(--accent);
-        opacity: 0.7;
-    }
-    .workload-row {
-        padding-top: 10px;
-        padding-bottom: 10px;
-    }
     @media (max-width: 900px) {
         .metric {
             gap: 8px;
@@ -394,5 +346,89 @@
         .pressure-symbol {
             display: none;
         }
+    }
+    .health-summary {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 0 22px;
+    }
+    .health-symbol {
+        display: flex;
+        color: var(--success);
+        background: var(--success-soft);
+        padding: 12px;
+        border-radius: 14px;
+    }
+    .busy .health-symbol {
+        color: var(--warning);
+        background: var(--warning-soft);
+    }
+    .health-summary h2 {
+        font-size: 17px;
+        margin: 0 0 5px;
+    }
+    .health-summary p {
+        color: var(--muted);
+        margin: 0;
+        line-height: 1.5;
+    }
+    .contributors {
+        overflow: hidden;
+    }
+    .contributors .section-title {
+        padding: 16px 18px;
+        margin: 0;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .contributors .section-title p {
+        margin: 5px 0 0;
+        font-size: 11px;
+    }
+    .contributor {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        text-align: left;
+        width: 100%;
+        border: 0;
+        border-top: 1px solid var(--border);
+        border-radius: 0;
+        padding: 14px 18px;
+        background: transparent;
+    }
+    .contributor-copy {
+        flex: 1;
+        min-width: 0;
+        display: grid;
+        gap: 5px;
+    }
+    .contributor-copy small {
+        color: var(--muted);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: 11px;
+    }
+    .contributor-value {
+        display: grid;
+        gap: 4px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+    .contributor-value small {
+        color: var(--muted);
+        font-size: 10px;
+    }
+    .activity-footer {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 18px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 11px;
     }
 </style>

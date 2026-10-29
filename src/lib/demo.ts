@@ -1,5 +1,5 @@
 import { demoWorkflow } from './demo-workflow';
-import type { Bootstrap, Snapshot, WorkloadDetails } from './types';
+import type { AutomationCase, Bootstrap, Snapshot, WorkloadDetails } from './types';
 
 export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
     const workload = snapshot.workloads.find((w) => w.id === id)!;
@@ -105,7 +105,23 @@ export function demoSnapshot(pressure = false): Snapshot {
         swap_out_bytes: pressure ? 48 * 1024 ** 2 : 0,
         process_count: 120,
         workloads,
-        agent_workflows: [demoWorkflow(time, pressure)],
+        agent_workflows: [
+            demoWorkflow(time, pressure),
+            {
+                ...demoWorkflow(time - 120, false),
+                task_id: 'EXAMPLE-41',
+                task_title: 'Check keyboard focus behavior',
+                status: 'completed',
+                active_agents: 0,
+                agents: [
+                    {
+                        ...demoWorkflow(time - 120, false).agents[0],
+                        harness: 'muse',
+                        status: 'completed',
+                    },
+                ],
+            },
+        ],
         processes: workloads.map((w, index) => ({
             pid: 9000 + index,
             start_time: time - 60,
@@ -184,3 +200,74 @@ export const demoBootstrap: Bootstrap = {
     credentials: [],
     spending: { reserved_usd: 0, reported_estimate_usd: 0, requests: 0 },
 };
+
+/** Handwritten incidents for UI exploration; all mutation controls remain disabled. */
+export function demoIncidents(): AutomationCase[] {
+    const snapshot = demoSnapshot(true);
+    const process = snapshot.processes[0];
+    const base: AutomationCase = {
+        id: -1,
+        source: 'demo',
+        detected_at: snapshot.captured_at,
+        trigger: {
+            key: 'demo-cpu',
+            kind: 'app_cpu',
+            title: 'Build workers are busy',
+            reason: 'Synthetic example: overlapping checks are using CPU.',
+            target: { workload_id: process.workload_id, label: 'sample-web-app', pid: null },
+        },
+        stage: 'awaiting_approval',
+        steps: [
+            {
+                at: snapshot.captured_at,
+                stage: 'awaiting_approval',
+                message: 'Example proposal ready to review. Nothing has been changed.',
+            },
+        ],
+        evidence: null,
+        diagnosis: {
+            source: 'demo',
+            provider: null,
+            model: null,
+            text: 'Synthetic explanation: two checks overlap. Letting checks take turns may leave more room for other apps. This is not a diagnosis of this device.',
+            route: ['Synthetic fixture. No model called.'],
+            estimated_cost_usd: 0,
+            investigation: null,
+            choices: [],
+            tier: 'demo',
+        },
+        proposal: {
+            process,
+            action: 'lower_priority',
+            rationale:
+                'Give other work scheduling preference. This does not free memory or guarantee lower CPU use.',
+        },
+        report: null,
+        verification: null,
+        automatic: false,
+    };
+    return [
+        base,
+        {
+            ...base,
+            id: -2,
+            detected_at: snapshot.captured_at - 120,
+            stage: 'resolved',
+            trigger: {
+                ...base.trigger,
+                kind: 'memory_pressure',
+                title: 'Memory pressure eased',
+                target: null,
+            },
+            proposal: null,
+            diagnosis: null,
+            steps: [
+                {
+                    at: snapshot.captured_at - 90,
+                    stage: 'resolved',
+                    message: 'The example pressure cleared before an action was needed.',
+                },
+            ],
+        },
+    ];
+}

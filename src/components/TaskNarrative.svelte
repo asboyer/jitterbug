@@ -18,6 +18,9 @@
     let cacheLoading = $state(false);
     let error = $state('');
     const narrative = $derived(workflow.narrative);
+    const assignments = $derived([
+        ...new Map(narrative.assignments.map((item) => [item.request, item])).values(),
+    ]);
     const taskKey = $derived(workflow.narrative.task_key);
     const taskId = $derived(workflow.task_id);
     const summary = $derived.by(() => (result?.key === narrative.task_key ? result.profile : null));
@@ -120,7 +123,7 @@
                     intended work, not completion.</small
                 >
             {/if}
-            {#each narrative.assignments as assignment, index (index)}
+            {#each assignments as assignment, index (index)}
                 <div class="assignment">
                     <strong>{assignment.agent}</strong>
                     <p>{assignment.request}</p>
@@ -152,15 +155,16 @@
                     The request changed; its earlier AI summary is no longer shown.
                 </p>{/if}
             {#if error}<p class="error" role="alert">{error}</p>{/if}
+            {#if activity.length}
+                <div class="activity" aria-label="Reported harness tool events">
+                    <span class="muted">Reported</span>
+                    {#each activity as item}<span><strong>{item.count}</strong> {item.label}</span
+                        >{/each}
+                </div>
+            {/if}
             <p class="muted">{narrative.activity}</p>
         </div>
     </details>
-    {#if activity.length}
-        <div class="activity" aria-label="Reported harness tool events">
-            <span class="muted">Reported</span>
-            {#each activity as item}<span><strong>{item.count}</strong> {item.label}</span>{/each}
-        </div>
-    {/if}
     {#if recommendation}
         <details class="tip">
             <summary>

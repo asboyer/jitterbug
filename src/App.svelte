@@ -5,13 +5,17 @@
     import AutomationPanel from './components/AutomationPanel.svelte';
     import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
+    import Workloads from './components/Workloads.svelte';
+    import AgentWorkflows from './components/AgentWorkflows.svelte';
+    import ValidationQueue from './components/ValidationQueue.svelte';
+    import IncidentInbox from './components/IncidentInbox.svelte';
     import WorkloadDetails from './components/WorkloadDetails.svelte';
     import ManageWorkload from './components/ManageWorkload.svelte';
     import type { ManagementSelection } from './lib/manage';
     import Chat from './components/Chat.svelte';
     import ActionResult from './components/ActionResult.svelte';
     import ProviderSettings from './components/ProviderSettings.svelte';
-    import { demoBootstrap, demoSnapshot } from './lib/demo';
+    import { demoBootstrap, demoSnapshot, demoIncidents } from './lib/demo';
     import { errorMessage } from './lib/format';
     import type {
         ActionReport,
@@ -25,6 +29,17 @@
 
     const desktop = isTauri();
     let page = $state('dashboard');
+    let demoMenuOpen = $state(false);
+    const pages = [
+        { id: 'dashboard', label: 'Activity', icon: 'activity' },
+        { id: 'workloads', label: 'Workloads', icon: 'app' },
+        { id: 'agents', label: 'Agent tasks', icon: 'code' },
+        { id: 'queue', label: 'Validation queue', icon: 'queue' },
+        { id: 'inbox', label: 'Inbox', icon: 'inbox' },
+        { id: 'settings', label: 'Settings', icon: 'settings' },
+    ] as const;
+    let demoTick = $state(0);
+    const demoCases = demoIncidents();
     let management: ManagementSelection | null = $state(null);
     let live: Snapshot | null = $state(null);
     let demo = $state(!desktop);
@@ -37,15 +52,34 @@
     let automationOpen = $state(false);
     let automaticId: number | null = $state(null);
     let cases: AutomationCase[] = $state([]);
+    const visibleCases = $derived(demo ? demoCases : cases);
+    const attentionCount = $derived(
+        visibleCases.filter(
+            (item) => item.stage === 'awaiting_approval' || item.stage === 'blocked'
+        ).length
+    );
     let selectedContext: Workload | null = $state(null);
-    const automaticCase = $derived(cases.find((c) => c.id === automaticId) ?? cases[0] ?? null);
+    const automaticCase = $derived(
+        visibleCases.find((c) => c.id === automaticId) ?? visibleCases[0] ?? null
+    );
     let error = $state('');
     let actionReport: ActionReport | null = $state(null);
     let alert: Incident | null = $state(null);
     let pendingAction: { process: ProcessRecord; action: string } | null = $state(null);
     let actionBusy = $state(false);
     let mainElement: HTMLElement | undefined = $state();
-    const snapshot = $derived(demo ? demoSnapshot(demoPressure) : live);
+    const snapshot = $derived.by(() => {
+        if (!demo) return live;
+        demoTick;
+        return demoSnapshot(demoPressure);
+    });
+    $effect(() => {
+        if (!demo) return;
+        const timer = setInterval(() => {
+            demoTick += 1;
+        }, 5000);
+        return () => clearInterval(timer);
+    });
     const selected = $derived.by(
         () =>
             snapshot?.workloads.find((w) => w.id === selectedId) ??
@@ -82,13 +116,22 @@
                 const automatic = await listen<AutomationCase>('automation-case', (event) => {
                     const incident = event.payload;
                     cases = [incident, ...cases.filter((c) => c.id !== incident.id)].slice(0, 12);
-                    if (incident.stage === 'detected') {
+                    if (incident.stage === 'detected' && !demo) {
                         demo = false;
                         demoPressure = false;
                         alert = null;
-                        automaticId = incident.id;
-                        automationOpen = true;
-                        chatOpen = false;
+                        // Keep the current reading context. The inbox badge surfaces new incidents.
+                        if (
+                            !automationOpen &&
+                            !chatOpen &&
+                            !selectedId &&
+                            !management &&
+                            !demoMenuOpen &&
+                            page === 'dashboard'
+                        ) {
+                            automaticId = incident.id;
+                            automationOpen = true;
+                        }
                     }
                     if (
                         [
@@ -122,8 +165,9 @@
                 const navigation = await listen<{ page: string; workload: Workload | null }>(
                     'navigate',
                     (event) => {
-                        page = event.payload.page;
+                        navigate(event.payload.page);
                         if (page === 'dashboard') {
+                            demoMenuOpen = false;
                             demo = false;
                             demoPressure = false;
                             alert = null;
@@ -156,6 +200,19 @@
         };
     });
 
+    function navigate(next: string) {
+        page = next;
+        demoMenuOpen = false;
+        selectedId = null;
+        selectedContext = null;
+        chatOpen = false;
+        automationOpen = false;
+    }
+    function showIncident(id: number) {
+        automaticId = id;
+        automationOpen = true;
+        chatOpen = false;
+    }
     function select(workload: Workload) {
         followUpContext = null;
         selectedId = workload.id;
@@ -197,6 +254,7 @@
         actionReport = incident.report;
     }
     async function simulatePressure() {
+        demoMenuOpen = false;
         followUpContext = null;
         automationOpen = false;
         if (desktop) {
@@ -239,27 +297,22 @@
             href="#dashboard"
             onclick={(event) => {
                 event.preventDefault();
-                page = 'dashboard';
-                selectedId = null;
-                chatOpen = false;
+                navigate('dashboard');
             }}><Icon name="bug" size={22} /> Jitterbug</a
         >
         <div class="nav-links">
-            <button
-                class:active={page === 'dashboard'}
-                onclick={() => {
-                    page = 'dashboard';
-                    selectedId = null;
-                    chatOpen = false;
-                }}><Icon name="activity" /><span>Workloads</span></button
-            ><button
-                class:active={page === 'settings'}
-                onclick={() => {
-                    page = 'settings';
-                    chatOpen = false;
-                    automationOpen = false;
-                }}><Icon name="settings" /><span>Settings</span></button
-            >
+            {#each pages as item}
+                <button
+                    class:active={page === item.id}
+                    aria-current={page === item.id ? 'page' : undefined}
+                    onclick={() => navigate(item.id)}
+                >
+                    <Icon name={item.icon} size={17} /><span>{item.label}</span>
+                    {#if item.id === 'inbox' && attentionCount}<span class="nav-count"
+                            >{attentionCount}</span
+                        >{/if}
+                </button>
+            {/each}
         </div>
         <div class="sidebar-bottom">
             <span class="tag">{bootstrap.settings.mode.replaceAll('_', ' ')}</span>
@@ -283,25 +336,41 @@
                       : 'Connecting…'}</span
             >
             <div>
-                <button
-                    class="text-button"
-                    disabled={!cases.length || demo}
-                    onclick={() => {
-                        automationOpen = true;
-                        chatOpen = false;
-                    }}>Incidents ({cases.length})</button
-                >
-                <button class="text-button" onclick={simulatePressure}>Simulate pressure</button
-                ><button
-                    class="text-button"
-                    disabled={!desktop}
-                    onclick={() => {
-                        demo = !demo;
-                        demoPressure = false;
-                        alert = null;
-                        selectedId = null;
-                    }}>{demo ? 'Return to live' : 'Explore demo'}</button
-                >
+                {#if attentionCount}<button class="text-button" onclick={() => navigate('inbox')}
+                        >{attentionCount}
+                        {attentionCount === 1 ? 'item needs' : 'items need'} attention</button
+                    >{/if}
+                {#if demo}<button
+                        class="text-button"
+                        disabled={!desktop}
+                        onclick={() => {
+                            demoMenuOpen = false;
+                            demo = false;
+                            demoPressure = false;
+                            alert = null;
+                            selectedId = null;
+                            automationOpen = false;
+                            chatOpen = false;
+                        }}>Return to live</button
+                    >{/if}
+                <details class="preview-menu" bind:open={demoMenuOpen}>
+                    <summary>Demo &amp; testing</summary>
+                    <div class="preview-actions">
+                        <button
+                            onclick={() => {
+                                demoMenuOpen = false;
+                                demo = true;
+                                demoPressure = false;
+                                alert = null;
+                                selectedId = null;
+                                chatOpen = false;
+                                automationOpen = false;
+                            }}>Explore demo</button
+                        >
+                        <button onclick={simulatePressure}>Simulate pressure</button>
+                        <small>Synthetic data. No extra CPU or memory load.</small>
+                    </div>
+                </details>
             </div>
         </header>
         {#if !desktop}<div class="banner demo-banner">
@@ -334,25 +403,19 @@
                 >
             </div>{/if}
         {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
-        {#if cases.length && !demo}<div class="incident-strip">
-                {#each cases.slice(0, 4) as incident}
-                    <button
-                        onclick={() => {
-                            automaticId = incident.id;
-                            automationOpen = true;
-                            chatOpen = false;
-                        }}
-                    >
-                        {incident.trigger.target?.label ?? 'System'} · {incident.stage.replaceAll(
-                            '_',
-                            ' '
-                        )}
-                    </button>
-                {/each}
-            </div>{/if}
         <div class="page-content">
             {#if page === 'settings'}
                 <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
+            {:else if page === 'inbox'}
+                <div class="page-heading">
+                    <div>
+                        <h1>Inbox</h1>
+                        <p class="muted">
+                            Resource alerts, proposed changes, and what happened next.
+                        </p>
+                    </div>
+                </div>
+                <IncidentInbox cases={visibleCases} onselect={showIncident} />
             {:else if snapshot && snapshot.memory_total_bytes > 0}
                 {#if selected}
                     {#key `${snapshot.source}:${selected.id}`}
@@ -382,18 +445,51 @@
                             }}
                         />
                     {/key}
-                {:else}<Dashboard
+                {:else if page === 'workloads'}
+                    <Workloads {snapshot} onselect={select} />
+                {:else if page === 'agents'}
+                    <div class="page-heading">
+                        <div>
+                            <h1>Agent tasks</h1>
+                            <p class="muted">
+                                What your coding tools are working on, and the resources they use.
+                            </p>
+                        </div>
+                    </div>
+                    <AgentWorkflows
                         {snapshot}
-                        {selectedId}
+                        onselect={select}
                         onmanage={(selection) => {
                             management = selection;
                         }}
-                        onselect={select}
-                        onask={ask}
                         onusage={() => {
                             void refreshBootstrap().catch(() => {});
                         }}
-                    />{/if}
+                    />
+                {:else if page === 'queue'}
+                    <div class="page-heading">
+                        <div>
+                            <h1>Validation queue</h1>
+                            <p class="muted">
+                                Let heavy checks take turns across your coding sessions.
+                            </p>
+                        </div>
+                    </div>
+                    <ValidationQueue
+                        {snapshot}
+                        onselect={select}
+                        onmanage={(selection) => {
+                            management = selection;
+                        }}
+                    />
+                {:else}
+                    <Dashboard
+                        {snapshot}
+                        onselect={select}
+                        onask={ask}
+                        onworkloads={() => navigate('workloads')}
+                    />
+                {/if}
             {:else}<div class="empty loading">
                     <span class="brand-mark">✳</span>
                     <h1>Getting to know your workloads</h1>
@@ -401,19 +497,19 @@
                 </div>{/if}
         </div>
     </main>
-    {#if automationOpen && automaticCase && !demo}<AutomationPanel
-            incident={automaticCase}
-            {cases}
-            onselect={(id) => {
-                automaticId = id;
-            }}
-            {desktop}
-            onrefresh={refreshBootstrap}
-            onclose={() => {
-                automationOpen = false;
-            }}
-            onask={followUp}
-        />{:else if chatOpen && snapshot}<Chat
+    {#if automationOpen && automaticCase}{#key automaticCase.id}<AutomationPanel
+                incident={automaticCase}
+                cases={visibleCases}
+                onselect={(id) => {
+                    automaticId = id;
+                }}
+                {desktop}
+                onrefresh={refreshBootstrap}
+                onclose={() => {
+                    automationOpen = false;
+                }}
+                onask={followUp}
+            />{/key}{:else if chatOpen && snapshot}<Chat
             {snapshot}
             workload={selected}
             {questionProcess}
