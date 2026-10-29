@@ -15,43 +15,45 @@ pub struct Inputs {
     pub fingerprint: Option<String>,
 }
 
-pub fn capture(path: &Path) -> Result<Inputs, String> {
-    let git = |args: &[&str]| {
-        Command::new("git")
+pub fn capture(path: &Path, search_path: Option<&str>) -> Result<Inputs, String> {
+    let git = |directory: &Path, args: &[&str]| {
+        let mut command = Command::new("git");
+        if let Some(value) = search_path {
+            command.env("PATH", value);
+        }
+        command
             .arg("-C")
-            .arg(path)
+            .arg(directory)
             .args(args)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
     };
-    let head = git(&["rev-parse", "HEAD"]);
+    let head = git(path, &["rev-parse", "HEAD"]);
     let Ok(head) = head else {
         return Ok(Inputs::default());
     };
     if !head.status.success() {
         return Ok(Inputs::default());
     }
-    let root = git(&["rev-parse", "--show-toplevel"]).map_err(|_| "Cannot inspect Git root.")?;
+    let root =
+        git(path, &["rev-parse", "--show-toplevel"]).map_err(|_| "Cannot inspect Git root.")?;
     let root = std::path::PathBuf::from(
         String::from_utf8(root.stdout)
             .map_err(|_| "Git root must be UTF-8.")?
             .trim(),
     );
-    let listing = Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args([
+    let listing = git(
+        &root,
+        &[
             "ls-files",
             "--cached",
             "--others",
             "--exclude-standard",
             "-z",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| "Cannot list validation inputs.")?;
+        ],
+    )
+    .map_err(|_| "Cannot list validation inputs.")?;
     if !listing.status.success() || listing.stdout.len() > 2 * 1024 * 1024 {
         return Err("Cannot fingerprint this worktree within the input limit.".into());
     }

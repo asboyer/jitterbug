@@ -41,7 +41,10 @@ pub fn run(directory: &Path, id: &str) -> Result<(), String> {
     {
         return Err("Worker does not own this job.".into());
     }
-    let inputs = inputs::capture(&original.profile.worktree);
+    let inputs = inputs::capture(
+        &original.profile.worktree,
+        original.profile.search_path.as_deref(),
+    );
     let allowed = transaction(directory, |s| {
         let reason = s.resources.block_reason(original.profile.memory_bytes);
         let approved = s.profiles.contains(&original.profile);
@@ -101,6 +104,9 @@ pub fn run(directory: &Path, id: &str) -> Result<(), String> {
     // Attribution registration must succeed before executing anything.
     crate::workflows::register(&registry, &manifest)?;
     let mut command = Command::new(&original.profile.command[0]);
+    if let Some(value) = &original.profile.search_path {
+        command.env("PATH", value);
+    }
     command
         .args(&original.profile.command[1..])
         .current_dir(&original.profile.worktree)
@@ -166,7 +172,10 @@ pub fn run(directory: &Path, id: &str) -> Result<(), String> {
             },
         ),
     };
-    let after = inputs::capture(&original.profile.worktree);
+    let after = inputs::capture(
+        &original.profile.worktree,
+        original.profile.search_path.as_deref(),
+    );
     let _ = crate::workflows::finish(&registry, &mut manifest, exit_code);
     storage::write(&directory.join(format!("{id}.output.json")), &output)?;
     transaction(directory, |s| {

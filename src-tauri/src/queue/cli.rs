@@ -24,9 +24,18 @@ JITTERBUG_QUEUE_DIR overrides the local registry for isolated development and te
 fn executable(name: &str) -> Result<PathBuf, String> {
     let direct = PathBuf::from(name);
     if direct.components().count() > 1 || direct.is_absolute() {
-        return direct
-            .canonicalize()
-            .map_err(|_| "Executable not found.".into());
+        let path = if direct.is_absolute() {
+            direct
+        } else {
+            std::env::current_dir()
+                .map_err(|_| "Working directory unavailable.")?
+                .join(direct)
+        };
+        return if path.is_file() {
+            Ok(path)
+        } else {
+            Err("Executable not found.".into())
+        };
     }
     for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         #[cfg(windows)]
@@ -36,9 +45,14 @@ fn executable(name: &str) -> Result<PathBuf, String> {
         for suffix in suffixes {
             let path = directory.join(format!("{name}{suffix}"));
             if path.is_file() {
-                return path
-                    .canonicalize()
-                    .map_err(|_| "Cannot resolve executable.".into());
+                // Keep symlink entrypoints (notably Python virtual environments).
+                return if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    Ok(std::env::current_dir()
+                        .map_err(|_| "Working directory unavailable.")?
+                        .join(path))
+                };
             }
         }
     }
@@ -94,6 +108,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     memory_bytes: memory
                         .checked_mul(1024 * 1024)
                         .ok_or("Memory estimate too large.")?,
+                    search_path: std::env::var("PATH").ok(),
                 },
             )?;
             println!("Approved validation profile saved locally.");

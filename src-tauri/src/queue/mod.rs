@@ -28,6 +28,8 @@ pub struct Profile {
     pub worktree: PathBuf,
     pub command: Vec<String>,
     pub memory_bytes: u64,
+    #[serde(default)]
+    pub search_path: Option<String>,
 }
 
 impl Profile {
@@ -40,6 +42,10 @@ impl Profile {
             || self.command.iter().map(String::len).sum::<usize>() > 16_384
             || !Path::new(&self.command[0]).is_absolute()
             || self.memory_bytes > 128 * GIB
+            || self
+                .search_path
+                .as_ref()
+                .is_some_and(|p| p.len() > 8192 || p.contains('\0'))
         {
             return Err("Profile needs an existing absolute worktree, an absolute executable, and bounded arguments and memory estimate.".into());
         }
@@ -301,7 +307,11 @@ pub fn transaction<T>(
     let before = serde_json::to_vec(&state).map_err(|_| "Cannot encode queue state.")?;
     let result = operation(&mut state)?;
     // Do not rewrite commands and history on every five-second resource sample.
-    if serde_json::to_vec(&state).map_err(|_| "Cannot encode queue state.")? != before {
+    let encoded = serde_json::to_vec(&state).map_err(|_| "Cannot encode queue state.")?;
+    if encoded.len() > 1024 * 1024 {
+        return Err("Queue storage is full; remove unused profiles or shorten arguments.".into());
+    }
+    if encoded != before {
         storage::write(&directory.join("queue.json"), &state)?;
     }
     Ok(result)
@@ -366,7 +376,7 @@ pub fn submit(
         .find(|p| p.name == profile)
         .ok_or("Unknown approved validation profile.")?;
     approved.validate()?;
-    let inputs = inputs::capture(&approved.worktree)?;
+    let inputs = inputs::capture(&approved.worktree, approved.search_path.as_deref())?;
     transaction(directory, |s| {
         if let Some(existing) = s.jobs.iter().find(|j| j.request_id == request_id) {
             if existing.profile.name != profile

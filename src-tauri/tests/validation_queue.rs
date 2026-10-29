@@ -74,6 +74,7 @@ impl Fixture {
                     "--nocapture".into(),
                 ],
                 memory_bytes: GIB,
+                search_path: None,
             },
         )
         .unwrap();
@@ -151,6 +152,7 @@ fn validation_child_fixture() {
     let event = |kind: &str| {
         let mut file = fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(directory.join("events.txt"))
             .unwrap();
@@ -166,6 +168,13 @@ fn validation_child_fixture() {
     }));
     if mode == "change" {
         fs::write("input.txt", "changed during validation").unwrap();
+    }
+    if mode == "path" {
+        let output = Command::new("node")
+            .args(["-e", "console.log('helper found through approved PATH')"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
     }
     println!("validation stdout");
     eprintln!("validation stderr");
@@ -436,6 +445,69 @@ fn a_contending_reader_waits_for_the_platform_lock() {
     receive.recv().unwrap();
     assert!(queue::inspect(&f.queue()).is_ok());
     holder.join().unwrap();
+}
+
+#[test]
+fn desktop_workers_use_registered_path_and_preserve_executable_entrypoints() {
+    let f = Fixture::new();
+    let cwd = f.directory.join("tools");
+    fs::create_dir(&cwd).unwrap();
+    fs::write(cwd.join("mode.txt"), "path").unwrap();
+    let executable = std::env::current_exe().unwrap();
+    #[cfg(unix)]
+    let executable = {
+        let entrypoint = f.directory.join("entrypoint");
+        std::os::unix::fs::symlink(&executable, &entrypoint).unwrap();
+        entrypoint
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_jitterbug-run"))
+        .env("JITTERBUG_QUEUE_DIR", f.queue())
+        .args(["queue", "add", "path-check", "--worktree"])
+        .arg(&cwd)
+        .arg("--")
+        .arg(&executable)
+        .args([
+            "--exact",
+            "validation_child_fixture",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stored = queue::inspect(&f.queue()).unwrap();
+    assert_eq!(stored.profiles[0].command[0], executable.to_string_lossy());
+    assert_eq!(stored.profiles[0].search_path, std::env::var("PATH").ok());
+    f.submit("path-check", "desktop-path");
+    let started = Instant::now();
+    loop {
+        let output = f
+            .tick_command(false)
+            .env("PATH", &f.directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let state = queue::inspect(&f.queue()).unwrap();
+        if !state.jobs[0].stage.active() {
+            assert_eq!(
+                state.jobs[0].stage,
+                Stage::Passed,
+                "{}",
+                state.jobs[0].message
+            );
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(15));
+        std::thread::sleep(Duration::from_millis(80));
+    }
 }
 
 #[test]

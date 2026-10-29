@@ -34,6 +34,11 @@ directory, executable, arguments, and estimated additional memory. Register sepa
 profiles for separate worktrees. `queue remove NAME` revokes a profile; waiting jobs
 will not launch under a removed or changed profile.
 
+CLI registration also saves that terminal's `PATH` so a desktop-launched job can
+find tools such as Node, npm, or Git. Executable symlink entrypoints are preserved
+for virtual environments. Other shell aliases, functions, startup scripts and
+environment variables are not captured. Re-register if your tool locations change.
+
 Registration is permission to execute that fixed command as your OS user, **outside
 the requesting agent's sandbox**. Review commands before registering them. Commands
 can run project scripts, so only register trusted checkouts. MCP cannot create or
