@@ -104,6 +104,7 @@ export function demoSnapshot(pressure = false): Snapshot {
         swap_out_bytes: pressure ? 48 * 1024 ** 2 : 0,
         process_count: 120,
         workloads,
+        agent_workflows: [],
         processes: workloads.map((w, index) => ({
             pid: 9000 + index,
             start_time: time - 60,

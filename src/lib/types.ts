@@ -119,6 +119,7 @@ export interface Snapshot {
     process_count: number;
     processes: ProcessRecord[];
     workloads: Workload[];
+    agent_workflows: AgentWorkflow[];
     platform: {
         os: string;
         memory_pressure: string | null;
@@ -239,4 +240,65 @@ export interface AutomationCase {
         priority_verified: boolean;
     } | null;
     automatic: boolean;
+}
+
+export interface AgentRoleUsage {
+    role: string;
+    process_count: number;
+    cpu_percent: number;
+    memory_bytes: number;
+}
+
+export interface AgentSession {
+    run_id: string;
+    agent: string;
+    harness: string;
+    worktree: string;
+    role: string;
+    status: 'active' | 'completed' | 'failed' | 'interrupted';
+    root_pid: number;
+    root_start_time: number;
+    started_at: number;
+    ended_at: number | null;
+    exit_code: number | null;
+    cpu_percent: number;
+    memory_bytes: number;
+    process_count: number;
+    peak_cpu_percent: number;
+    peak_memory_bytes: number;
+    peak_process_count: number;
+    observed_samples: number;
+    roles: AgentRoleUsage[];
+    process_ids: number[];
+    workload_ids: string[];
+}
+
+export interface WorkflowSuggestion {
+    id: string;
+    title: string;
+    recommendation: string;
+    evidence: string[];
+    uncertainty: string;
+    observed_at: number;
+    current: boolean;
+}
+
+export interface AgentWorkflow {
+    task_id: string;
+    task_title: string;
+    status: 'active' | 'completed' | 'failed' | 'interrupted';
+    active_agents: number;
+    cpu_percent: number;
+    memory_bytes: number;
+    process_count: number;
+    peak_cpu_percent: number;
+    peak_memory_bytes: number;
+    peak_process_count: number;
+    started_at: number;
+    last_seen_at: number;
+    observed_samples: number;
+    agents: AgentSession[];
+    history: ResourcePoint[];
+    suggestions: WorkflowSuggestion[];
+    evidence: string[];
 }

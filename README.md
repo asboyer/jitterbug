@@ -106,6 +106,32 @@ Use **Settings** to change limits, disable model analysis or automation, and rem
 
 Automatic process changes currently work on **macOS only**. Windows can detect, investigate, and display evidence, but has no native action adapter yet. This is workload reprioritization, not moving arbitrary running work between machines.
 
+## Registered agent workflows
+
+Use the opt-in `jitterbug-run` wrapper to associate parallel agent sessions and their child processes with one task. Keep the desktop app running while the task runs. The **Agent workflows** panel shows current and sampled peak CPU/memory, individual sessions, worktree locations, observed tool roles, and evidence for efficiency suggestions. Attribution and recommendations use local rules and require no model calls.
+
+```sh
+cargo build --manifest-path src-tauri/Cargo.toml --bin jitterbug-run
+
+# Run independently in each worktree, using the same task ID and distinct agent labels.
+./src-tauri/target/debug/jitterbug-run \
+    --task-id EXAMPLE-1 --task-title "Improve a test workflow" \
+    --agent implementation --harness claude --worktree /absolute/path/to/worktree \
+    -- claude
+
+# Also associate a separate validation run with the task.
+./src-tauri/target/debug/jitterbug-run \
+    --task-id EXAMPLE-1 --task-title "Improve a test workflow" \
+    --agent validation --harness shell --role test --worktree /absolute/path/to/worktree \
+    -- npm test
+```
+
+The wrapper preserves stdin/stdout/stderr and command exit status. It stores a bounded private launch record, not command arguments, prompts, code, transcripts, or credentials. A matching wrapper PID and OS start time, plus a live parent chain, establish ownership. Task labels are supplied by the caller. A shared directory alone never proves ownership, and detached or reparented children lose attribution. Existing application groups and action permissions remain independent of task registration.
+
+Advice covers overlapping validation, worker fan-out, memory headroom, and separating agent assignments before one integrated full check. Tool roles are inferred from a small allowlist; overlap does not prove duplicate tests. Suggestions are advisory and marked as current or observed earlier. This wrapper does not schedule agents, cap their resources, change configuration, or offload jobs. Use the underlying harness's own budget and permission controls.
+
+Launch records live under `com.jitterbug.desktop/agent-runs` in the OS application-data directory. `JITTERBUG_AGENT_RUNS_DIR` can select an absolute private directory for isolated development/testing; the app and launcher must use the same directory. Reads are bounded to 128 files, tracking to 64 sessions and 16 tasks, and each task history to 24 samples. Completed records expire after a day; measured peaks and advice remain in memory for the app session. Sampling may miss short commands and peaks; summed RSS may double-count shared pages. The Quick View excludes this detail. Cloud context receives only anonymous aggregate counts and metrics, never registered task labels, worktree paths, or session identifiers.
+
 ## Models and credentials
 
 The default policy is hybrid: a tiny local model for clearly bounded definitions and Meta for intelligent analysis. Optional decision-model routing is off initially. Every tier can be configured independently; local-only and cloud-only are enforced in Rust before inference. Simple requests can escalate once to the intelligent tier. Process investigations bypass the optional decision model and go to the intelligent tier. Diagnoses never silently downgrade to the cheap tier. Explicit cheap-tier diagnosis requests return observations and explain how to select the intelligent tier. Capability questions such as “Can I ask about a particular process?” are answered locally, without an inference call. If no eligible model can answer, the app labels its fallback as deterministic observations. Tiny models can still make factual mistakes; their output is advisory.
@@ -130,7 +156,7 @@ Cloud calls come from chat requests or enabled automatic incident investigations
 
 **Explore demo** and **Simulate pressure** use synthetic fixtures. In the desktop app, pressure simulation feeds three synthetic samples through the real Rust detector and delivers its incident through the real event channel. It does not generate CPU/memory load, call models, or change processes. Exploring the demo does not pause the native monitor; a real incident switches the desktop UI back to LIVE. Browser preview is always a demo. The source badge and assistant message labels make this visible.
 
-Agent-harness hooks, transcript correlation, GPU utilization, exact per-task ownership, model-fit recommendations, arbitrary job offloading, CPU caps, and app-specific automatic repairs are future work. There is no hidden implementation of these features. No process history or chat transcript is persisted. Global history is bounded to 120 samples; per-workload history to 24 samples for up to 512 workloads. The internal process inventory retains up to 4,096 processes; dashboard updates show the top 40 workloads and 160 processes. Name/PID resolution uses the wider internal inventory.
+Automatic harness discovery, transcript correlation, GPU utilization, ownership of unregistered or detached work, model-fit recommendations, arbitrary job offloading, CPU caps, and app-specific automatic repairs are future work. There is no hidden implementation of these features. No process history or chat transcript is persisted. Global history is bounded to 120 samples; per-workload history to 24 samples for up to 512 workloads. The internal process inventory retains up to 4,096 processes; dashboard updates show the top 40 workloads and 160 processes. Name/PID resolution uses the wider internal inventory.
 
 Diagnosis is evidence-based troubleshooting, not a profiler: Jitterbug cannot inspect an app’s settings, call stacks, GPU activity, or network traffic yet. It can identify the busy process and resource trend, propose a hypothesis and a test, and perform the supported process actions after confirmation. Changing Spotify settings, clearing caches, restarting apps, and other app-specific repairs remain manual suggestions, never falsely reported as completed.
 
@@ -141,6 +167,8 @@ src/                    Svelte + TypeScript desktop UI; synthetic demo fixtures
 src-tauri/src/
   collector.rs          bounded telemetry and deterministic explanations
   attribution.rs        project/app evidence and grouping
+  workflows.rs          private launch registration, verified task ownership, efficiency advice
+  bin/jitterbug-run.rs   opt-in wrapper for agent and validation commands
   diagnostics.rs        app/PID resolution and scoped investigation evidence
   details.rs            local process details and bounded, identity-checked parent chains
   applications.rs       installed app identity and bounded native icon cache
@@ -199,6 +227,6 @@ To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select 
 
 ## Next increments
 
-Add one opt-in harness integration that supplies a session identifier, project, and root PID. Keep transcript parsing local and attach task ownership only when that evidence exists. Then implement Windows-specific sensors and process actions, measure release-build overhead across representative machines, and evaluate small-model accuracy before broadening local responsibilities. Offloading requires explicit job/runtime integrations; an arbitrary running process cannot simply be moved to the cloud.
+Extend the opt-in launcher with explicit harness hooks and supported scheduler integrations. Keep any transcript parsing local and preserve identity checks. Implement Windows-specific sensors and process actions, measure release-build overhead across representative machines, and evaluate small-model accuracy before broadening local responsibilities. Offloading requires explicit job/runtime integrations; an arbitrary running process cannot simply be moved to the cloud.
 
 Provider references: [Meta Chat Completions](https://dev.meta.ai/docs/protocols/chat-completions), [Meta pricing](https://dev.meta.ai/docs/pricing-rate-limits), [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Ollama Chat API](https://docs.ollama.com/api/chat), [Tev](https://ollama.com/library/tev1:0.8b), and [Jev System One](https://docs.typesafe.ai/introduction/quickstart). Provider account settings determine retention and any free-credit data terms; Jitterbug does not change those settings.

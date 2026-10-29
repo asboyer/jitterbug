@@ -30,6 +30,8 @@ pub struct ProcessRecord {
     pub working_directory: Option<std::path::PathBuf>,
     #[serde(skip)]
     pub parent_start_time: Option<u64>,
+    #[serde(skip)]
+    pub resource_role: String,
     pub pid: u32,
     pub start_time: u64,
     pub parent_pid: Option<u32>,
@@ -116,6 +118,8 @@ pub struct Snapshot {
     pub process_count: usize,
     pub processes: Vec<ProcessRecord>,
     pub workloads: Vec<Workload>,
+    #[serde(default)]
+    pub agent_workflows: Vec<crate::workflows::AgentWorkflow>,
     pub platform: PlatformReadings,
     pub pressure: Pressure,
     pub incident: Option<Incident>,
@@ -156,6 +160,11 @@ impl Snapshot {
                 .take(workload_limit)
                 .cloned()
                 .collect(),
+            agent_workflows: if process_limit > 0 {
+                self.agent_workflows.clone()
+            } else {
+                Vec::new()
+            },
             platform: self.platform.clone(),
             pressure: self.pressure.clone(),
             incident: self.incident.clone(),

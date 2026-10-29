@@ -3,6 +3,7 @@
     import type { Snapshot, Workload } from '../lib/types';
     import ActivityGraph from './ActivityGraph.svelte';
     import AppIcon from './AppIcon.svelte';
+    import AgentWorkflows from './AgentWorkflows.svelte';
 
     let {
         snapshot,
@@ -135,6 +136,7 @@
             </p>{/if}
     </details>
 </article>
+<AgentWorkflows {snapshot} {onselect} />
 <section class="panel workload-panel">
     <div class="section-title">
         <div>

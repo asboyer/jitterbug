@@ -14,6 +14,7 @@ pub struct Collector {
     previous_swap: Option<u64>,
     swap_io: SwapIo,
     samples: u64,
+    workflows: crate::workflows::WorkflowTracker,
 }
 
 impl Default for Collector {
@@ -27,6 +28,7 @@ impl Default for Collector {
             previous_swap: None,
             swap_io: SwapIo::default(),
             samples: 0,
+            workflows: crate::workflows::WorkflowTracker::default(),
         }
     }
 }
@@ -70,6 +72,8 @@ impl Collector {
             let actions = crate::actions::permitted(p, &self.system);
             let disk = p.disk_usage();
             processes.push(ProcessRecord {
+                resource_role: crate::workflows::process_role(&p.name().to_string_lossy(), &[])
+                    .into(),
                 executable: p.exe().map(|path| path.to_path_buf()),
                 working_directory: p.cwd().map(|path| path.to_path_buf()),
                 parent_start_time: p
@@ -101,7 +105,6 @@ impl Collector {
             score(b.cpu_percent, b.memory_bytes).total_cmp(&score(a.cpu_percent, a.memory_bytes))
         });
         // Payloads and history remain bounded even on busy development machines.
-        processes.truncate(4096);
         let mut workloads: Vec<_> = groups.into_values().collect();
         workloads.sort_by(|a, b| {
             score(b.cpu_percent, b.memory_bytes).total_cmp(&score(a.cpu_percent, a.memory_bytes))
@@ -148,6 +151,17 @@ impl Collector {
         );
         #[cfg(not(target_os = "macos"))]
         let available = self.system.available_memory();
+        // Resolve ancestry before truncating the dashboard inventory: an idle wrapper may
+        // rank below its busy descendants. Task grouping never changes workload permissions.
+        let agent_workflows = self.workflows.update(
+            &mut processes,
+            captured_at,
+            self.samples > 0,
+            available,
+            total,
+            cores,
+        );
+        processes.truncate(4096);
         let mut snapshot = Snapshot {
             source: "live".into(),
             captured_at,
@@ -173,6 +187,7 @@ impl Collector {
             process_count: self.system.processes().len(),
             processes,
             workloads,
+            agent_workflows,
             platform,
             ..Default::default()
         };

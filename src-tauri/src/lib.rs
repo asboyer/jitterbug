@@ -15,6 +15,7 @@ pub mod settings;
 pub mod storage;
 pub mod supervisor;
 pub mod types;
+pub mod workflows;
 
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
