@@ -52,8 +52,10 @@
                     {workflow.active_agents === 1 ? 'session' : 'sessions'} ·
                     {workflow.process_count} attributed processes
                 {:else}
-                    {workflow.agents.length} registered sessions · last observed
-                    {time(workflow.last_seen_at)}
+                    {workflow.agents.length} registered sessions ·
+                    {workflow.observed_samples > 0
+                        ? `last observed ${time(workflow.last_seen_at)}`
+                        : 'no resource samples in this app session'}
                 {/if}
             </p>
             <div class="workflow-usage">
