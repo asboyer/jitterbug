@@ -70,6 +70,12 @@ impl Collector {
             let actions = crate::actions::permitted(p, &self.system);
             let disk = p.disk_usage();
             processes.push(ProcessRecord {
+                executable: p.exe().map(|path| path.to_path_buf()),
+                working_directory: p.cwd().map(|path| path.to_path_buf()),
+                parent_start_time: p
+                    .parent()
+                    .and_then(|id| self.system.process(id))
+                    .map(|parent| parent.start_time()),
                 pid: p.pid().as_u32(),
                 start_time: p.start_time(),
                 parent_pid: p.parent().map(|id| id.as_u32()),

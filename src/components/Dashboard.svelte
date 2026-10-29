@@ -2,7 +2,7 @@
     import { memory, percent } from '../lib/format';
     import type { Snapshot, Workload } from '../lib/types';
     import ActivityGraph from './ActivityGraph.svelte';
-    import Icon from './Icon.svelte';
+    import AppIcon from './AppIcon.svelte';
 
     let {
         snapshot,
@@ -163,16 +163,11 @@
             onclick={() => onselect(workload)}
         >
             <div class="workload-main">
-                <span class="workload-icon"
-                    ><Icon
-                        name={workload.category === 'project'
-                            ? 'code'
-                            : workload.category === 'model'
-                              ? 'model'
-                              : 'app'}
-                        size={18}
-                    /></span
-                >
+                <AppIcon
+                    workloadId={workload.id}
+                    category={workload.category}
+                    demo={snapshot.source === 'demo'}
+                />
                 <div>
                     <div class="workload-name">
                         <strong>{workload.label}</strong><span class="row-count"

@@ -1154,7 +1154,7 @@ summary:focus-visible {
     min-height: 34px;
     text-align: left;
 }
-.quick-workloads button > span {
+.quick-workloads button > span:not(.app-icon) {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;

@@ -33,6 +33,25 @@ async fn main() {
     }
     assert!(snapshot.quick_view().processes.is_empty());
     assert!(snapshot.quick_view().workloads.len() <= 5);
+    let own = snapshot
+        .processes
+        .iter()
+        .find(|p| p.pid == std::process::id())
+        .expect("Probe missing from full inventory");
+    let detail = jitterbug_lib::details::inspect(
+        &snapshot,
+        &own.workload_id,
+        Some((own.pid, own.start_time)),
+    )
+    .expect("Native process detail inspection failed");
+    assert_eq!(detail.ancestry.last().unwrap().pid, own.pid);
+    assert!(detail.ancestry.last().unwrap().executable.is_some());
+    assert!(detail.members.iter().any(|p| p.pid == own.pid));
+    assert!(serde_json::to_value(own)
+        .unwrap()
+        .get("executable")
+        .is_none());
+    println!("Native detail smoke passed: process identity, executable, membership, parent trace, and telemetry path privacy.");
     // Never print process names, paths, machine identifiers, or telemetry values.
     println!("Live collector smoke passed: sample, process inventory, workload attribution, and bounded history.");
 

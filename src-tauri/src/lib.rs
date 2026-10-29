@@ -1,12 +1,15 @@
 pub mod actions;
+pub mod applications;
 pub mod attribution;
 pub mod automation;
 pub mod budget;
 pub mod collector;
 mod desktop;
+pub mod details;
 pub mod diagnostics;
 pub mod platform;
 pub mod pressure;
+pub mod profiles;
 pub mod providers;
 pub mod settings;
 pub mod storage;
@@ -18,6 +21,140 @@ use std::{sync::Arc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
 pub type AppState = Arc<supervisor::Runtime>;
+
+#[tauri::command]
+fn get_workload_details(
+    state: State<'_, AppState>,
+    workload_id: String,
+    pid: Option<u32>,
+    start_time: Option<u64>,
+) -> Result<details::Details, String> {
+    let selected = match (pid, start_time) {
+        (None, None) => None,
+        (Some(pid), Some(start)) => Some((pid, start)),
+        _ => return Err("A process ID and start time are required together.".into()),
+    };
+    let mut detail = details::inspect(
+        &*state
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?,
+        &workload_id,
+        selected,
+    )?;
+    if detail.profile.source != "reference" {
+        if let Some(app) = &detail.application {
+            if let Some(profile) = state
+                .profiles
+                .lock()
+                .map_err(|_| "Profile cache unavailable.")?
+                .get(&profiles::key(app))
+            {
+                detail.profile = profile;
+            }
+        }
+    }
+    Ok(detail)
+}
+
+#[tauri::command]
+async fn get_workload_icon(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workload_id: String,
+) -> Result<Option<String>, String> {
+    let path = {
+        let snapshot = state
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?;
+        let members = details::members(&snapshot, &workload_id)?;
+        if snapshot
+            .workloads
+            .iter()
+            .any(|w| w.id == workload_id && w.category == "project")
+        {
+            return Ok(None);
+        }
+        details::representative(&members)
+            .executable
+            .as_ref()
+            .map(|path| {
+                crate::attribution::application_bundle(path)
+                    .unwrap_or(path)
+                    .to_path_buf()
+            })
+    };
+    let Some(path) = path else { return Ok(None) };
+    let runtime = state.inner().clone();
+    #[cfg(target_os = "macos")]
+    {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        // AppKit drawing stays on the UI thread; frontend limits icon requests to two at a time.
+        app.run_on_main_thread(move || {
+            let _ = send.send(runtime.icons.get(&path));
+        })
+        .map_err(|_| "Icon service unavailable.")?;
+        receive.await.map_err(|_| "Icon service closed.".into())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        // Shell icon handlers may block. Keep them off the Windows UI thread.
+        tauri::async_runtime::spawn_blocking(move || runtime.icons.get(&path))
+            .await
+            .map_err(|_| "Icon service unavailable.".into())
+    }
+}
+
+#[tauri::command]
+async fn explain_application(
+    state: State<'_, AppState>,
+    workload_id: String,
+    pid: u32,
+    start_time: u64,
+) -> Result<profiles::Profile, String> {
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    let detail = details::inspect(&snapshot, &workload_id, Some((pid, start_time)))?;
+    if detail.profile.source == "reference" {
+        return Ok(detail.profile);
+    }
+    if !detail.can_generate_profile {
+        return Err("A reusable model explanation requires an application bundle or Windows executable. Use the contextual assistant to investigate this process instead.".into());
+    }
+    let app = detail
+        .application
+        .ok_or("Application identity unavailable.")?;
+    let key = profiles::key(&app);
+    if let Some(profile) = state
+        .profiles
+        .lock()
+        .map_err(|_| "Profile cache unavailable.")?
+        .get(&key)
+    {
+        return Ok(profile);
+    }
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let profile = state.engine.app_profile(&settings, &snapshot, &app).await?;
+    state
+        .profiles
+        .lock()
+        .map_err(|_| "Profile cache unavailable.")?
+        .insert(key, profile.clone(), &state.directory)?;
+    Ok(profile)
+}
 
 #[derive(Serialize)]
 pub struct Bootstrap {
@@ -114,6 +251,8 @@ async fn ask(
     messages: Vec<providers::ChatMessage>,
     workload_id: Option<String>,
     tier: String,
+    pid: Option<u32>,
+    start_time: Option<u64>,
 ) -> Result<providers::Reply, String> {
     let _guard = state
         .inference
@@ -131,6 +270,18 @@ async fn ask(
         .clone();
     if !snapshot.sample_ready || snapshot.captured_at + 20 < types::now() {
         return Err("Wait for a fresh telemetry sample.".into());
+    }
+    if let Some(pid) = pid {
+        if !snapshot.processes.iter().any(|p| {
+            p.pid == pid
+                && Some(p.start_time) == start_time
+                && workload_id.as_ref().is_some_and(|id| p.workload_id == *id)
+        }) {
+            return Err(
+                "The selected process has exited or changed identity. Choose a current process."
+                    .into(),
+            );
+        }
     }
     state
         .engine
@@ -276,6 +427,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_workload_details,
+            get_workload_icon,
+            explain_application,
             get_quick_snapshot,
             desktop::open_main,
             desktop::hide_quick_view,

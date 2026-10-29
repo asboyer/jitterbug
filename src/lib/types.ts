@@ -59,6 +59,41 @@ export interface ProcessRecord {
     disk_written_bytes: number;
 }
 
+export interface AppProfile {
+    text: string;
+    source: 'reference' | 'inference' | 'model' | 'demo';
+    provider: string | null;
+    model: string | null;
+    generated_at: number | null;
+    cached: boolean;
+}
+
+export interface WorkloadDetails {
+    captured_at: number;
+    workload: Workload;
+    process: ProcessRecord;
+    members: ProcessRecord[];
+    member_count: number;
+    independent_roots: number;
+    application: {
+        name: string;
+        identifier: string | null;
+        version: string | null;
+        identity_source: string;
+    } | null;
+    profile: AppProfile;
+    ancestry: {
+        pid: number;
+        start_time: number;
+        name: string;
+        executable: string | null;
+        working_directory: string | null;
+    }[];
+    origin_summary: string;
+    origin_limit: string;
+    can_generate_profile: boolean;
+}
+
 export interface Incident {
     id: number;
     created_at: number;

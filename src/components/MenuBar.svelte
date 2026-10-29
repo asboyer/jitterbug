@@ -6,6 +6,7 @@
     import { errorMessage, memory, percent } from '../lib/format';
     import type { Snapshot } from '../lib/types';
     import Icon from './Icon.svelte';
+    import AppIcon from './AppIcon.svelte';
     import ActivityGraph from './ActivityGraph.svelte';
 
     const desktop = isTauri();
@@ -103,9 +104,14 @@
             {#each snapshot.workloads.slice(0, 5) as workload (workload.id)}
                 <button
                     onclick={() => open('dashboard', workload.id)}
-                    title={`Ask about ${workload.label}`}
+                    title={`Inspect ${workload.label}`}
                 >
-                    <Icon name={workload.category === 'project' ? 'code' : 'app'} size={16} />
+                    <AppIcon
+                        workloadId={workload.id}
+                        category={workload.category}
+                        size={24}
+                        demo={snapshot.source === 'demo'}
+                    />
                     <span>{workload.label}</span><small
                         >{percent(workload.cpu_percent)}<br />{memory(workload.memory_bytes)}</small
                     >

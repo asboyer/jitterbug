@@ -1,4 +1,54 @@
-import type { Bootstrap, Snapshot } from './types';
+import type { Bootstrap, Snapshot, WorkloadDetails } from './types';
+
+export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
+    const workload = snapshot.workloads.find((w) => w.id === id)!;
+    const process = snapshot.processes.find((p) => p.workload_id === id)!;
+    return {
+        captured_at: snapshot.captured_at,
+        workload,
+        process,
+        members: [process],
+        member_count: 1,
+        independent_roots: 1,
+        application: null,
+        can_generate_profile: false,
+        profile: {
+            text: workload.description,
+            source: 'demo',
+            cached: false,
+            provider: null,
+            model: null,
+            generated_at: null,
+        },
+        ancestry: [
+            {
+                pid: 8000,
+                start_time: process.start_time - 60,
+                name: 'Example Terminal',
+                executable: '/example/Terminal.app/terminal',
+                working_directory: null,
+            },
+            {
+                pid: 8001,
+                start_time: process.start_time - 30,
+                name: 'Example shell',
+                executable: '/example/bin/shell',
+                working_directory: '/example/project',
+            },
+            {
+                pid: process.pid,
+                start_time: process.start_time,
+                name: process.name,
+                executable: `/example/bin/${process.name}`,
+                working_directory: '/example/project',
+            },
+        ],
+        origin_summary:
+            'Synthetic example: a terminal started a shell, which started this process. No real process was inspected.',
+        origin_limit:
+            'Demo only. A real trace displays observed OS parents and explicitly identifies missing or ambiguous origins.',
+    };
+}
 
 /** Synthetic fixtures only. Never replace these with a captured machine snapshot. */
 export function demoSnapshot(pressure = false): Snapshot {

@@ -19,6 +19,7 @@
         snapshot,
         incident,
         workload,
+        questionProcess = null,
         desktop,
         onclose,
         onusage,
@@ -29,6 +30,7 @@
         snapshot: Snapshot;
         incident: AutomationCase | null;
         workload: Workload | null;
+        questionProcess?: ProcessRecord | null;
         desktop: boolean;
         onclose: () => void;
         onusage: () => void;
@@ -67,7 +69,7 @@
     });
 
     $effect(() => {
-        const context = `${snapshot.source}:${workload?.id ?? 'system'}:${incident?.id ?? ''}`;
+        const context = `${snapshot.source}:${workload?.id ?? 'system'}:${incident?.id ?? ''}:${questionProcess?.pid ?? ''}:${questionProcess?.start_time ?? ''}`;
         if (context !== previousContext) {
             conversation = [];
             if (incident?.diagnosis) {
@@ -104,9 +106,11 @@
             previousContext = context;
             question = incident
                 ? 'What should we try next based on this result?'
-                : workload
-                  ? `Why is ${workload.label} using these resources? What can we improve?`
-                  : 'Why is my computer struggling?';
+                : questionProcess
+                  ? `Investigate PID ${questionProcess.pid}. Why is it using these resources, and what can we improve?`
+                  : workload
+                    ? `Why is ${workload.label} using these resources? What can we improve?`
+                    : 'Why is my computer struggling?';
         }
     });
 
@@ -119,6 +123,14 @@
                 ? `Investigate PID ${choice.pid}. What can we improve?`
                 : 'Investigate this selected workload. What can we improve?'
             : question.trim();
+        const anchoredProcess =
+            !choice &&
+            questionProcess &&
+            (!focused ||
+                (focused.pid === questionProcess.pid &&
+                    focused.workload_id === questionProcess.workload_id))
+                ? questionProcess
+                : null;
         const requestContext = previousContext;
         conversation = [...conversation, { message: { role: 'user', content } }];
         question = '';
@@ -160,6 +172,8 @@
                           workloadId:
                               choice?.workload_id ?? focused?.workload_id ?? workload?.id ?? null,
                           tier,
+                          pid: anchoredProcess?.pid ?? null,
+                          startTime: anchoredProcess?.start_time ?? null,
                       });
             onusage();
             if (requestContext !== previousContext) return;

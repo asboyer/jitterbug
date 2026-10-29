@@ -22,6 +22,14 @@ pub struct MemoryBreakdown {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessRecord {
+    // Private collection metadata. Only the explicit local detail view may expose paths;
+    // telemetry events, stored incidents, action reports, and model prompts omit them.
+    #[serde(skip)]
+    pub executable: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    pub working_directory: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    pub parent_start_time: Option<u64>,
     pub pid: u32,
     pub start_time: u64,
     pub parent_pid: Option<u32>,

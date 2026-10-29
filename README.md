@@ -28,7 +28,7 @@ The macOS menu bar uses a monochrome template image: macOS supplies white or dar
 match the menu bar. Click it for a compact quick view; right-click for Open, Settings, and Quit.
 Use **Window → Quick View** (⇧⌘M on macOS) for keyboard access, and ⌘, for Settings.
 The panel uses native macOS popover vibrancy, closes on Escape or focus loss, and opens the
-selected workload directly in the main assistant. The shared Svelte interface uses system
+selected workload directly in its detail view. The shared Svelte interface uses system
 fonts, light/dark appearance, compact controls, and native window chrome. It remains a Tauri
 webview interface, not a rewrite in AppKit.
 
@@ -52,6 +52,36 @@ see [third-party notices](THIRD_PARTY_NOTICES.md), also included in the app's Se
 The adapter uses the actual kernel page size and makes no shell calls. Existing cached
 `sysinfo` process collection is retained; no Stats private SMC APIs, privileged helpers, or
 repeated `top` subprocesses are imported.
+
+## Application icons and process origins
+
+Workloads show artwork from the installed app: `NSWorkspace` on macOS and the Windows shell
+on Windows. Jitterbug rasterizes small PNGs on demand, caches at most 128 icons in memory,
+and limits frontend requests to two at a time. No icon search, download, or model call occurs.
+Projects and inaccessible executables use a generic fallback. The menu-bar icon stays monochrome.
+
+Click a workload for a dedicated detail page, then select a member process to inspect its
+parent chain, executable, working directory, start time, and recent CPU, memory, and disk use.
+Details use the full internal inventory, display up to 200 members, and trace at most 16 ancestors.
+Parent start times and process identity are checked; missing, reused, and cyclic parents stop
+the trace. This is a current OS parent chain, not a historical launch log: a parent such as
+`launchd` does not prove whether the app came from the Dock, a login item, or a coding agent.
+**Investigate this process** opens the contextual assistant for that PID. Actions keep their
+existing confirmation and fresh-identity checks.
+
+Common macOS apps, including Spotify, have built-in descriptions matched to their bundle
+identifier. Other identified applications offer **Generate app explanation**, using the configured
+intelligent tier only on request, subject to mode, budget, and local-resource guards. Only the
+app name and bundle identifier (when available) enter that request; paths, process snapshots,
+and transcripts do not. The response is labeled AI-generated and is general app knowledge,
+not a cached diagnosis of current activity. Unrecognized executables and project workloads
+retain explicit rule-based explanations; the contextual assistant can still investigate them.
+
+AI descriptions persist privately in `app-profiles.json` in the OS application-data directory.
+The cache holds at most 128 entries for 30 days and is invalidated by app version or installation
+changes. Reopening a detail page reuses the description without inference. Icons and origins
+remain local; raw paths are omitted from normal telemetry, incident serialization, action reports,
+and model context. Demo origins are entirely synthetic and cannot call a provider or act on a process.
 
 ## What is real
 
@@ -112,6 +142,9 @@ src-tauri/src/
   collector.rs          bounded telemetry and deterministic explanations
   attribution.rs        project/app evidence and grouping
   diagnostics.rs        app/PID resolution and scoped investigation evidence
+  details.rs            local process details and bounded, identity-checked parent chains
+  applications.rs       installed app identity and bounded native icon cache
+  profiles.rs           built-in app reference and private, versioned AI description cache
   pressure.rs           sustained incidents and local-inference resource gates
   platform/             native OS adapters (macOS readings; explicit Windows gaps)
   automation.rs         sustained thresholds, anomaly detection, permissions, verification
@@ -131,7 +164,7 @@ Application settings and spending totals live in the OS application-data directo
 
 CI checks formatting, TypeScript/Svelte, Rust unit tests, Clippy, and native compilation on macOS and Windows. No API credentials or machine telemetry are used in CI. Windows interactive behavior still needs a teammate's hands-on check; Windows process actions and native pressure/thermal sensors are not implemented.
 
-On macOS, the native desktop feedback loop has been exercised with live collection, workload filtering, simulated sustained pressure, a real Meta answer, provider-mode persistence, a zero-budget cloud denial, and a confirmation-driven stop of a disposable worker. The worker was observed in telemetry and disappeared after the action. The automatic workflow has also been exercised with a bounded real app fixture: anomaly detection, automatic Meta investigation, saved workload permission, priority application, and fresh verification. The displayed result correctly reported no clear CPU reduction. Pause/resume and permission removal were checked through the desktop UI. A separate native probe exercises the complete automatic flow with an existing permission, rules-only investigation, and no cloud calls. The macOS UI refresh was checked in the packaged desktop app: native memory detail, Quick View keyboard access, workload-to-assistant navigation, Escape dismissal, focus-loss dismissal, and Settings access. The collector probe now checks native VM accounting and interval swap counters.
+On macOS, the native desktop feedback loop has been exercised with live collection, workload filtering, simulated sustained pressure, a real Meta answer, provider-mode persistence, a zero-budget cloud denial, and a confirmation-driven stop of a disposable worker. The worker was observed in telemetry and disappeared after the action. The automatic workflow has also been exercised with a bounded real app fixture: anomaly detection, automatic Meta investigation, saved workload permission, priority application, and fresh verification. The displayed result correctly reported no clear CPU reduction. Pause/resume and permission removal were checked through the desktop UI. A separate native probe exercises the complete automatic flow with an existing permission, rules-only investigation, and no cloud calls. The macOS UI refresh was checked in the packaged desktop app: native memory detail, Quick View keyboard access, workload-to-assistant navigation, Escape dismissal, focus-loss dismissal, and Settings access. The collector probe now checks native VM accounting, interval swap counters, and local process details without printing private values. Application icons and details were checked against real macOS applications, including Spotify helper-to-parent tracing, scoped assistant handoff, and a Meta-generated app explanation reused from the local cache. Windows icon extraction is compiled in CI; interactive Windows checks remain outstanding.
 
 ```sh
 # Safe by default: sample real telemetry, without logging private values.
@@ -162,7 +195,7 @@ The automation fixture first waits 35 seconds for a baseline, then uses a 70% du
 
 The action fixture allocates 32 MiB only when at least 4 GiB is available, produces a three-second single-thread CPU pulse, and exits within 90 seconds even without an action. Model probes retain responses only in ignored `.local/verification/` and use a separate $0.25 conservative lifetime ledger. Local Qwen and Tev routing and Meta generation have been exercised against real endpoints. Claude and hosted Jev adapters have protocol tests but have not been tested with live credentials. Jev remains optional and no Jev request is made without an explicit configuration and key.
 
-To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select a workload, to open its assistant. Ask “Can I ask you about a particular process?”, then name an app or PID. Verify the resolved target, model tier, history, and process evidence. For actions, use only the disposable worker; confirm an action and check the follow-up measurement. Use **Simulate pressure** to exercise the alert and mocked chat without stressing the host, then **Return to live**. In Settings, save each privacy mode and verify excluded tiers return observations with a routing explanation. Set the budget to zero and verify a cloud request is blocked without increasing the ledger; restore the intended mode and budget afterward.
+To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select a workload to open its details. Select a member, verify its parent chain, and choose **Investigate this process** to open its assistant. Ask “Can I ask you about a particular process?”, then name an app or PID. Verify the resolved target, model tier, history, and process evidence. For actions, use only the disposable worker; confirm an action and check the follow-up measurement. Use **Simulate pressure** to exercise the alert and mocked chat without stressing the host, then **Return to live**. In Settings, save each privacy mode and verify excluded tiers return observations with a routing explanation. Set the budget to zero and verify a cloud request is blocked without increasing the ledger; restore the intended mode and budget afterward.
 
 ## Next increments
 

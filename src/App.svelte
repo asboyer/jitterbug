@@ -5,11 +5,12 @@
     import AutomationPanel from './components/AutomationPanel.svelte';
     import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
+    import WorkloadDetails from './components/WorkloadDetails.svelte';
     import Chat from './components/Chat.svelte';
     import ActionResult from './components/ActionResult.svelte';
     import ProviderSettings from './components/ProviderSettings.svelte';
     import { demoBootstrap, demoSnapshot } from './lib/demo';
-    import { errorMessage, memory, percent } from './lib/format';
+    import { errorMessage } from './lib/format';
     import type {
         ActionReport,
         AutomationCase,
@@ -28,6 +29,7 @@
     let bootstrap: Bootstrap = $state(structuredClone(demoBootstrap));
     let selectedId: string | null = $state(null);
     let chatOpen = $state(false);
+    let questionProcess: ProcessRecord | null = $state(null);
     let followUpContext: AutomationCase | null = $state(null);
     let automationOpen = $state(false);
     let automaticId: number | null = $state(null);
@@ -39,15 +41,19 @@
     let alert: Incident | null = $state(null);
     let pendingAction: { process: ProcessRecord; action: string } | null = $state(null);
     let actionBusy = $state(false);
+    let mainElement: HTMLElement | undefined = $state();
     const snapshot = $derived(demo ? demoSnapshot(demoPressure) : live);
     const selected = $derived.by(
         () =>
             snapshot?.workloads.find((w) => w.id === selectedId) ??
             (selectedContext?.id === selectedId ? selectedContext : null)
     );
-    const selectedProcesses = $derived(
-        snapshot?.processes.filter((p) => p.workload_id === selectedId) ?? []
-    );
+
+    $effect(() => {
+        selectedId;
+        page;
+        mainElement?.scrollTo({ top: 0 });
+    });
 
     async function refreshBootstrap() {
         if (desktop) {
@@ -152,9 +158,11 @@
         selectedId = workload.id;
         selectedContext = workload;
         automationOpen = false;
-        chatOpen = true;
+        chatOpen = false;
+        questionProcess = null;
     }
     function ask() {
+        questionProcess = null;
         followUpContext = null;
         automationOpen = false;
         selectedContext = null;
@@ -180,6 +188,8 @@
         } else {
             ask();
         }
+        chatOpen = true;
+        questionProcess = null;
         followUpContext = incident;
         actionReport = incident.report;
     }
@@ -227,6 +237,8 @@
             onclick={(event) => {
                 event.preventDefault();
                 page = 'dashboard';
+                selectedId = null;
+                chatOpen = false;
             }}><Icon name="bug" size={22} /> Jitterbug</a
         >
         <div class="nav-links">
@@ -234,6 +246,8 @@
                 class:active={page === 'dashboard'}
                 onclick={() => {
                     page = 'dashboard';
+                    selectedId = null;
+                    chatOpen = false;
                 }}><Icon name="activity" /><span>Workloads</span></button
             ><button
                 class:active={page === 'settings'}
@@ -256,7 +270,7 @@
             >
         </div>
     </nav>
-    <main>
+    <main bind:this={mainElement}>
         <header class="topbar">
             <span class:demo-badge={demo} class="live-badge"
                 ><i class="status-dot"></i>{demo
@@ -337,92 +351,32 @@
             {#if page === 'settings'}
                 <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
             {:else if snapshot && snapshot.memory_total_bytes > 0}
-                <Dashboard {snapshot} {selectedId} onselect={select} onask={ask} />
-                {#if selected}<section class="panel detail-panel">
-                        <div class="section-title">
-                            <div>
-                                <p class="eyebrow">
-                                    WORKLOAD DETAILS · {demo ? 'SYNTHETIC' : 'LIVE'}
-                                </p>
-                                <h2>{selected.label}</h2>
-                            </div>
-                            <div>
-                                <button
-                                    onclick={() => {
-                                        chatOpen = true;
-                                    }}>Ask about this workload</button
-                                ><button
-                                    class="icon-button"
-                                    aria-label="Close workload details"
-                                    onclick={() => {
-                                        selectedId = null;
-                                    }}>×</button
-                                >
-                            </div>
-                        </div>
-                        <p>{selected.description}</p>
-                        <p class="muted">
-                            Select a process action or ask the assistant to investigate this
-                            workload’s recent history. Exact agent task ownership is not available
-                            yet.
-                        </p>
-                        <div class="process-table">
-                            <table>
-                                <thead
-                                    ><tr
-                                        ><th>Process</th><th>CPU</th><th>Memory</th><th
-                                            >Explicit actions</th
-                                        ></tr
-                                    ></thead
-                                ><tbody
-                                    >{#each selectedProcesses as process}<tr
-                                            ><td
-                                                ><strong>{process.name}</strong><small
-                                                    >PID {process.pid} · {process.evidence.join(
-                                                        ' '
-                                                    )}</small
-                                                ></td
-                                            ><td>{percent(process.cpu_percent)}</td><td
-                                                >{memory(process.memory_bytes)}</td
-                                            ><td
-                                                >{#if process.actionable && !demo}<div
-                                                        class="process-actions"
-                                                    >
-                                                        {#if process.actions.includes('lower_priority')}<button
-                                                                disabled={actionBusy}
-                                                                onclick={() => {
-                                                                    pendingAction = {
-                                                                        process,
-                                                                        action: 'lower_priority',
-                                                                    };
-                                                                }}>Lower priority</button
-                                                            >{/if}
-                                                        {#if process.actions.includes('terminate')}<button
-                                                                disabled={actionBusy}
-                                                                class="danger-text"
-                                                                onclick={() => {
-                                                                    pendingAction = {
-                                                                        process,
-                                                                        action: 'terminate',
-                                                                    };
-                                                                }}>Stop…</button
-                                                            >{/if}
-                                                    </div>{:else}<span class="muted"
-                                                        >{demo
-                                                            ? 'Disabled in demo'
-                                                            : 'Protected / unavailable'}</span
-                                                    >{/if}</td
-                                            ></tr
-                                        >{/each}</tbody
-                                >
-                            </table>
-                        </div>
-                        <p class="footnote">
-                            Showing members present in the top 160 processes. Actions apply to one
-                            process, not its entire tree. Native process actions are currently
-                            implemented on macOS only.
-                        </p>
-                    </section>{/if}
+                {#if selected}
+                    {#key `${snapshot.source}:${selected.id}`}
+                        <WorkloadDetails
+                            {snapshot}
+                            workload={selected}
+                            {actionBusy}
+                            onback={() => {
+                                selectedId = null;
+                                chatOpen = false;
+                            }}
+                            onask={(process) => {
+                                questionProcess = process;
+                                followUpContext = null;
+                                automationOpen = false;
+                                chatOpen = true;
+                            }}
+                            onaction={(process, action) => {
+                                error = '';
+                                pendingAction = { process, action };
+                            }}
+                            onusage={() => {
+                                void refreshBootstrap().catch(() => {});
+                            }}
+                        />
+                    {/key}
+                {:else}<Dashboard {snapshot} {selectedId} onselect={select} onask={ask} />{/if}
             {:else}<div class="empty loading">
                     <span class="brand-mark">✳</span>
                     <h1>Getting to know your workloads</h1>
@@ -445,6 +399,7 @@
         />{:else if chatOpen && snapshot}<Chat
             {snapshot}
             workload={selected}
+            {questionProcess}
             incident={followUpContext}
             {desktop}
             onclose={() => {

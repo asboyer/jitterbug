@@ -91,7 +91,7 @@ fn opaque_id(value: &str) -> String {
     format!("w-{:x}", h.finish())
 }
 
-fn application_bundle(executable: &Path) -> Option<&Path> {
+pub fn application_bundle(executable: &Path) -> Option<&Path> {
     // Helpers are often nested .app bundles. Attribute them to the outer application.
     executable
         .ancestors()
@@ -149,7 +149,7 @@ impl Attribution {
             let Some(parent) = ancestor.parent().and_then(|id| system.process(id)) else {
                 break;
             };
-            if parent.pid() == ancestor.pid() {
+            if parent.pid() == ancestor.pid() || parent.start_time() > ancestor.start_time() {
                 break;
             }
             ancestor = parent;
