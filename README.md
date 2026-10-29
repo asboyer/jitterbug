@@ -16,7 +16,7 @@ The dashboard collects real telemetry every five seconds. Closing the window lea
 ```sh
 npm run dev          # browser preview: synthetic data only
 npm run build        # TypeScript/Svelte checks and frontend production build
-npm test             # Rust unit tests
+npm test             # Rust unit and process-level integration tests
 npm run smoke        # real collector smoke test; prints no private measurements
 npm run format       # house-style formatting and rustfmt
 npm run tauri build  # desktop package; unsigned unless signing is configured
@@ -108,6 +108,11 @@ Automatic process changes currently work on **macOS only**. Windows can detect, 
 
 ## Registered agent workflows
 
+Heavy validation can now use a [shared validation queue](docs/validation-queue.md):
+one resource-gated slot across sessions, local MCP tools for Claude/Codex/Muse Code,
+fixed approved commands, source-change checks, and a dashboard with competing-workload
+suggestions. The original task wrapper below still provides attribution without scheduling.
+
 Use the opt-in `jitterbug-run` wrapper to associate parallel agent sessions and their child processes with one task. Keep the desktop app running while the task runs. The **Agent workflows** panel shows current and sampled peak CPU/memory, individual sessions, worktree locations, observed tool roles, and evidence for efficiency suggestions. Attribution and recommendations use local rules and require no model calls.
 
 ```sh
@@ -185,6 +190,7 @@ src-tauri/src/
   workflows.rs          private launch registration, verified task ownership, efficiency advice
   harness.rs            bounded opt-in request/activity events; no transcript reading
   workflow_summary.rs   plain-English intent, resource explanations, and efficiency tips
+  queue/                shared validation admission, private profiles/results, stdio MCP
   bin/jitterbug-run.rs   opt-in wrapper and harness hook event bridge
   diagnostics.rs        app/PID resolution and scoped investigation evidence
   details.rs            local process details and bounded, identity-checked parent chains
@@ -244,6 +250,6 @@ To repeat the UI check, launch the desktop app, confirm **LIVE**, filter/select 
 
 ## Next increments
 
-Extend the opt-in launcher with explicit harness hooks and supported scheduler integrations. Keep any transcript parsing local and preserve identity checks. Implement Windows-specific sensors and process actions, measure release-build overhead across representative machines, and evaluate small-model accuracy before broadening local responsibilities. Offloading requires explicit job/runtime integrations; an arbitrary running process cannot simply be moved to the cloud.
+Extend cooperative queue integration with harness-specific enforcement and verify desktop-agent setup end to end. Keep any transcript parsing local and preserve identity checks. Implement Windows-specific sensors and process actions, measure release-build overhead across representative machines, and evaluate small-model accuracy before broadening local responsibilities. Offloading requires explicit job/runtime integrations; an arbitrary running process cannot simply be moved to the cloud.
 
 Provider references: [Meta Chat Completions](https://dev.meta.ai/docs/protocols/chat-completions), [Meta pricing](https://dev.meta.ai/docs/pricing-rate-limits), [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Ollama Chat API](https://docs.ollama.com/api/chat), [Tev](https://ollama.com/library/tev1:0.8b), and [Jev System One](https://docs.typesafe.ai/introduction/quickstart). Provider account settings determine retention and any free-credit data terms; Jitterbug does not change those settings.

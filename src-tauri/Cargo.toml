@@ -24,6 +24,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 fs2 = "0.4"
 base64 = "0.22"
 dirs = "7"
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

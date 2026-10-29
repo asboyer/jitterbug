@@ -12,6 +12,7 @@ pub mod platform;
 pub mod pressure;
 pub mod profiles;
 pub mod providers;
+pub mod queue;
 pub mod settings;
 pub mod storage;
 pub mod supervisor;
@@ -24,6 +25,33 @@ use std::{sync::Arc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
 pub type AppState = Arc<supervisor::Runtime>;
+
+#[tauri::command]
+async fn get_validation_queue() -> Result<queue::View, String> {
+    tauri::async_runtime::spawn_blocking(|| queue::inspect(&queue::directory()?).map(|s| s.view()))
+        .await
+        .map_err(|_| "Queue service unavailable.")?
+}
+
+#[tauri::command]
+async fn control_validation_queue(action: String, job_id: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = queue::directory()?;
+        match action.as_str() {
+            "pause" | "resume" => queue::transaction(&directory, |s| {
+                s.paused = action == "pause";
+                Ok(())
+            }),
+            "cancel" => queue::cancel(&directory, job_id.as_deref().ok_or("Missing job ID.")?),
+            "release" => {
+                queue::acknowledge(&directory, job_id.as_deref().ok_or("Missing job ID.")?)
+            }
+            _ => Err("Unknown queue action.".into()),
+        }
+    })
+    .await
+    .map_err(|_| "Queue service unavailable.")?
+}
 
 #[tauri::command]
 fn get_workload_details(
@@ -474,6 +502,13 @@ pub fn run() {
                     let mut collector = collector::Collector::default();
                     loop {
                         let sample = collector.sample();
+                        if let (Ok(directory), Ok(executable)) =
+                            (queue::directory(), std::env::current_exe())
+                        {
+                            // Queue failure never stops resource monitoring. Clients fail closed
+                            // when this heartbeat is absent; the UI reports unreadable state.
+                            let _ = queue::tick(&directory, &sample, &executable);
+                        }
                         if let Ok(Some(id)) = runtime.observe(&sample) {
                             let task = runtime.clone();
                             tauri::async_runtime::spawn(async move {
@@ -504,6 +539,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_validation_queue,
+            control_validation_queue,
             get_snapshot,
             get_workload_details,
             get_workload_icon,

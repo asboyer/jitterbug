@@ -6,6 +6,27 @@ use jitterbug_lib::{
 use std::{ffi::OsString, path::PathBuf, process::Command};
 
 fn run() -> Result<i32, String> {
+    if jitterbug_lib::queue::worker_entry() {
+        return Ok(0);
+    }
+    let queue_args: Vec<_> = std::env::args_os().skip(1).collect();
+    if queue_args
+        .first()
+        .is_some_and(|a| a == "queue" || a == "mcp")
+    {
+        let queue_args: Vec<String> = queue_args
+            .into_iter()
+            .map(|s| {
+                s.into_string()
+                    .map_err(|_| "Queue arguments must be UTF-8.")
+            })
+            .collect::<Result<_, _>>()?;
+        return if queue_args[0] == "queue" {
+            jitterbug_lib::queue::cli::run(&queue_args[1..])
+        } else {
+            jitterbug_lib::queue::mcp::serve(&queue_args[1..])
+        };
+    }
     let mut args = std::env::args_os().skip(1).peekable();
     if args.peek().is_some_and(|arg| arg == "hook-settings") {
         println!(

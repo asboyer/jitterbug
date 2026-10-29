@@ -5,6 +5,7 @@
     import ResourceRing from './ResourceRing.svelte';
     import AppIcon from './AppIcon.svelte';
     import AgentWorkflows from './AgentWorkflows.svelte';
+    import ValidationQueue from './ValidationQueue.svelte';
 
     let {
         snapshot,
@@ -157,6 +158,7 @@
             </details>
         </article>
     </section>
+    <ValidationQueue {snapshot} {onselect} />
     <div class="activity-columns">
         <AgentWorkflows {snapshot} {onselect} {onusage} />
         <section class="panel workload-panel">
