@@ -966,8 +966,10 @@ impl Runtime {
                     || (automatic && (past || !settings.automation.allows(proposal))) { return Err("The permission was withdrawn or automation was paused; no action was applied.".into()); }
                 let snapshot = runtime.snapshot()?;
                 // A past moment has no live trigger to recheck; identity and workload still must match.
+                // The CPU floor is for priority: a stop may target an idle process holding memory.
+                let busy_enough = |p: &ProcessRecord| past || operation == "terminate" || p.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= 10.0;
                 if (!past && !automation::still_present(&snapshot, &settings.automation, &case.trigger))
-                    || !snapshot.processes.iter().any(|p| p.pid == pid && p.start_time == start_time && p.workload_id == proposal.process.workload_id && (past || p.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= 10.0)) {
+                    || !snapshot.processes.iter().any(|p| p.pid == pid && p.start_time == start_time && p.workload_id == proposal.process.workload_id && busy_enough(p)) {
                     return Err("The trigger or process activity changed. No action was applied.".into());
                 }
             }
@@ -975,7 +977,12 @@ impl Runtime {
         }).await.map_err(|_| "The process action could not finish.")??;
         let applied_at = now();
         if let Some((id, _)) = incident {
-            self.update(id, |c| c.transition(Stage::Verifying, "Priority change sent. Waiting for a complete new sampling interval to measure the result."))?;
+            let sent = if action == "terminate" {
+                "Stop request sent."
+            } else {
+                "Priority change sent."
+            };
+            self.update(id, |c| c.transition(Stage::Verifying, &format!("{sent} Waiting for a complete new sampling interval to measure the result.")))?;
         }
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1113,6 +1120,26 @@ mod tests {
             .is_none());
         assert_eq!(f.runtime.case(id).unwrap().stage, Stage::Resolved);
         assert!(f.runtime.case(id).unwrap().diagnosis.is_some()); // retained in Inbox
+    }
+
+    #[tokio::test]
+    async fn a_memory_stop_is_not_held_to_the_priority_cpu_floor() {
+        let f = Fixture::new();
+        let at = now();
+        for offset in (5..=30).rev().step_by(5) {
+            let _ = f.runtime.observe(&memory_sample(at - offset, "warning"));
+        }
+        let id = f
+            .runtime
+            .observe(&memory_sample(at, "warning"))
+            .unwrap()
+            .unwrap();
+        f.runtime.run(id).await;
+        assert!(f.runtime.case(id).unwrap().alternative.is_some());
+        // An idle process holding memory passes the approval gate. The fixture PID does not
+        // exist, so the OS action itself is what refuses.
+        let refused = f.runtime.stop(id).await.unwrap_err();
+        assert!(!refused.contains("activity changed"), "{refused}");
     }
 
     #[tokio::test]
