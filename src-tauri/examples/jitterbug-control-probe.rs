@@ -7,13 +7,21 @@
 //! directory, so `jitterbug-run control-mcp` clients can be exercised. Approval requests are
 //! printed by title; `--approve` approves each request as it arrives (standing in for the
 //! person's click). Everything paused is resumed on exit. Prints titles and counts only.
+#[cfg(unix)]
 use jitterbug_lib::{automation::Stage, collector, control, pause, settings, supervisor};
+#[cfg(unix)]
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("Agent control is macOS and Linux only for now.");
+}
+
+#[cfg(unix)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let seconds: u64 = args
