@@ -298,6 +298,9 @@
             >
         </header>
         <h2>{title}</h2>
+        {#if asking && shown.trigger.reason}<p class="note clamp">
+                Reason given: {shown.trigger.reason}
+            </p>{/if}
         {#if asking}
             {#if subject}<p class="measured">{nowLine(subject)}</p>
                 {#if helperNote(subject)}<p class="note clamp">{helperNote(subject)}</p>{/if}

@@ -110,7 +110,20 @@ test('a tab offer closes only that tab and a session offer pauses without closin
     await expect(popup.getByRole('button', { name: 'Pause…', exact: true })).toBeVisible();
 });
 
-for (const example of ['', 'tab', 'pause']) {
+test('an agent request names the agent, quotes its reason, and still needs a click', async ({
+    page,
+}) => {
+    await page.goto('/?view=popup&example=agent');
+    const popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+    await expect(popup).toContainText(
+        'An agent in claude · fix-login asks to close the tab “Video call”'
+    );
+    await expect(popup).toContainText('Reason given: “The video call tab uses 640 MiB');
+    await expect(popup).not.toContainText('Apply');
+    await expect(popup.getByRole('button', { name: 'Close…', exact: true })).toBeVisible();
+});
+
+for (const example of ['', 'tab', 'pause', 'agent']) {
     test(`every button of the ${example || 'default'} example stays inside the window`, async ({
         page,
     }) => {

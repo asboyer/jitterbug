@@ -5,6 +5,7 @@ pub mod automation;
 pub mod budget;
 mod capture;
 pub mod collector;
+pub mod control;
 mod desktop;
 pub mod details;
 pub mod diagnostics;
@@ -679,6 +680,19 @@ pub fn run() {
                 }),
             );
             app.manage(runtime.clone());
+            // Agent control is optional: a failure leaves monitoring and the app unaffected.
+            #[cfg(unix)]
+            if let Ok(path) = control::socket_path() {
+                let control = runtime.clone();
+                if let Err(error) = control::server::serve(
+                    &path,
+                    Arc::new(move |caller, method, params| {
+                        control::handlers::handle(&control, caller, method, params)
+                    }),
+                ) {
+                    eprintln!("Agent control unavailable: {error}");
+                }
+            }
             capture::install(app, runtime.clone(), jitter.clone());
             let handle = app.handle().clone();
             std::thread::Builder::new()

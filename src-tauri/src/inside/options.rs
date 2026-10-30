@@ -76,7 +76,8 @@ pub fn option(snapshot: &Snapshot, workload_id: &str, memory: bool) -> Option<Pr
     }
 }
 
-fn pause(snapshot: &Snapshot, unit: Unit) -> Option<Proposal> {
+/// A pause offer for one command session unit.
+pub fn pause(snapshot: &Snapshot, unit: Unit) -> Option<Proposal> {
     let process = snapshot
         .processes
         .iter()
@@ -128,6 +129,11 @@ fn tab(
     if !large {
         return None;
     }
+    close_tab(workload, members, unit)
+}
+
+/// A close offer for one measured tab of a browser workload.
+pub fn close_tab(workload: &Workload, members: &[&ProcessRecord], unit: Unit) -> Option<Proposal> {
     // The renderer stands in for identity; the tab itself is rechecked by address on approval.
     let process = members
         .iter()

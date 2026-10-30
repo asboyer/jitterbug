@@ -85,6 +85,22 @@
     <p class="muted">
         Investigations may use your cloud provider. Process changes need your permission.
     </p>
+    <label class="toggle"
+        ><input type="checkbox" bind:checked={policy.agent_control} /> Let connected agents see what each
+        app runs and ask to pause sessions or close tabs</label
+    >
+    <label class="toggle"
+        ><input
+            type="checkbox"
+            bind:checked={policy.agent_pause_without_asking}
+            disabled={!policy.agent_control}
+        /> Agents may pause sessions without asking</label
+    >
+    <p class="muted">
+        Agents connect through <code>jitterbug-run control-mcp</code>. Each request appears here and
+        in the popup; closing a tab always asks. Pauses are reversible and resume by themselves
+        after 15 minutes. An agent can never pause its own session.
+    </p>
     <details class="policy-details">
         <summary>Alert thresholds & privacy</summary>
         <p class="muted">
