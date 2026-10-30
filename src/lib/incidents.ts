@@ -58,6 +58,9 @@ export function incidentObservation(incident: IncidentSummary): string {
         app_unresponsive: 'macOS repeatedly reported that the app was not responding.',
     };
     if (incident.jitter) return incident.jitter.happened;
+    const reason = (incident.trigger as { reason?: string | null }).reason;
+    if (incident.trigger.kind === 'agent_request' && reason)
+        return `An agent asked for this and gave the reason ${reason}`;
     return observations[incident.trigger.kind] ?? 'Resource use crossed a monitoring limit.';
 }
 
@@ -138,6 +141,8 @@ export function noticeTitle(incident: IncidentSummary): string {
             return 'Got it. Here’s that moment.';
         case 'short_spike':
             return 'Hey, I caught a short hitch.';
+        case 'agent_request':
+            return `${incident.trigger.title}.`;
         default:
             return `Hey, ${subject} has stayed busy.`;
     }

@@ -21,6 +21,9 @@ struct Book {
     sequence: u64,
 }
 
+/// Agent requests kept within the bounded incident history per hour.
+const AGENT_REQUESTS_PER_HOUR: usize = 6;
+
 /// Triggers about the same workload within this window form one incident.
 const MERGE_SECONDS: u64 = 300;
 
@@ -1072,6 +1075,118 @@ impl Runtime {
         Ok(())
     }
 
+    /// An agent asked, through the local MCP control server, for one granular action. It
+    /// becomes an approval request in the popup and in the app; nothing happens until the
+    /// person approves, except a pause when they allowed agents to pause without asking.
+    pub async fn agent_request(
+        self: &Arc<Self>,
+        option: automation::Proposal,
+        workload: Option<String>,
+        requester: &str,
+        reason: &str,
+    ) -> Result<Case, String> {
+        let snapshot = self.snapshot()?;
+        let policy = self.policy()?;
+        if !policy.agent_control {
+            return Err("Agent control is turned off in Jitterbug's settings.".into());
+        }
+        let unit = option
+            .unit
+            .as_ref()
+            .ok_or("The request names no tab or session.")?;
+        let verb = if option.action == "pause" {
+            "pause"
+        } else {
+            "close the tab"
+        };
+        // Agent text is untrusted: bounded, single-line, shown as a quotation.
+        let clean = |text: &str, limit: usize| -> String {
+            text.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .take(limit)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        let trigger = automation::Trigger {
+            key: format!("agent:{}:{}", option.action, unit.id),
+            kind: automation::Kind::AgentRequest,
+            title: format!(
+                "{} asks to {verb} “{}”",
+                clean(requester, 60),
+                clean(&unit.title, 80)
+            ),
+            reason: format!("“{}”", clean(reason, 200)),
+            target: workload.and_then(|id| {
+                let w = snapshot.workloads.iter().find(|w| w.id == id)?;
+                Some(crate::diagnostics::Target {
+                    workload_id: w.id.clone(),
+                    label: w.label.clone(),
+                    pid: None,
+                })
+            }),
+            cpu_floor_percent: None,
+            memory_floor_bytes: None,
+        };
+        let automatic = option.action == "pause" && policy.agent_pause_without_asking;
+        let case = {
+            let mut book = self
+                .book
+                .lock()
+                .map_err(|_| "Incident state unavailable.")?;
+            // One open request per target, and a bounded rate, so a looping agent cannot
+            // crowd real incidents out of the bounded history.
+            if let Some(open) = book.cases.iter().find(|c| {
+                c.trigger.key == trigger.key
+                    && matches!(
+                        c.stage,
+                        Stage::AwaitingApproval | Stage::Applying | Stage::Verifying
+                    )
+            }) {
+                return Ok(open.clone());
+            }
+            let recent = book
+                .cases
+                .iter()
+                .filter(|c| {
+                    c.origin == automation::Origin::Agent
+                        && now().saturating_sub(c.detected_at) < 3600
+                })
+                .count();
+            if recent >= AGENT_REQUESTS_PER_HOUR {
+                return Err(
+                    "Too many agent requests in the last hour. Ask the person directly.".into(),
+                );
+            }
+            book.sequence += 1;
+            let id = now().saturating_mul(1000).saturating_add(book.sequence);
+            let mut case = Case::new(id, &snapshot, trigger);
+            case.origin = automation::Origin::Agent;
+            case.alternative = Some(option);
+            case.transition(
+                Stage::AwaitingApproval,
+                if automatic {
+                    "An agent asked for this pause, and agents may pause without asking."
+                } else {
+                    "An agent asked for this. Nothing happens until you approve it."
+                },
+            );
+            book.cases.push_front(case.clone());
+            book.cases.truncate(12);
+            case
+        };
+        (self.publish)(case.clone());
+        if automatic {
+            self.stop(case.id).await?;
+        }
+        self.case(case.id)
+    }
+
+    /// Current state of one incident, for an agent following its request.
+    pub fn request(&self, id: u64) -> Result<Case, String> {
+        self.case(id)
+    }
+
     /// Resume the command an incident paused.
     pub fn resume(&self, id: u64) -> Result<String, String> {
         let case = self.case(id)?;
@@ -1241,6 +1356,74 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
+    }
+
+    fn agent_option(id: &str) -> automation::Proposal {
+        automation::Proposal {
+            process: sample(now(), 1.0).processes[0].clone(),
+            action: "pause".into(),
+            rationale: "Pause it.".into(),
+            impact: None,
+            unit: Some(crate::inside::Unit {
+                id: id.into(),
+                kind: "session".into(),
+                title: "claude · other".into(),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_requests_wait_for_approval_dedupe_and_are_bounded() {
+        let f = Fixture::new();
+        f.runtime.observe(&sample(now(), 1.0)).unwrap();
+        // Control off: nothing is recorded.
+        let mut policy = f.runtime.policy().unwrap();
+        policy.agent_control = false;
+        f.runtime.save_policy(policy.clone()).unwrap();
+        assert!(f
+            .runtime
+            .agent_request(agent_option("a"), None, "An agent", "busy")
+            .await
+            .is_err());
+        policy.agent_control = true;
+        f.runtime.save_policy(policy).unwrap();
+        let case = f
+            .runtime
+            .agent_request(
+                agent_option("a"),
+                Some("fixture".into()),
+                "An agent\nin x",
+                "it is \u{7}slow",
+            )
+            .await
+            .unwrap();
+        // Nothing applied: the person approves, the reason is quoted and cleaned.
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert_eq!(case.origin, automation::Origin::Agent);
+        assert!(case.report.is_none());
+        assert_eq!(case.trigger.reason, "“it is  slow”");
+        assert!(!case.trigger.title.contains('\n'));
+        assert_eq!(case.trigger.target.as_ref().unwrap().label, "Example");
+        // The same request again returns the open one.
+        let again = f
+            .runtime
+            .agent_request(agent_option("a"), None, "An agent", "busy")
+            .await
+            .unwrap();
+        assert_eq!(again.id, case.id);
+        for n in 1..AGENT_REQUESTS_PER_HOUR {
+            f.runtime
+                .agent_request(agent_option(&n.to_string()), None, "An agent", "busy")
+                .await
+                .unwrap();
+        }
+        let limited = f
+            .runtime
+            .agent_request(agent_option("over"), None, "An agent", "busy")
+            .await
+            .unwrap_err();
+        assert!(limited.contains("Too many"));
     }
     #[tokio::test]
     async fn memory_growth_stays_quiet_until_sustained_pressure_needs_investigation() {

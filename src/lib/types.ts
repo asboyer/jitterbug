@@ -246,10 +246,12 @@ export interface AutomationPolicy {
     jitter_mode: JitterMode;
     action_popups: boolean;
     auto_snapshots: boolean;
+    agent_control: boolean;
+    agent_pause_without_asking: boolean;
 }
 
 export type JitterMode = 'auto' | 'snapshot_only';
-export type CaseOrigin = 'automatic' | 'snapshot' | 'spike';
+export type CaseOrigin = 'automatic' | 'snapshot' | 'spike' | 'agent';
 export type FindingStrength = 'strong' | 'possible' | 'unexplained';
 
 export interface JitterFinding {
@@ -328,6 +330,13 @@ export interface AutomationCase {
     evidence: Investigation | null;
     diagnosis: Reply | null;
     proposal: { process: ProcessRecord; action: string; rationale: string } | null;
+    /** A stop, pause, or tab close offered instead of (or besides) the priority change. */
+    alternative?: {
+        process: ProcessRecord;
+        action: string;
+        rationale: string;
+        unit?: { title: string; kind: 'tab' | 'session' } | null;
+    } | null;
     report: ActionReport | null;
     verification: {
         summary: string;
@@ -369,7 +378,13 @@ export interface ActionPopupCase {
     id: number;
     source: string;
     stage: AutomationStage;
-    trigger: { kind: string; title: string; target: { label: string } | null };
+    trigger: {
+        kind: string;
+        title: string;
+        target: { label: string } | null;
+        /** An agent's stated reason, for agent requests only. */
+        reason?: string | null;
+    };
     proposal: ActionPopupOption | null;
     alternative: ActionPopupOption | null;
     report: {

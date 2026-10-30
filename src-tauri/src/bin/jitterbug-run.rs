@@ -28,6 +28,9 @@ fn run() -> Result<i32, String> {
         };
     }
     let mut args = std::env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "control-mcp") {
+        return jitterbug_lib::control::mcp::serve();
+    }
     if args.peek().is_some_and(|arg| arg == "hook-settings") {
         println!(
             "{}",

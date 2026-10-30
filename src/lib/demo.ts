@@ -205,6 +205,8 @@ export const demoBootstrap: Bootstrap = {
             jitter_mode: 'auto',
             action_popups: true,
             auto_snapshots: false,
+            agent_control: true,
+            agent_pause_without_asking: false,
         },
     },
     automation_cases: [],
@@ -389,17 +391,26 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
         id: incident.id,
         source: 'demo',
         stage: 'awaiting_approval',
-        trigger: {
-            kind: incident.trigger.kind,
-            title: incident.trigger.title,
-            target: incident.trigger.target && { label: incident.trigger.target.label },
-        },
-        proposal: process
-            ? { action: 'lower_priority', process, impact: impact ?? null, closes: null }
-            : null,
+        trigger:
+            example === 'agent'
+                ? {
+                      kind: 'agent_request',
+                      title: 'An agent in claude · fix-login asks to close the tab “Video call”',
+                      target: { label: 'Example Browser' },
+                      reason: '“The video call tab uses 640 MiB while the test run needs memory.”',
+                  }
+                : {
+                      kind: incident.trigger.kind,
+                      title: incident.trigger.title,
+                      target: incident.trigger.target && { label: incident.trigger.target.label },
+                  },
+        proposal:
+            process && example !== 'agent'
+                ? { action: 'lower_priority', process, impact: impact ?? null, closes: null }
+                : null,
         alternative: !process
             ? null
-            : example === 'tab'
+            : example === 'tab' || example === 'agent'
               ? {
                     action: 'close_tab',
                     process,
@@ -435,9 +446,9 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
                   },
         report: null,
         verification: null,
-        origin: 'automatic',
+        origin: example === 'agent' ? 'agent' : 'automatic',
         jitter: null,
-        more: 1,
+        more: example === 'agent' ? 0 : 1,
     };
 }
 

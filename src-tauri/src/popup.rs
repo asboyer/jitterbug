@@ -64,8 +64,10 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
         .iter()
         .filter(|c| {
             !deferred.contains(&c.id)
-                // A manual snapshot was asked for; automatic cases respect pause and disable.
-                && (c.origin == Origin::Snapshot || (policy.enabled && !gate.snoozed))
+                // A manual snapshot or an agent's request was asked for; automatic cases
+                // respect pause and disable.
+                && (matches!(c.origin, Origin::Snapshot | Origin::Agent)
+                    || (policy.enabled && !gate.snoozed))
                 && match c.stage {
                     // Workloads with a saved permission are applied automatically.
                     Stage::AwaitingApproval => match &c.proposal {
@@ -98,7 +100,7 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
 
 /// Only what the in-app notice and review already show: no paths, PIDs, evidence, or diagnosis.
 pub fn view(case: &Case, more: usize) -> Value {
-    json!({
+    let mut payload = json!({
         "kind": "case",
         "id": case.id,
         "source": case.source,
@@ -142,7 +144,12 @@ pub fn view(case: &Case, more: usize) -> Value {
             "manual": j.manual,
         })),
         "more": more,
-    })
+    });
+    // The reason an agent gave, already bounded and quoted; no other trigger text is sent.
+    if case.origin == automation::Origin::Agent {
+        payload["trigger"]["reason"] = json!(case.trigger.reason);
+    }
+    payload
 }
 
 /// An option's process name and current use, plus what it belongs to and, for a stop, what
