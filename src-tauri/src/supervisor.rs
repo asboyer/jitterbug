@@ -1192,12 +1192,21 @@ impl Runtime {
     /// Resume a session for an agent: only one an agent's request paused, never one the
     /// person paused or an incident offered.
     pub fn agent_resume(&self, pid: u32, start_time: u64) -> Result<String, String> {
+        // The current pause must be the one the request made: the person may have resumed it
+        // and paused the same session again later.
+        let paused_at = crate::pause::list()
+            .into_iter()
+            .find(|p| p.pid == pid && p.start_time == start_time)
+            .map(|p| p.paused_at);
         let requested = self.cases()?.iter().any(|c| {
             c.origin == Origin::Agent
                 && c.proposal.as_ref().is_some_and(|p| {
                     p.action == "pause"
                         && p.process.pid == pid
                         && p.process.start_time == start_time
+                })
+                && paused_at.is_none_or(|at| {
+                    (c.detected_at..=c.steps.last().map_or(c.detected_at, |s| s.at)).contains(&at)
                 })
         });
         if !requested {
@@ -1478,6 +1487,52 @@ mod tests {
         // Allowed now; nothing is actually paused in this test.
         let answer = f.runtime.agent_resume(process.pid, process.start_time);
         assert!(answer.unwrap_err().contains("not paused by Jitterbug"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agents_cannot_resume_a_pause_the_person_made_after_their_request() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let pid = child.id();
+        let mut system = sysinfo::System::new();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let start = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .unwrap()
+            .start_time();
+        let f = Fixture::new();
+        f.runtime.observe(&sample(now(), 1.0)).unwrap();
+        let mut option = agent_option("old");
+        option.process.pid = pid;
+        option.process.start_time = start;
+        let case = f
+            .runtime
+            .agent_request(option, None, "An agent", "busy")
+            .await
+            .unwrap();
+        // The agent's pause finished long ago; the person paused the session again since.
+        f.runtime
+            .update(case.id, |c| {
+                c.proposal = c.alternative.clone();
+                c.detected_at = now() - 600;
+                for step in &mut c.steps {
+                    step.at = now() - 500;
+                }
+            })
+            .unwrap();
+        crate::pause::pause(pid, start, "person").unwrap();
+        let refused = f.runtime.agent_resume(pid, start).unwrap_err();
+        assert!(refused.contains("Ask the person"), "{refused}");
+        assert!(crate::pause::is_paused(pid, start));
+        crate::pause::resume(pid, start).unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[tokio::test]
