@@ -454,7 +454,11 @@ mod tests {
         use std::os::unix::process::CommandExt;
         let me = std::process::id();
         // A job: the command leads its own group, apart from its parent's.
-        let mut job = Command::new("sleep").arg("5").process_group(0).spawn().unwrap();
+        let mut job = Command::new("sleep")
+            .arg("5")
+            .process_group(0)
+            .spawn()
+            .unwrap();
         assert!(job_control(job.id(), me));
         // A script shell's command shares the shell's group; that shell is never stopped.
         let mut plain = Command::new("sleep").arg("5").spawn().unwrap();
