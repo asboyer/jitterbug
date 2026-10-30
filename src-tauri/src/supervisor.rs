@@ -176,6 +176,23 @@ impl Runtime {
             return Ok(None);
         }
         let policy = self.policy()?;
+        // Keep a finished memory warning from lingering after the machine recovers.
+        // Running investigations already recheck pressure before and after inference.
+        for case in self.cases()? {
+            if case.trigger.kind == automation::Kind::MemoryPressure
+                && matches!(case.stage, Stage::Completed | Stage::Blocked)
+                && sample.sample_ready
+                && sample.captured_at.saturating_add(20) >= now()
+                && !automation::still_present(sample, &policy, &case.trigger)
+            {
+                self.update(case.id, |c| {
+                    c.transition(
+                        Stage::Resolved,
+                        "Memory pressure has cleared. No process changes were needed.",
+                    )
+                })?;
+            }
+        }
         let case = {
             let mut book = self
                 .book
@@ -624,6 +641,13 @@ mod tests {
         assert!(case.report.is_none());
         assert_eq!(f.runtime.cases().unwrap().len(), 1);
         assert_eq!(f.runtime.spending().unwrap().requests, 0);
+        assert!(f
+            .runtime
+            .observe(&memory_sample(at + 5, "normal"))
+            .unwrap()
+            .is_none());
+        assert_eq!(f.runtime.case(id).unwrap().stage, Stage::Resolved);
+        assert!(f.runtime.case(id).unwrap().diagnosis.is_some()); // retained in Inbox
     }
 
     #[tokio::test]

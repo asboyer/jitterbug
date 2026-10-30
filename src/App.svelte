@@ -150,6 +150,13 @@
             cases = [incident, ...cases.filter((item) => item.id !== incident.id)].slice(0, 12);
         }
         const key = `${incident.source}:${incident.id}`;
+        if (
+            ['resolved', 'dismissed'].includes(incident.stage) &&
+            notice?.id === incident.id &&
+            notice.source === incident.source
+        ) {
+            notice = null;
+        }
         if (incident.stage === 'detected' && !announced.includes(key)) {
             announced = [...announced, key].slice(-24);
             if ((incident.source === 'demo') === demo)
