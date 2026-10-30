@@ -105,11 +105,8 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(application_menu)?;
     app.on_menu_event(|app, event| match event.id.as_ref() {
         "quick-view" => {
-            if let Some(tray) = app.tray_by_id("jitterbug") {
-                if let Ok(Some(rect)) = tray.rect() {
-                    let position = rect.position.to_physical::<f64>(1.0);
-                    let _ = toggle(app, position, rect);
-                }
+            if let Err(error) = toggle(app) {
+                eprintln!("Could not open menu bar panel: {error}");
             }
         }
         "preferences" => {
@@ -139,14 +136,12 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
-                position,
-                rect,
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
             } = event
             {
-                if let Err(error) = toggle(tray.app_handle(), position, rect) {
+                if let Err(error) = toggle(tray.app_handle()) {
                     // No private telemetry or process metadata is included in this error.
                     eprintln!("Could not open menu bar panel: {error}");
                     let _ = open_main(tray.app_handle().clone(), "dashboard".into(), None);
@@ -157,11 +152,7 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn toggle(
-    app: &tauri::AppHandle,
-    click: tauri::PhysicalPosition<f64>,
-    rect: tauri::Rect,
-) -> tauri::Result<()> {
+fn toggle(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("menubar") {
         if window.is_visible()? {
             return window.hide();
@@ -195,24 +186,7 @@ fn toggle(
             builder.build()?
         }
     };
-    if let Some(monitor) = app.monitor_from_point(click.x, click.y)? {
-        let scale = monitor.scale_factor();
-        let origin = rect.position.to_physical::<f64>(scale);
-        let size = rect.size.to_physical::<f64>(scale);
-        let area = monitor.work_area();
-        let (x, y) = panel_position(
-            [origin.x, origin.y, size.width, size.height],
-            [
-                area.position.x as f64,
-                area.position.y as f64,
-                area.size.width as f64,
-                area.size.height as f64,
-            ],
-            [WIDTH * scale, HEIGHT * scale],
-            6.0 * scale,
-        );
-        window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32))?;
-    }
+    position_quick_view(app, &window)?;
     window.show()?;
     window.set_focus()?;
     let state = app.state::<AppState>();
@@ -220,6 +194,82 @@ fn toggle(
         let _ = window.emit("telemetry", snapshot.quick_view());
     }
     Ok(())
+}
+
+// macOS tray events use backing pixels, while monitor lookup uses Cocoa points.
+// Read the status item's actual screen on the main thread, and keep all placement
+// in points. This also avoids converting with the panel's *previous* screen scale.
+#[cfg(target_os = "macos")]
+fn position_quick_view(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+
+    let tray = app
+        .tray_by_id("jitterbug")
+        .ok_or_else(|| std::io::Error::other("Menu bar icon unavailable"))?;
+    let position = tray
+        .with_inner_tray_icon(|tray| {
+            let mtm = MainThreadMarker::new()?;
+            let button = tray.ns_status_item()?.button(mtm)?;
+            let tray_window = button.window()?;
+            let anchor = tray_window.frame();
+            let area = tray_window.screen()?.visibleFrame();
+            // Cocoa's global origin is the bottom-left of the primary screen;
+            // Tauri's logical origin is its top-left, including on other displays.
+            let primary = NSScreen::screens(mtm).firstObject()?.frame();
+            Some(cocoa_panel_position(
+                [
+                    anchor.origin.x,
+                    anchor.origin.y,
+                    anchor.size.width,
+                    anchor.size.height,
+                ],
+                [
+                    area.origin.x,
+                    area.origin.y,
+                    area.size.width,
+                    area.size.height,
+                ],
+                primary.origin.y + primary.size.height,
+            ))
+        })?
+        .ok_or_else(|| std::io::Error::other("Menu bar position unavailable"))?;
+    window.set_position(tauri::LogicalPosition::new(position.0, position.1))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn cocoa_panel_position(anchor: [f64; 4], area: [f64; 4], primary_top: f64) -> (f64, f64) {
+    let to_top_left = |rect: [f64; 4]| [rect[0], primary_top - rect[1] - rect[3], rect[2], rect[3]];
+    panel_position(to_top_left(anchor), to_top_left(area), [WIDTH, HEIGHT], 6.0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn position_quick_view(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let rect = app
+        .tray_by_id("jitterbug")
+        .ok_or_else(|| std::io::Error::other("Tray icon unavailable"))?
+        .rect()?
+        .ok_or_else(|| std::io::Error::other("Tray position unavailable"))?;
+    let anchor = rect.position.to_physical::<f64>(1.0);
+    let monitor = app
+        .monitor_from_point(anchor.x, anchor.y)?
+        .ok_or_else(|| std::io::Error::other("Tray display unavailable"))?;
+    let scale = monitor.scale_factor();
+    let origin = rect.position.to_physical::<f64>(scale);
+    let size = rect.size.to_physical::<f64>(scale);
+    let area = monitor.work_area();
+    let (x, y) = panel_position(
+        [origin.x, origin.y, size.width, size.height],
+        [
+            area.position.x as f64,
+            area.position.y as f64,
+            area.size.width as f64,
+            area.size.height as f64,
+        ],
+        [WIDTH * scale, HEIGHT * scale],
+        6.0 * scale,
+    );
+    window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
 }
 
 fn panel_position(anchor: [f64; 4], area: [f64; 4], panel: [f64; 2], gap: f64) -> (f64, f64) {
@@ -274,6 +324,27 @@ fn template_icon() -> tauri::image::Image<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_panel_uses_status_item_screen_points() {
+        // A Retina tray's physical x would fall outside the logical screen.
+        // Placement reads native points, so no backing scale enters this math.
+        assert_eq!(
+            cocoa_panel_position([1200., 958., 24., 24.], [0., 0., 1512., 958.], 982.),
+            (1036., 30.)
+        );
+        // A secondary display left of and above the primary; its backing scale
+        // can differ from the screen on which the panel was previously opened.
+        assert_eq!(
+            cocoa_panel_position([-400., 1176., 24., 24.], [-1920., 120., 1920., 1056.], 982.),
+            (-564., -188.)
+        );
+        // Right edge clamps horizontally, but stays six points below the bar.
+        assert_eq!(
+            cocoa_panel_position([1480., 958., 24., 24.], [0., 0., 1512., 958.], 982.),
+            (1154., 30.)
+        );
+    }
 
     #[test]
     fn panel_stays_on_monitor_and_flips_above_bottom_taskbar() {

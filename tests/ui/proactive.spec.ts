@@ -13,7 +13,7 @@ test('example demonstrates detecting, investigating, and reviewing without leavi
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
     await page
         .getByRole('article', { name: 'Check keyboard focus behavior', exact: true })
-        .getByRole('button', { name: 'View task' })
+        .locator('.task-disclosure > summary')
         .click();
     await page.getByText('Demo & testing', { exact: true }).click();
     await page.getByRole('button', { name: 'Simulate pressure' }).click();
@@ -28,9 +28,11 @@ test('example demonstrates detecting, investigating, and reviewing without leavi
     await prompt.getByRole('button', { name: 'See task', exact: true }).click();
     await expect(prompt).toHaveCount(0);
     await expect(
-        page.getByRole('heading', { name: 'Add search and keyboard navigation', exact: true })
+        page
+            .getByRole('article', { name: 'Add search and keyboard navigation', exact: true })
+            .locator('.task-disclosure > summary')
     ).toBeFocused();
-    await page.getByRole('button', { name: 'Set up managed checks', exact: true }).click();
+    await page.getByRole('button', { name: 'Preview managed checks', exact: true }).click();
     const preview = page.getByRole('dialog', { name: 'Give your work room to finish' });
     await expect(preview).toContainText('NO PROCESSES CHANGED');
     await expect(preview).toContainText('Two checks run at the same time');
@@ -40,7 +42,7 @@ test('example demonstrates detecting, investigating, and reviewing without leavi
     await page.keyboard.press('Escape');
     await expect(preview).toHaveCount(0);
     await expect(
-        page.getByRole('button', { name: 'Set up managed checks', exact: true })
+        page.getByRole('button', { name: 'Preview managed checks', exact: true })
     ).toBeFocused();
     await page.clock.fastForward(15_000);
     await expect(prompt).toHaveCount(0);
@@ -72,7 +74,7 @@ test('unsampled completed tasks show no empty graphs, metrics, or management act
     const task = page.getByRole('article', { name: 'Check a small utility function', exact: true });
     await expect(task).toContainText('No resource samples available');
     await expect(task.locator('.task-readings')).toHaveCount(0);
-    await task.getByRole('button', { name: 'View task' }).click();
+    await task.locator('.task-disclosure > summary').click();
     const detail = page.getByRole('region', { name: 'Task detail' });
     await expect(detail).toContainText('No resource samples are available');
     await expect(detail.getByRole('region', { name: 'Task resources' })).toHaveCount(0);
@@ -89,7 +91,7 @@ test('demo entry resets task selection and the assistant fits the minimum window
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
     await page
         .getByRole('article', { name: 'Check a small utility function', exact: true })
-        .getByRole('button', { name: 'View task' })
+        .locator('.task-disclosure > summary')
         .click();
     await page.getByRole('button', { name: 'Take a tour', exact: true }).click();
     await page.getByRole('button', { name: 'Skip tour', exact: true }).click();

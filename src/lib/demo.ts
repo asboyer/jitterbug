@@ -177,6 +177,7 @@ export const demoBootstrap: Bootstrap = {
             system_cpu_percent: 85,
             available_memory_percent: 12,
             app_cpu_core_percent: 100,
+            app_cpu_percent: 10,
             sustained_samples: 3,
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,

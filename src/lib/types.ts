@@ -202,6 +202,7 @@ export interface AutomationPolicy {
     system_cpu_percent: number;
     available_memory_percent: number;
     app_cpu_core_percent: number;
+    app_cpu_percent: number;
     sustained_samples: number;
     cooldown_seconds: number;
     max_investigations_per_hour: number;

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { memory, percent } from '../lib/format';
+    import { taskImpact } from '../lib/task-view';
     import WorkflowResources from './WorkflowResources.svelte';
     import HarnessBadge from './HarnessBadge.svelte';
     import TaskNarrative from './TaskNarrative.svelte';
@@ -28,18 +29,19 @@
 </script>
 
 <div class="workflow-body">
-    <TaskNarrative {workflow} {onusage} demo={snapshot.source === 'demo'} />
     {#if workflow.observed_samples > 0}<section class="resource-detail" aria-label="Task resources">
-            <h3>Where resources are going</h3>
             <WorkflowResources {workflow} interval={snapshot.interval_ms} />
+            <p class="impact">{taskImpact(workflow)}</p>
         </section>{:else}<p class="no-measurements">
             No resource samples are available for this task.
         </p>{/if}
+    <TaskNarrative {workflow} {onusage} demo={snapshot.source === 'demo'} />
     {#if workflow.status === 'active'}<div class="workflow-actions">
             <button onclick={() => onmanage({ task_id: workflow.task_id })}
-                >Set up managed checks</button
+                >{snapshot.source === 'demo'
+                    ? 'Preview managed checks'
+                    : 'Set up managed checks'}</button
             >
-            <span class="muted">Let heavy checks take turns.</span>
         </div>{/if}
     <details class="technical-detail">
         <summary>Sessions & evidence · {workflow.agents.length}</summary>
@@ -210,13 +212,8 @@
         flex-wrap: wrap;
         padding: 18px 0;
     }
-    .workflow-actions > span {
-        font-size: 11px;
-    }
     .resource-detail {
-        margin-top: 20px;
-        border-top: 1px solid var(--border);
-        padding-top: 16px;
+        margin: 0 0 16px;
     }
     .technical-detail > summary {
         cursor: pointer;
@@ -228,10 +225,10 @@
         font-weight: 650;
         color: var(--muted);
     }
-    h3 {
-        margin: 0;
-        font-size: 14px;
-        line-height: 1.4;
+    .impact {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 12px 0 0;
     }
     .agent-name small.completed {
         color: var(--success);

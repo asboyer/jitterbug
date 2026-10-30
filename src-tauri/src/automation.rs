@@ -22,6 +22,8 @@ pub struct Policy {
     pub available_memory_percent: f32,
     /// 100 means one logical core. The dashboard uses total machine capacity instead.
     pub app_cpu_core_percent: f32,
+    /// Minimum share of total machine capacity for any app-specific CPU alert.
+    pub app_cpu_percent: f32,
     pub sustained_samples: u32,
     pub cooldown_seconds: u64,
     pub max_investigations_per_hour: usize,
@@ -36,6 +38,7 @@ impl Default for Policy {
             system_cpu_percent: 85.0,
             available_memory_percent: 12.0,
             app_cpu_core_percent: 100.0,
+            app_cpu_percent: 10.0,
             sustained_samples: 3,
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,
@@ -52,6 +55,8 @@ impl Policy {
             || !(5.0..=30.0).contains(&self.available_memory_percent)
             || !self.app_cpu_core_percent.is_finite()
             || !(50.0..=1600.0).contains(&self.app_cpu_core_percent)
+            || !self.app_cpu_percent.is_finite()
+            || !(5.0..=100.0).contains(&self.app_cpu_percent)
             || !(3..=12).contains(&self.sustained_samples)
             || !(60..=3600).contains(&self.cooldown_seconds)
             || !(1..=12).contains(&self.max_investigations_per_hour)
@@ -289,8 +294,8 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
     }
     for w in &s.workloads {
         let core_cpu = w.cpu_percent * s.logical_cpus.max(1) as f32;
-        if core_cpu >= policy.app_cpu_core_percent {
-            found.push(Trigger { cpu_floor_percent: None, memory_floor_bytes: None, key: format!("app-cpu:{}", w.id), kind: Kind::AppCpu, title: format!("{} is using sustained CPU", w.label), reason: format!("Workload CPU exceeded {:.0}% on a one-core scale (100% = one logical core). High usage may be legitimate work.", policy.app_cpu_core_percent), target: Some(target(w)) });
+        if w.cpu_percent >= policy.app_cpu_percent && core_cpu >= policy.app_cpu_core_percent {
+            found.push(Trigger { cpu_floor_percent: None, memory_floor_bytes: None, key: format!("app-cpu:{}", w.id), kind: Kind::AppCpu, title: format!("{} is using sustained CPU", w.label), reason: format!("Workload CPU exceeded {:.0}% of total capacity and {:.0}% on a one-core scale (100% = one logical core). High usage may be legitimate work.", policy.app_cpu_percent, policy.app_cpu_core_percent), target: Some(target(w)) });
         }
         // A fixed earlier window makes a step change detectable across consecutive samples.
         // Require at least six baseline samples, separated from the most recent three.
@@ -299,11 +304,22 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
             let cpu = baseline.iter().map(|p| p.cpu_percent).sum::<f32>() / baseline.len() as f32;
             let memory =
                 baseline.iter().map(|p| p.memory_bytes as f64).sum::<f64>() / baseline.len() as f64;
-            if core_cpu >= 25.0
-                && w.cpu_percent >= cpu.max(0.1) * 3.0
-                && (w.cpu_percent - cpu) * s.logical_cpus.max(1) as f32 >= 25.0
-            {
-                found.push(Trigger { cpu_floor_percent: Some((cpu.max(0.1) * 3.0).max(cpu + 25.0 / s.logical_cpus.max(1) as f32)), memory_floor_bytes: None, key: format!("cpu-anomaly:{}",w.id), kind: Kind::CpuAnomaly, title: format!("{} has unusual CPU activity",w.label), reason: "CPU is at least three times its recent baseline, with an increase of at least 25% of one core. This is an anomaly to investigate, not a diagnosis.".into(), target: Some(target(w)) });
+            // A large ratio against an idle baseline is normal when an app wakes up.
+            // Require an absolute machine-wide impact as well as a significant rise.
+            let cpu_floor = policy
+                .app_cpu_percent
+                .max(cpu.max(0.1) * 3.0)
+                .max(cpu + 5.0);
+            if w.cpu_percent >= cpu_floor {
+                found.push(Trigger {
+                    cpu_floor_percent: Some(cpu_floor),
+                    memory_floor_bytes: None,
+                    key: format!("cpu-anomaly:{}", w.id),
+                    kind: Kind::CpuAnomaly,
+                    title: format!("{} has unusual CPU activity", w.label),
+                    reason: format!("CPU reached at least {:.0}% of total capacity, three times its baseline, and a rise of five percentage points. This is an anomaly to investigate, not a diagnosis.", policy.app_cpu_percent),
+                    target: Some(target(w)),
+                });
             }
             if w.memory_bytes as f64 >= memory * 1.5
                 && w.memory_bytes as f64 - memory >= 512.0 * 1048576.0
@@ -463,7 +479,7 @@ pub fn still_present(s: &Snapshot, policy: &Policy, trigger: &Trigger) -> bool {
         .and_then(|t| s.workloads.iter().find(|w| w.id == t.workload_id))
     {
         if let Some(floor) = trigger.cpu_floor_percent {
-            return w.cpu_percent >= floor;
+            return s.sample_ready && w.cpu_percent >= floor.max(policy.app_cpu_percent);
         }
         if let Some(floor) = trigger.memory_floor_bytes {
             return w.memory_bytes >= floor;
@@ -722,12 +738,14 @@ pub(crate) mod tests {
     }
     #[test]
     fn anomaly_uses_history_and_preserves_its_original_baseline() {
-        let mut s = sample(100, 6.0);
+        let mut s = sample(100, 12.0);
         let p = Policy::default();
-        assert!(conditions(&s, &p).is_empty());
+        assert!(!conditions(&s, &p)
+            .iter()
+            .any(|t| t.kind == Kind::CpuAnomaly));
         s.workloads[0].history = (0..9)
             .map(|i| ResourcePoint {
-                cpu_percent: if i < 6 { 0.1 } else { 6.0 },
+                cpu_percent: if i < 6 { 0.1 } else { 12.0 },
                 memory_bytes: 32 << 20,
                 ..Default::default()
             })
@@ -737,7 +755,7 @@ pub(crate) mod tests {
             .find(|t| t.kind == Kind::CpuAnomaly)
             .unwrap();
         for point in &mut s.workloads[0].history {
-            point.cpu_percent = 6.0;
+            point.cpu_percent = 12.0;
         }
         assert!(still_present(&s, &p, &trigger)); // recent baseline can adapt during inference
         s.workloads[0].cpu_percent = 0.2;
@@ -749,6 +767,67 @@ pub(crate) mod tests {
             .unwrap();
         assert!(proposal(&s, &trigger).is_none()); // renice does not fix memory
     }
+    #[test]
+    fn ordinary_app_wakeups_do_not_interrupt_even_on_many_core_machines() {
+        for cores in [4, 12, 16, 64] {
+            let mut monitor = Monitor::default();
+            let mut s = sample(100, 2.0);
+            s.logical_cpus = cores;
+            s.workloads[0].history = vec![
+                ResourcePoint {
+                    cpu_percent: 0.01,
+                    memory_bytes: 32 << 20,
+                    ..Default::default()
+                };
+                12
+            ];
+            for at in (100..200).step_by(5) {
+                s.captured_at = at;
+                assert!(conditions(&s, &Policy::default()).is_empty());
+                assert!(monitor.observe(&s, &Policy::default(), false).is_none());
+            }
+            // Whole-system pressure still alerts even when no one app is large.
+            s.cpu_percent = 90.0;
+            assert!(conditions(&s, &Policy::default())
+                .iter()
+                .any(|t| t.kind == Kind::SystemCpu));
+        }
+    }
+
+    #[test]
+    fn substantial_anomalies_are_sustained_and_rechecked_against_current_limits() {
+        let mut policy = Policy {
+            app_cpu_core_percent: 1600.0,
+            ..Default::default()
+        };
+        let mut s = sample(100, 12.0);
+        s.workloads[0].history = vec![
+            ResourcePoint {
+                cpu_percent: 0.1,
+                memory_bytes: 32 << 20,
+                ..Default::default()
+            };
+            12
+        ];
+        let mut monitor = Monitor::default();
+        assert!(monitor.observe(&s, &policy, false).is_none());
+        s.captured_at += 5;
+        assert!(monitor.observe(&s, &policy, false).is_none());
+        s.captured_at += 5;
+        let trigger = monitor.observe(&s, &policy, false).unwrap();
+        assert_eq!(trigger.kind, Kind::CpuAnomaly);
+        assert!(still_present(&s, &policy, &trigger));
+        policy.app_cpu_percent = 20.0;
+        assert!(!still_present(&s, &policy, &trigger));
+        assert!(conditions(&s, &policy).is_empty());
+        policy.app_cpu_percent = 2.0;
+        assert!(policy.validate().is_err());
+        let migrated: Policy = serde_json::from_str(r#"{"app_cpu_core_percent": 150.0}"#).unwrap();
+        assert_eq!(migrated.app_cpu_percent, 10.0);
+        assert_eq!(migrated.app_cpu_core_percent, 150.0);
+        assert!(migrated.rules.is_empty());
+    }
+
     #[test]
     fn permissions_are_workload_scoped_and_never_allow_termination() {
         let s = sample(100, 15.0);

@@ -615,16 +615,15 @@
                 {:else if page === 'workloads'}
                     <Workloads {snapshot} onselect={select} />
                 {:else if page === 'agents'}
-                    {#if !agentTaskId}<div class="page-heading">
-                            <div>
-                                <h1>Agent tasks</h1>
-                                <p class="muted">
-                                    What your coding tools are working on, and the resources they
-                                    use.
-                                </p>
-                            </div>
+                    <div class="page-heading">
+                        <div>
+                            <h1>Agent tasks</h1>
+                            <p class="muted">
+                                What your coding tools are working on, and the resources they use.
+                            </p>
                         </div>
-                    {/if}<AgentWorkflows
+                    </div>
+                    <AgentWorkflows
                         {snapshot}
                         bind:selectedId={agentTaskId}
                         onselect={select}

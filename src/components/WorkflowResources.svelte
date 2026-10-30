@@ -1,5 +1,7 @@
 <script lang="ts">
     import { memory, percent } from '../lib/format';
+    import InfoTip from './InfoTip.svelte';
+    import Icon from './Icon.svelte';
     import type { AgentWorkflow, AgentRoleUsage } from '../lib/types';
 
     let { workflow, interval }: { workflow: AgentWorkflow; interval: number } = $props();
@@ -42,12 +44,27 @@
     };
 </script>
 
+<div class="resource-heading">
+    <span>{live ? 'Live resource use' : 'Recorded resource use'}</span>
+    <InfoTip label="About task measurements">
+        <p>{workflow.narrative.resources}</p>
+        <p>
+            CPU is a share of all cores, sampled every {interval / 1000}s. Short bursts may be
+            missed. Memory is summed RSS and can include shared pages more than once. Completed
+            measurements last for this app session.
+        </p>
+        <p>
+            Process roles are inferred from names and commands. Bars show each role’s share of this
+            task’s CPU, not a proven cause of slowness.
+        </p>
+    </InfoTip>
+</div>
 <div class="resources">
     <div
         class="reading"
         title={`Share of total CPU capacity, sampled every ${interval / 1000}s. Short bursts can be missed.`}
     >
-        <span>{live ? 'CPU now' : 'Sampled CPU peak'}</span>
+        <span><Icon name="cpu" size={14} />{live ? 'CPU now' : 'Sampled CPU peak'}</span>
         <strong class:unavailable={!measured}>
             {measured ? percent(cpu) : '—'}
         </strong>
@@ -58,17 +75,25 @@
                     : 'Not sampled'
                 : cpu === 0
                   ? 'No CPU activity recorded'
-                  : 'of total capacity'}</small
+                  : live
+                    ? `peak ${percent(workflow.peak_cpu_percent)}`
+                    : 'of total capacity'}</small
         >
     </div>
     <div class="reading">
-        <span>{live ? 'Memory now' : 'Peak memory'}</span>
+        <span><Icon name="memory" size={14} />{live ? 'Memory now' : 'Peak memory'}</span>
         <strong class:unavailable={workflow.peak_process_count === 0}>
             {workflow.peak_process_count === 0
                 ? '—'
                 : memory(live ? workflow.memory_bytes : workflow.peak_memory_bytes)}
         </strong>
-        <small>{workflow.peak_process_count === 0 ? 'Not sampled' : 'process memory · RSS'}</small>
+        <small
+            >{workflow.peak_process_count === 0
+                ? 'Not sampled'
+                : live
+                  ? `peak ${memory(workflow.peak_memory_bytes)}`
+                  : 'retained peak'}</small
+        >
     </div>
     <div class="history">
         <div><span>CPU history</span><small>{measured ? `0–${scale}%` : 'No samples'}</small></div>
@@ -120,35 +145,45 @@
         {/each}
     </div>
 {/if}
-<details class="resource-explanation">
-    <summary>About these measurements</summary>
-    <p>{workflow.narrative.resources}</p>
-    <p class="muted">
-        CPU is a share of all cores. Short bursts between {interval / 1000}s samples may be missed;
-        a zero reading does not mean no work happened. Role bars show each role’s share of this
-        task’s measured CPU. Memory is summed RSS and may include shared pages more than once.
-    </p>
-</details>
 
 <style>
+    .resource-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 10px;
+    }
     .resources {
         display: grid;
-        grid-template-columns: 1fr 1fr 1.2fr;
+        grid-template-columns: 1fr 1fr 1.65fr;
         gap: 12px;
-        padding: 16px 0 12px;
+        padding: 0;
     }
     .reading {
         display: grid;
         align-content: start;
-        gap: 5px;
+        gap: 9px;
+        background: var(--hover);
+        border-radius: 8px;
+        padding: 14px;
+    }
+    .reading > span {
+        display: flex;
+        align-items: center;
+        gap: 7px;
     }
     .reading > span,
+    .history {
+        padding: 8px 0 0 8px;
+    }
     .history > div {
         font-size: 11px;
         color: var(--muted);
     }
     .reading strong {
-        font-size: 22px;
+        font-size: 26px;
         font-weight: 550;
         letter-spacing: -0.6px;
         font-variant-numeric: tabular-nums;
@@ -160,13 +195,16 @@
         color: var(--muted);
         font-size: 10px;
     }
+    .history {
+        padding: 8px 0 0 8px;
+    }
     .history > div {
         display: flex;
         justify-content: space-between;
     }
     svg {
         width: 100%;
-        height: 42px;
+        height: 62px;
         display: block;
         margin: 3px 0;
     }
@@ -184,15 +222,14 @@
         vector-effect: non-scaling-stroke;
     }
     .role-strip {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 20px;
-        padding: 9px 0;
-        border-top: 1px solid var(--border);
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px 20px;
+        padding: 16px 0 0;
     }
     .role {
-        display: flex;
-        align-items: center;
+        display: grid;
+        grid-template-columns: 1fr auto;
         gap: 7px;
         font-size: 11px;
     }
@@ -205,8 +242,10 @@
         font-variant-numeric: tabular-nums;
     }
     .role-meter {
-        width: 42px;
-        height: 4px;
+        width: 100%;
+        height: 5px;
+        grid-row: 2;
+        grid-column: 1 / -1;
         border-radius: 3px;
         background: var(--track);
         overflow: hidden;
@@ -217,19 +256,19 @@
         background: var(--accent);
         opacity: 0.7;
     }
-    .resource-explanation {
-        font-size: 11px;
-    }
-    summary {
-        color: var(--muted);
-        cursor: pointer;
-        padding: 4px 0;
-    }
     p {
         line-height: 1.6;
         margin: 8px 0;
     }
     @media (max-width: 760px) {
+        .resource-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: var(--muted);
+            font-size: 11px;
+            margin-bottom: 10px;
+        }
         .resources {
             gap: 12px;
             grid-template-columns: 1fr 1fr;

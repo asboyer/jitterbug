@@ -18,7 +18,7 @@ test('activity answers the main question without queue or agent history', async 
     await expect(page.getByRole('region', { name: 'Agent workflows' })).toHaveCount(0);
 });
 
-test('task cards show value immediately and the detail stays open through refreshes', async ({
+test('task dropdowns show visual measurements and stay open through refreshes', async ({
     page,
 }) => {
     await page.clock.install();
@@ -32,10 +32,13 @@ test('task cards show value immediately and the detail stays open through refres
         name: 'Check keyboard focus behavior',
         exact: true,
     });
+    await expect(active.locator('.row-readings')).toContainText('CPU');
+    await active.locator('.task-disclosure > summary').click();
+    await expect(active.getByRole('img', { name: /Task CPU history/ })).toBeVisible();
     await expect(active).toContainText('Test runners are using most');
-    await expect(active).toContainText('Let heavy checks take turns');
+    await expect(active.locator('.role-strip')).toContainText('Tests');
     await expect(active.getByRole('button', { name: 'Preview managed checks' })).toBeVisible();
-    const logos = page.locator('.task-cards .harness-badge img');
+    const logos = page.locator('.task-disclosure > summary .harness-badge img');
     await expect(logos).toHaveCount(4);
     for (const logo of await logos.all()) {
         await expect(logo).toBeVisible();
@@ -48,7 +51,9 @@ test('task cards show value immediately and the detail stays open through refres
         'rgb(110, 213, 138)'
     );
     await expect(completed.getByRole('button', { name: /managed checks/ })).toHaveCount(0);
-    await completed.getByRole('button', { name: 'View task' }).click();
+    await completed.locator('.task-disclosure > summary').click();
+    await expect(active.getByRole('region', { name: 'Task detail' })).toHaveCount(0);
+    await expect(active).toBeVisible();
     const detail = page.getByRole('region', { name: 'Task detail' });
     await detail.getByText('Sessions & evidence', { exact: false }).click();
     const session = detail.locator('details.agent').first();
@@ -58,8 +63,9 @@ test('task cards show value immediately and the detail stays open through refres
     await expect(detail.locator('details.technical-detail')).toHaveAttribute('open');
     await expect(session).toHaveAttribute('open');
     await expect(detail.getByText('Meta · Muse Code', { exact: true }).first()).toBeAttached();
-    await page.getByRole('button', { name: 'All agent tasks' }).click();
-    await expect(completed.getByRole('button', { name: 'View task' })).toBeFocused();
+    await completed.locator('.task-disclosure > summary').focus();
+    await page.keyboard.press('Enter');
+    await expect(completed.locator('.task-disclosure > summary')).toBeFocused();
     await page.clock.fastForward(11_000);
     await expect(detail).toHaveCount(0);
 });
@@ -109,6 +115,7 @@ test('minimum window width keeps navigation and primary actions reachable', asyn
         name: 'Add search and keyboard navigation',
         exact: true,
     });
+    await workflow.locator('.task-disclosure > summary').click();
     const manage = workflow.getByRole('button', { name: 'Preview managed checks' });
     await manage.scrollIntoViewIfNeeded();
     await expect(manage).toBeInViewport();

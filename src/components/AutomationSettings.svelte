@@ -56,6 +56,10 @@
         does not send paths, environment variables, or transcripts. Local inference still respects
         the memory and thermal guards.
     </p>
+    <p class="muted">
+        App CPU alerts must also exceed the minimum below, including unusual activity alerts. Small
+        wake-ups stay quiet. Whole-machine memory, heat, and CPU alerts remain independent.
+    </p>
     <div class="automation-fields">
         <label
             >Whole-machine CPU threshold (%)<input
@@ -71,6 +75,14 @@
                 min="5"
                 max="30"
                 bind:value={policy.available_memory_percent}
+            /></label
+        >
+        <label
+            >Minimum app CPU (% of total capacity)<input
+                type="number"
+                min="5"
+                max="100"
+                bind:value={policy.app_cpu_percent}
             /></label
         >
         <label
@@ -107,10 +119,10 @@
         >
     </div>
     <p class="muted">
-        Also detects CPU at least 3× its recent baseline with a 25%-of-one-core increase, and memory
-        growth of at least 50% and 512 MiB. Requires baseline history and sustained samples.
-        Repeated alerts wait for recovery, cooldown, and a global 60-second gap. Incident history is
-        kept only in memory.
+        Unusual CPU activity must exceed the app minimum, reach 3× its recent baseline, and rise by
+        five percentage points of total capacity. Memory growth requires at least 50% and 512 MiB.
+        Both require baseline history and sustained samples. Repeated alerts wait for recovery,
+        cooldown, and a global 60-second gap. Incident history is kept only in memory.
     </p>
     <h3>Workloads allowed to change priority automatically</h3>
     <p>
