@@ -24,14 +24,15 @@ pub struct Profile {
 pub fn reference(app: Option<&Application>, workload: &Workload) -> Profile {
     // Bundle identity is OS evidence, not publisher/signature verification.
     let known = app.and_then(|app| match app.identifier.as_deref()? {
-        "com.spotify.client" => Some("Spotify plays music and podcasts. Its main process coordinates the app; helper processes can render the interface, decode media, and handle networking. Multiple helpers are normal. This describes the app's purpose; it does not establish why a particular process is busy right now."),
-        "com.apple.Safari" | "com.google.Chrome" | "org.mozilla.firefox" | "com.microsoft.edgemac" | "company.thebrowser.Browser" => Some("This is a web browser. Separate processes can run tabs, websites, extensions, graphics, and networking. A helper's name alone cannot identify the tab responsible. Resource history and a fresh investigation are needed to explain current activity."),
-        "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92" => Some("This is a code editor. Its helpers can run extensions, language servers, searches, terminals, and the interface. A child runtime may be doing project work, but process ancestry alone does not identify the specific coding task."),
-        "com.apple.Terminal" | "com.googlecode.iterm2" | "com.mitchellh.ghostty" => Some("This is a terminal application. It hosts shells that can start commands, development servers, builds, and coding agents. Follow a child process's parent chain and working directory to see which shell or project it is associated with."),
-        "com.apple.finder" => Some("Finder is the macOS file browser and desktop. It handles folder windows, file operations, and desktop items. Its presence is expected; resource use by itself does not establish a fault."),
-        "com.apple.WindowManager" | "com.apple.dock" => Some("This is part of the macOS desktop interface. It manages windows or the Dock and works with other system services. Treat it as a system component rather than an ordinary background job."),
-        "com.tinyspeck.slackmacgap" | "com.hnc.Discord" => Some("This is a messaging and collaboration app. Helpers can render conversations, receive updates, and handle calls or shared media. Several processes can belong to the same application; a fresh investigation is needed to explain unusual resource use."),
-        "ai.ollama.ollama" => Some("Ollama runs local language models. Model weights, context, and inference can use substantial memory and compute. A running server does not by itself prove a model is loaded; check the local model runtime before drawing that conclusion."),
+        "com.jitterbug.desktop" => Some("Jitterbug monitors resource use and explains which apps and background tasks are active. It collects system readings locally and uses configured models for explanations and investigations."),
+        "com.spotify.client" => Some("Spotify plays music and podcasts. Its helpers draw the interface, play media and handle networking; several processes are normal."),
+        "com.apple.Safari" | "com.google.Chrome" | "org.mozilla.firefox" | "com.microsoft.edgemac" | "company.thebrowser.Browser" => Some("This browser runs tabs, extensions and graphics in separate processes. Those helpers belong to the same app; the process name alone does not identify a specific tab."),
+        "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92" => Some("This code editor runs the interface, extensions, code analysis and terminals. Helpers can continue working while a project is open."),
+        "com.apple.Terminal" | "com.googlecode.iterm2" | "com.mitchellh.ghostty" => Some("This terminal hosts command-line sessions. Commands beneath it can run servers, builds or coding agents; their parent chain and working folder help identify the source."),
+        "com.apple.finder" => Some("Finder is the macOS file browser and desktop. It handles folder windows, file operations and desktop items."),
+        "com.apple.WindowManager" | "com.apple.dock" => Some("This macOS component manages windows or the Dock. It runs as part of the desktop interface."),
+        "com.tinyspeck.slackmacgap" | "com.hnc.Discord" => Some("This messaging app uses helpers for conversations, calls, updates and shared media. Several processes can belong to the same application."),
+        "ai.ollama.ollama" => Some("Ollama runs language models on this computer. Loaded models can use substantial memory; an idle server does not necessarily have a model loaded."),
         _ => None,
     });
     Profile {
@@ -53,8 +54,32 @@ pub fn key(app: &Application) -> String {
     let mut hash = DefaultHasher::new();
     // Schema, install identity, and version prevent cross-app/stale-version reuse.
     let modified = std::fs::metadata(&app.path).and_then(|m| m.modified()).ok();
-    (1u32, &app.path, &app.identifier, &app.version, modified).hash(&mut hash);
+    (
+        3u32,
+        &app.path,
+        &app.executable_name,
+        &app.identifier,
+        &app.version,
+        modified,
+    )
+        .hash(&mut hash);
     format!("app-{:x}", hash.finish())
+}
+
+/// Only identity metadata crosses the provider boundary. Paths, process arguments,
+/// working directories, parent chains, and live diagnoses are never cached here.
+pub fn model_payload(app: &Application) -> serde_json::Value {
+    let purpose = reference(Some(app), &Workload::default());
+    serde_json::json!({
+        "known_purpose": (purpose.source == "reference").then_some(purpose.text),
+        "name": app.name,
+        "executable": app.executable_name,
+        "component": app.component,
+        "component_kind": app.component_kind,
+        "bundle_identifier": app.identifier,
+        "installation": app.installation,
+        "operating_system": std::env::consts::OS,
+    })
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -113,6 +138,41 @@ impl Cache {
 mod tests {
     use super::*;
     #[test]
+    fn process_identity_payload_excludes_paths_and_cache_keys_separate_executables() {
+        let mut app =
+            crate::applications::identify(Path::new("/example/private-project/bin/worker"));
+        let payload = model_payload(&app).to_string();
+        assert!(payload.contains("worker"));
+        assert!(!payload.contains("private-project"));
+        assert!(!payload.contains("/example"));
+        let first = key(&app);
+        app.path = "/example/another-install/bin/worker".into();
+        assert_ne!(key(&app), first);
+        app.path = "/example/private-project/bin/worker".into();
+        app.executable_name = "different-helper".into();
+        assert_ne!(key(&app), first);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn framework_daemons_have_component_context_without_trusting_their_name() {
+        let installed = crate::applications::identify(Path::new(
+            "/System/Library/PrivateFrameworks/ExampleAnalysis.framework/Versions/A/exampled",
+        ));
+        assert_eq!(installed.name, "exampled");
+        assert_eq!(
+            installed.component.as_deref(),
+            Some("ExampleAnalysis.framework")
+        );
+        assert_eq!(installed.component_kind, "framework");
+        assert_eq!(installed.installation, "macOS system component");
+        let impostor = crate::applications::identify(Path::new("/example/downloads/exampled"));
+        assert_eq!(impostor.installation, "Standalone executable");
+        assert_ne!(key(&installed), key(&impostor));
+        assert!(!model_payload(&installed).to_string().contains("/System/"));
+    }
+
+    #[test]
     fn version_changes_invalidate_app_profiles_and_references_need_bundle_identity() {
         let mut app = Application {
             name: "Spotify".into(),
@@ -120,6 +180,7 @@ mod tests {
             version: Some("1".into()),
             path: "/Applications/Example.app".into(),
             identity_source: "test".into(),
+            ..Default::default()
         };
         assert_eq!(
             reference(Some(&app), &Workload::default()).source,

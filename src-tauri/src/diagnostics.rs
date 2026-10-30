@@ -103,6 +103,23 @@ fn matches(snapshot: &Snapshot, question: &str) -> Option<Resolution> {
 pub fn resolve(snapshot: &Snapshot, questions: &[&str], selected: Option<&str>) -> Resolution {
     let question = questions.last().copied().unwrap_or_default();
     if let Some(result) = matches(snapshot, question) {
+        // The selection is stronger evidence than a duplicate app name (for example
+        // an installed Jitterbug and its development checkout). No model is needed.
+        if let Resolution::Clarify(_, candidates) = &result {
+            let same_name = candidates.first().is_some_and(|first| {
+                candidates
+                    .iter()
+                    .all(|target| words(&target.label) == words(&first.label))
+            });
+            if same_name {
+                if let Some(target) = candidates
+                    .iter()
+                    .find(|t| Some(t.workload_id.as_str()) == selected)
+                {
+                    return Resolution::Found(target.clone());
+                }
+            }
+        }
         return result;
     }
     let q = question.to_lowercase();
@@ -184,6 +201,33 @@ pub fn resolve(snapshot: &Snapshot, questions: &[&str], selected: Option<&str>) 
     Resolution::System
 }
 
+pub fn resolve_with_process(
+    snapshot: &Snapshot,
+    questions: &[&str],
+    selected: Option<&str>,
+    process: Option<(u32, u64)>,
+) -> Resolution {
+    let resolution = resolve(snapshot, questions, selected);
+    if let (Resolution::Found(target), Some((pid, start))) = (&resolution, process) {
+        if target.pid.is_none() && Some(target.workload_id.as_str()) == selected {
+            return match snapshot.processes.iter().find(|p| {
+                p.pid == pid && p.start_time == start && p.workload_id == target.workload_id
+            }) {
+                Some(process) => Resolution::Found(Target {
+                    workload_id: target.workload_id.clone(),
+                    label: process.name.clone(),
+                    pid: Some(pid),
+                }),
+                None => Resolution::Clarify(
+                    "The selected process has exited. Choose a current process.".into(),
+                    vec![],
+                ),
+            };
+        }
+    }
+    resolution
+}
+
 pub fn choices(snapshot: &Snapshot) -> Vec<Target> {
     snapshot
         .workloads
@@ -248,7 +292,13 @@ impl Investigation {
             .is_some_and(|w| w.category == "project");
         let history: Vec<_> = self.history.iter().map(|p| json!({"seconds_ago":self.captured_at.saturating_sub(p.time),"cpu_percent":p.cpu_percent,"resident_mib":p.memory_bytes/1048576})).collect();
         let processes: Vec<_> = self.processes.iter().map(|p| json!({"name":p.name,"cpu_percent":p.cpu_percent,"cpu_percent_one_core_scale":p.cpu_percent*snapshot.logical_cpus as f32,"resident_mib":p.memory_bytes/1048576,"disk_read_bytes":p.disk_read_bytes,"disk_written_bytes":p.disk_written_bytes,"available_actions":p.actions})).collect();
-        json!({"target":if project {"Selected development workload"} else {&self.target.label},"scope":if self.target.pid.is_some(){"single PID; history is its containing workload"}else{"application/workload"},"cpu_percent":self.cpu_percent,"resident_mib":self.memory_bytes/1048576,"process_count":self.process_count,"history":history,"busiest_processes":processes,"limits":self.limits})
+        let identity = self.processes.iter().find_map(|process| {
+            process
+                .executable
+                .as_deref()
+                .map(|path| crate::profiles::model_payload(&crate::applications::identify(path)))
+        });
+        json!({"executable_identity":identity,"target":if project {"Selected development workload"} else {&self.target.label},"scope":if self.target.pid.is_some(){"single PID; history is its containing workload"}else{"application/workload"},"cpu_percent":self.cpu_percent,"resident_mib":self.memory_bytes/1048576,"process_count":self.process_count,"history":history,"busiest_processes":processes,"limits":self.limits})
     }
 }
 
@@ -373,6 +423,72 @@ mod tests {
             "music"
         );
     }
+    #[test]
+    fn process_selection_is_preserved_for_plain_language_followups() {
+        let s = fixture();
+        assert_eq!(
+            target(resolve_with_process(
+                &s,
+                &["Does this need attention?"],
+                Some("music"),
+                Some((123, 10))
+            ))
+            .pid,
+            Some(123)
+        );
+        assert!(matches!(
+            resolve_with_process(&s, &["What is it doing?"], Some("music"), Some((123, 11))),
+            Resolution::Clarify(..)
+        ));
+        assert_eq!(
+            target(resolve_with_process(
+                &s,
+                &["Explain Project Two"],
+                Some("music"),
+                Some((123, 10))
+            ))
+            .workload_id,
+            "two"
+        );
+        assert_eq!(
+            target(resolve_with_process(
+                &s,
+                &["Investigate PID 125"],
+                Some("music"),
+                Some((123, 10))
+            ))
+            .pid,
+            Some(125)
+        );
+    }
+
+    #[test]
+    fn selected_workload_resolves_duplicate_names_without_a_model() {
+        let mut s = fixture();
+        s.workloads[1].label = "Spotify".into();
+        assert_eq!(
+            target(resolve(&s, &["Why is Spotify busy?"], Some("music"))).workload_id,
+            "music"
+        );
+        assert_eq!(
+            target(resolve(&s, &["Why is Spotify busy?"], Some("one"))).workload_id,
+            "one"
+        );
+        assert!(matches!(
+            resolve(&s, &["Why is Spotify busy?"], None),
+            Resolution::Clarify(..)
+        ));
+        // An explicit PID still overrides a selection; genuinely different targets are not guessed.
+        assert_eq!(
+            target(resolve(&s, &["Investigate PID 125"], Some("music"))).workload_id,
+            "two"
+        );
+        assert!(matches!(
+            resolve(&s, &["Spotify and Project Two"], Some("music")),
+            Resolution::Clarify(..)
+        ));
+    }
+
     #[test]
     fn exited_targets_are_not_silently_replaced_with_other_processes() {
         let s = fixture();

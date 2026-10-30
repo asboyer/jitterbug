@@ -127,6 +127,18 @@ async fn control_validation_queue(action: String, job_id: Option<String>) -> Res
 }
 
 #[tauri::command]
+fn search_workloads(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<types::Workload>, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?;
+    details::search(&snapshot, &query)
+}
+
+#[tauri::command]
 fn get_workload_details(
     state: State<'_, AppState>,
     workload_id: String,
@@ -218,46 +230,9 @@ async fn explain_application(
     pid: u32,
     start_time: u64,
 ) -> Result<profiles::Profile, String> {
-    let _guard = state
-        .inference
-        .try_lock()
-        .map_err(|_| "One model request is already active. Please wait.")?;
-    let snapshot = state
-        .snapshot
-        .read()
-        .map_err(|_| "Telemetry unavailable.")?
-        .clone();
-    let detail = details::inspect(&snapshot, &workload_id, Some((pid, start_time)))?;
-    if detail.profile.source == "reference" {
-        return Ok(detail.profile);
-    }
-    if !detail.can_generate_profile {
-        return Err("A reusable model explanation requires an application bundle or Windows executable. Use the contextual assistant to investigate this process instead.".into());
-    }
-    let app = detail
-        .application
-        .ok_or("Application identity unavailable.")?;
-    let key = profiles::key(&app);
-    if let Some(profile) = state
-        .profiles
-        .lock()
-        .map_err(|_| "Profile cache unavailable.")?
-        .get(&key)
-    {
-        return Ok(profile);
-    }
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "Settings unavailable.")?
-        .clone();
-    let profile = state.engine.app_profile(&settings, &snapshot, &app).await?;
     state
-        .profiles
-        .lock()
-        .map_err(|_| "Profile cache unavailable.")?
-        .insert(key, profile.clone(), &state.directory)?;
-    Ok(profile)
+        .explain_application(&workload_id, pid, start_time)
+        .await
 }
 
 #[tauri::command]
@@ -470,6 +445,7 @@ async fn ask(
             messages,
             workload_id.as_deref(),
             &tier,
+            pid.zip(start_time),
         )
         .await
 }
@@ -617,6 +593,7 @@ pub fn run() {
             get_validation_queue,
             control_validation_queue,
             get_snapshot,
+            search_workloads,
             get_workload_details,
             get_workload_icon,
             explain_application,

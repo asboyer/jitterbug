@@ -288,7 +288,7 @@ fn panel_position(anchor: [f64; 4], area: [f64; 4], panel: [f64; 2], gap: f64) -
 }
 
 fn template_icon() -> tauri::image::Image<'static> {
-    // Original 18 pt bug glyph, rendered at 2x. macOS supplies the appearance tint.
+    // Original 18 pt companion glyph, rendered at 2x. macOS supplies the appearance tint.
     // Transparent background, antialiased alpha, no baked-in color or white square.
     let mut rgba = vec![0u8; 36 * 36 * 4];
     for y in 0..36 {
@@ -298,14 +298,14 @@ fn template_icon() -> tauri::image::Image<'static> {
                 for sx in 0..4 {
                     let px = (x as f64 + (sx as f64 + 0.5) / 4.0) / 2.0;
                     let py = (y as f64 + (sy as f64 + 0.5) / 4.0) / 2.0;
-                    let body = ((px - 9.0) / 3.7).powi(2) + ((py - 10.0) / 5.0).powi(2);
-                    let outline = (0.62..=1.0).contains(&body);
-                    let head = (px - 9.0).powi(2) + (py - 4.5).powi(2) < 2.5;
-                    let seam = (px - 9.0).abs() < 0.55 && (6.0..14.5).contains(&py);
-                    let legs = [7.0, 10.0, 13.0]
+                    let radius = ((px - 9.0).powi(2) + (py - 9.0).powi(2)).sqrt();
+                    let outline = (6.1..=7.4).contains(&radius);
+                    let eyes = [6.0, 12.0]
                         .iter()
-                        .any(|cy| (py - cy).abs() < 0.6 && (2.5..15.5).contains(&px));
-                    if outline || head || seam || legs {
+                        .any(|cx| (px - cx).abs() <= 0.65 && (6.8..=8.7).contains(&py));
+                    let smile_y = 12.6 - (px - 9.0).powi(2) * 0.22;
+                    let smile = (6.0..=12.0).contains(&px) && (py - smile_y).abs() < 0.65;
+                    if outline || eyes || smile {
                         hits += 1;
                     }
                 }

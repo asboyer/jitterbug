@@ -102,7 +102,7 @@ async fn main() {
         } else {
             "cheap"
         };
-        let reply = engine.chat(&settings, &snapshot, vec![ChatMessage { role: "user".into(), content: "What does CPU usage mean? Give one short explanation without repeating any telemetry measurements.".into() }], None, tier).await.expect("Model smoke request failed");
+        let reply = engine.chat(&settings, &snapshot, vec![ChatMessage { role: "user".into(), content: "What does CPU usage mean? Give one short explanation without repeating any telemetry measurements.".into() }], None, tier, None).await.expect("Model smoke request failed");
         if option == "--decision-model" {
             assert!(
                 reply

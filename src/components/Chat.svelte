@@ -3,6 +3,9 @@
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage } from '../lib/format';
     import Investigation from './Investigation.svelte';
+    import InsightCard from './InsightCard.svelte';
+    import InfoTip from './InfoTip.svelte';
+    import Icon from './Icon.svelte';
     import ActionResult from './ActionResult.svelte';
     import type {
         ActionReport,
@@ -20,6 +23,7 @@
         incident,
         workload,
         questionProcess = null,
+        initialReply = null,
         desktop,
         onclose,
         onusage,
@@ -31,6 +35,7 @@
         incident: AutomationCase | null;
         workload: Workload | null;
         questionProcess?: ProcessRecord | null;
+        initialReply?: Reply | null;
         desktop: boolean;
         onclose: () => void;
         onusage: () => void;
@@ -38,7 +43,7 @@
         actionReport: ActionReport | null;
         actionBusy: boolean;
     } = $props();
-    let question = $state('Why is my computer struggling?');
+    let question = $state('');
     let tier = $state('auto');
     let busy = $state(false);
     let error = $state('');
@@ -69,9 +74,16 @@
     });
 
     $effect(() => {
-        const context = `${snapshot.source}:${workload?.id ?? 'system'}:${incident?.id ?? ''}:${questionProcess?.pid ?? ''}:${questionProcess?.start_time ?? ''}`;
+        const context = `${snapshot.source}:${workload?.id ?? 'system'}:${incident?.id ?? ''}:${questionProcess?.pid ?? ''}:${questionProcess?.start_time ?? ''}:${initialReply?.text ?? ''}`;
         if (context !== previousContext) {
-            conversation = [];
+            conversation = initialReply
+                ? [
+                      {
+                          message: { role: 'assistant', content: initialReply.text },
+                          reply: initialReply,
+                      },
+                  ]
+                : [];
             if (incident?.diagnosis) {
                 conversation.push({
                     message: { role: 'assistant', content: incident.diagnosis.text },
@@ -104,13 +116,7 @@
             }
             focused = null;
             previousContext = context;
-            question = incident
-                ? 'What should we try next based on this result?'
-                : questionProcess
-                  ? `Investigate PID ${questionProcess.pid}. Why is it using these resources, and what can we improve?`
-                  : workload
-                    ? `Why is ${workload.label} using these resources? What can we improve?`
-                    : 'Why is my computer struggling?';
+            question = '';
         }
     });
 
@@ -157,7 +163,14 @@
             const reply: Reply =
                 !desktop || snapshot.source === 'demo'
                     ? {
-                          text: 'This is a mocked explanation of synthetic data. The sample project is doing build work. In a real session, Jitterbug would compare sustained CPU use, available memory, swap growth, and process ancestry before suggesting a next step. No model was called and no process was changed.',
+                          text: 'The sample project is running a build. This is synthetic data; no model was called.',
+                          insight: {
+                              headline: 'A build is using the CPU',
+                              finding:
+                                  'This demo shows development work running alongside your apps.',
+                              next_step:
+                                  'Let the build finish, or manage this workload to schedule heavy checks.',
+                          },
                           source: 'demo',
                           provider: null,
                           model: null,
@@ -193,82 +206,83 @@
 
 <aside class="assistant panel" aria-label="Contextual assistant">
     <div class="section-title">
-        <div>
-            <p class="eyebrow">JITTERBUG ASSISTANT</p>
-            <h2>{focused?.label ?? workload?.label ?? 'Ask about an app or process'}</h2>
+        <div class="assistant-title">
+            <span class="assistant-mark"><Icon name="companion" size={24} /></span>
+            <div>
+                <p class="eyebrow">Jitterbug insights</p>
+                <h2>{focused?.label ?? workload?.label ?? 'Your computer'}</h2>
+            </div>
         </div>
         <button class="icon-button" aria-label="Close assistant" onclick={onclose} disabled={busy}
             >×</button
         >
     </div>
-    <div class="context-note">
-        <span class="status-dot"></span>
-        {snapshot.source === 'demo'
-            ? 'Synthetic context · mocked replies'
-            : 'Live context · ask about an app or process'}
-        <p>
-            For a specific investigation, models receive that app’s name, process names, metrics,
-            recent history, and your messages. Paths, environment variables, transcripts, and
-            unrelated app names stay out of telemetry sent to models. Actions require your
-            confirmation.
-        </p>
+    <div class="context-line">
+        <span class="status-dot"></span><span
+            >{snapshot.source === 'demo'
+                ? 'Demo · synthetic readings'
+                : questionProcess
+                  ? `Selected process · PID ${questionProcess.pid}`
+                  : workload
+                    ? 'Selected workload · live readings'
+                    : 'Live readings'}</span
+        ><InfoTip label="Privacy and model settings"
+            ><p>
+                Models receive the selected app’s name, process names, measurements, recent history
+                and your question. Paths, environment variables and transcripts stay on this device.
+                Actions require confirmation.
+            </p>
+            <label
+                >Reasoning tier<select aria-label="Reasoning tier" bind:value={tier} disabled={busy}
+                    ><option value="auto">Automatic</option><option value="rules"
+                        >Observations only</option
+                    ><option value="cheap">Definitions</option><option value="intelligent"
+                        >Intelligent</option
+                    ></select
+                ></label
+            ></InfoTip
+        >
     </div>
     <div class="conversation" bind:this={conversationElement} aria-live="polite" aria-busy={busy}>
         {#if !conversation.length}<div class="chat-welcome">
-                <span aria-hidden="true">✳</span>
-                <h3>What is slowing you down?</h3>
+                <h3>{workload ? 'What would help?' : 'Let’s find what needs attention.'}</h3>
                 <p>
-                    Try “Why is Spotify using so much CPU?” or “Investigate PID 123.” I’ll inspect
-                    the evidence, suggest a test or supported action, and measure changes.
+                    {workload
+                        ? 'This workload is already selected.'
+                        : 'Check the whole computer, or ask about an app.'}
                 </p>
-            </div>{/if}
-        {#each conversation as entry}
-            <article class:user-message={entry.message.role === 'user'} class="chat-message">
-                <div class="message-label">
-                    {entry.message.role === 'user'
-                        ? 'You'
-                        : entry.reply?.source === 'model'
-                          ? `Model · ${entry.reply.provider} / ${entry.reply.model}`
-                          : entry.reply?.source === 'demo'
-                            ? 'MOCKED · demo explanation'
-                            : entry.reply?.source === 'guidance'
-                              ? 'Jitterbug · no model call'
-                              : 'Observed · deterministic rules'}
+                <div class="quick-questions">
+                    {#each workload ? ['Does this need attention?', 'What is it doing?', 'How can I reduce its impact?'] : ['What needs attention?', 'What is using the most memory?'] as prompt}<button
+                            disabled={busy}
+                            onclick={() => {
+                                question = prompt;
+                                void send();
+                            }}>{prompt}<span aria-hidden="true">↗</span></button
+                        >{/each}
                 </div>
-                <p>{entry.message.content}</p>
-                {#if entry.reply?.investigation}
-                    <Investigation
-                        evidence={entry.reply.investigation}
-                        disabled={busy || actionBusy || snapshot.source !== 'live'}
-                        {onaction}
-                    />
-                {/if}
-                {#if entry.reply?.choices.length}
-                    <div class="process-actions">
-                        {#each entry.reply.choices as choice}
-                            <button disabled={busy} onclick={() => void send(choice)}
-                                >{choice.label}</button
-                            >
-                        {/each}
-                    </div>
-                {/if}
-                {#if entry.reply?.route.length}<details>
-                        <summary>Routing details</summary>
-                        <ul>
-                            {#each entry.reply.route as step}<li>{step}</li>{/each}
-                        </ul>
-                    </details>{/if}
-                {#if entry.reply?.source === 'model'}<small
-                        >Estimated token cost: ${entry.reply.estimated_cost_usd.toFixed(5)} · recommendations
-                        may be wrong; review evidence.</small
-                    >{/if}
-            </article>
-        {/each}
+            </div>{/if}
+        {#each conversation as entry}<article
+                class:user-message={entry.message.role === 'user'}
+                class="chat-message"
+            >
+                {#if entry.message.role === 'user'}<p>{entry.message.content}</p>
+                {:else if entry.reply}<InsightCard reply={entry.reply} />
+                    {#if entry.reply.investigation}<Investigation
+                            evidence={entry.reply.investigation}
+                            disabled={busy || actionBusy || snapshot.source !== 'live'}
+                            {onaction}
+                        />{/if}
+                    {#if entry.reply.choices.length}<div class="quick-questions">
+                            {#each entry.reply.choices as choice}<button
+                                    disabled={busy}
+                                    onclick={() => void send(choice)}>{choice.label}</button
+                                >{/each}
+                        </div>{/if}
+                {:else}<p>{entry.message.content}</p>{/if}
+            </article>{/each}
         {#if actionReport}<ActionResult report={actionReport} />{/if}
-        {#if actionBusy}<p class="muted">
-                Applying the confirmed action and waiting for a fresh measurement…
-            </p>{/if}
-        {#if busy}<p class="muted">Checking policy and asking one model at a time…</p>{/if}
+        {#if actionBusy}<p class="muted">Applying your change and measuring the result…</p>{/if}
+        {#if busy}<p class="muted" role="status">Checking current activity…</p>{/if}
     </div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <form
@@ -280,21 +294,130 @@
     >
         <label for="question" class="sr-only">Ask Jitterbug</label><textarea
             id="question"
-            placeholder="Why is Spotify using so much CPU?"
-            rows="3"
+            placeholder={workload
+                ? `Ask about ${workload.label}…`
+                : 'Ask about an app or your computer…'}
+            rows="2"
             maxlength="2000"
             bind:value={question}
             disabled={busy}></textarea>
         <div class="form-actions">
-            <select aria-label="Reasoning tier" bind:value={tier} disabled={busy}
-                ><option value="auto">Automatic routing</option><option value="rules"
-                    >Observations only · no model</option
-                ><option value="cheap">Cheap tier · definitions</option><option value="intelligent"
-                    >Intelligent tier</option
-                ></select
+            <span class="muted"
+                >{tier === 'auto'
+                    ? 'Automatic routing'
+                    : tier === 'rules'
+                      ? 'No model'
+                      : `${tier} tier`}</span
             ><button class="primary" disabled={busy || !question.trim()}
-                >{busy ? 'Working…' : 'Ask Jitterbug ↑'}</button
+                >{busy ? 'Checking…' : 'Ask ↑'}</button
             >
         </div>
     </form>
 </aside>
+
+<style>
+    .assistant {
+        padding: 20px;
+        width: 390px;
+    }
+    .assistant-title {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        min-width: 0;
+    }
+    .assistant-mark {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        flex-shrink: 0;
+        background: var(--accent-soft);
+        color: var(--accent);
+        border-radius: 12px;
+    }
+    .eyebrow {
+        font-size: 10px;
+        text-transform: none;
+        letter-spacing: 0;
+        margin: 0 0 4px;
+    }
+    h2 {
+        font-size: 15px;
+        margin: 0;
+    }
+    .context-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .context-line > span:nth-child(2) {
+        flex: 1;
+    }
+    .context-line select {
+        width: 100%;
+        margin-top: 8px;
+    }
+    .chat-welcome {
+        text-align: left;
+        padding: 10px 0;
+    }
+    .chat-welcome h3 {
+        font-size: 18px;
+        letter-spacing: -0.3px;
+    }
+    .chat-welcome p {
+        line-height: 1.6;
+    }
+    .quick-questions {
+        display: grid;
+        gap: 9px;
+        margin-top: 22px;
+    }
+    .quick-questions button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        text-align: left;
+        gap: 12px;
+        padding: 12px;
+        font-size: 12px;
+        border-radius: 8px;
+        background: transparent;
+    }
+    .quick-questions button span {
+        color: var(--muted);
+    }
+    .chat-message {
+        padding: 0 0 22px;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        border-radius: 0;
+        margin-bottom: 22px;
+    }
+    .chat-message.user-message {
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 9px;
+        background: var(--hover);
+        margin-bottom: 12px;
+    }
+    .user-message p {
+        font-size: 12px;
+        line-height: 1.5;
+    }
+    .form-actions {
+        align-items: center;
+        font-size: 10px;
+    }
+    .chat-form textarea {
+        border-radius: 9px;
+        padding: 12px;
+        line-height: 1.5;
+        resize: vertical;
+    }
+</style>

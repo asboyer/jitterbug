@@ -52,7 +52,7 @@
 <svelte:window onkeydown={escape} />
 <div class="quick-view">
     <header class="quick-header">
-        <Icon name="bug" size={19} /><strong>Jitterbug</strong>
+        <Icon name="companion" size={19} /><strong>Jitterbug</strong>
         <span class="muted">{desktop ? 'Live' : 'Demo'}</span>
         <button class="icon-button" aria-label="Open settings" onclick={() => open('settings')}
             ><Icon name="settings" /></button

@@ -75,12 +75,18 @@ the trace. This is a current OS parent chain, not a historical launch log: a par
 existing confirmation and fresh-identity checks.
 
 Common macOS apps, including Spotify, have built-in descriptions matched to their bundle
-identifier. Other identified applications offer **Generate app explanation**, using the configured
-intelligent tier only on request, subject to mode, budget, and local-resource guards. Only the
-app name and bundle identifier (when available) enter that request; paths, process snapshots,
-and transcripts do not. The response is labeled AI-generated and is general app knowledge,
-not a cached diagnosis of current activity. Unrecognized executables and project workloads
-retain explicit rule-based explanations; the contextual assistant can still investigate them.
+identifier. Opening any other process with an observed executable automatically requests a
+short explanation from the intelligent tier, subject to mode, budget, and local-resource guards.
+This includes background services, framework executables, and project runtimes. macOS framework
+and XPC metadata supply component context instead of relying only on a filename. The detail
+page shows the installed component and observed parent beside the explanation, with an origin
+evidence link. General runtime descriptions do not identify the particular script or agent task.
+
+Only the executable/app name, component name and type, bundle identifier, OS, and installation
+category enter this request. Full paths, command arguments, parent chains, files, snapshots,
+and transcripts stay local. AI descriptions are general reference knowledge, not cached
+diagnoses of current activity. A failed or blocked request shows a reason and an explicit retry;
+telemetry refreshes do not repeatedly call the model. Demo views never request explanations.
 
 AI descriptions persist privately in `app-profiles.json` in the OS application-data directory.
 The cache holds at most 128 entries for 30 days and is invalidated by app version or installation
@@ -175,7 +181,7 @@ Jitterbug never downloads models. Local inference requires at least 4 GiB and 20
 
 Meta and Claude use fixed official endpoints. Jev is wired for the decision tier only and requires its own key; it is not required for the app. Cloud model IDs and prices are reviewed in `src-tauri/src/settings.rs`; unknown prices fail closed. Contributor/training-discount variants are not enabled.
 
-Cloud calls come from chat requests, explicitly requested app/task explanations, or enabled automatic incident investigations. They are bounded and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests and retained on failures or restarts. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
+Cloud calls come from activity checks, chat requests, opening uncached process details, explicitly requested task summaries, or enabled automatic incident investigations. They are bounded and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests and retained on failures or restarts. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
 
 ## What is a demo or future work
 
@@ -237,6 +243,11 @@ cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --ac
 # observes a sustained CPU anomaly, automatically lowers its allowed priority,
 # then verifies OS priority and a fresh sample. No model/API requests.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-autopilot-probe
+
+# Opt-in: explain a live executable with the saved intelligent provider, then prove
+# cached reuse makes no extra request. Uses the app ledger and at most $0.05 more
+# reserved spend; no process actions. Output is private local verification data.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-profile-probe -- --process NAME
 
 # Uses a synthetic credential in a separate test service, then deletes it.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-probe -- --credential-store
@@ -311,3 +322,17 @@ In the demo, **See Jitterbug step in** exercises the real native monitor with th
 samples (the browser preview uses fixtures). Investigation and proposal stages are explicitly
 simulated; no model or real process action runs. **Preview managed checks** illustrates two future
 submitted checks taking turns. It does not pause existing tests or promise measured resource savings.
+
+### Process insights
+
+Workload search covers the full collected inventory, including quiet processes outside the dashboard.
+Opening a workload automatically identifies its executable and caches a short purpose explanation.
+The process page keeps that reusable explanation separate from **Check activity**, which uses a fresh
+sample and recent history to return a conclusion, explanation and one next step inline. Measurements,
+parent PIDs, provider information and action controls are available behind disclosures.
+
+An already-selected workload resolves duplicate application names locally, without a model call or a
+second picker. An explicitly named different process still changes the target; genuinely ambiguous
+unselected names still need a choice. Model responses use a bounded structured format; invalid or
+overlong answers fall back to measured observations. Explanations use model knowledge and installed
+metadata, not automatic web research. Current activity is never reused as a cached purpose statement.

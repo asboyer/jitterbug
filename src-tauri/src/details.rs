@@ -48,6 +48,30 @@ pub struct Details {
     pub origin_summary: String,
     pub origin_limit: String,
     pub can_generate_profile: bool,
+    pub profile_key: Option<String>,
+}
+
+/// Search the collector inventory, not just the busiest dashboard groups.
+pub fn search(snapshot: &Snapshot, query: &str) -> Result<Vec<Workload>, String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() || query.len() > 128 {
+        return Err("Enter a process name or PID, up to 128 bytes.".into());
+    }
+    let process_groups: HashSet<_> = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.name.to_lowercase().contains(&query) || p.pid.to_string() == query)
+        .map(|p| p.workload_id.as_str())
+        .collect();
+    Ok(snapshot
+        .workloads
+        .iter()
+        .filter(|w| {
+            w.label.to_lowercase().contains(&query) || process_groups.contains(w.id.as_str())
+        })
+        .take(100)
+        .cloned()
+        .collect())
 }
 
 pub fn members<'a>(snapshot: &'a Snapshot, id: &str) -> Result<Vec<&'a ProcessRecord>, String> {
@@ -160,16 +184,13 @@ pub fn inspect(
         .as_ref()
         .map(|path| applications::identify(path));
     let profile = crate::profiles::reference(application.as_ref(), &workload);
-    let can_generate_profile = workload.category != "project"
-        && application.as_ref().is_some_and(|app| {
-            app.identifier.is_some()
-                || (cfg!(target_os = "windows")
-                    && app
-                        .path
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe")))
-        })
+    // A system daemon or command does not need an .app bundle to be explainable.
+    // Explanations describe this executable, never infer a script or project task.
+    let can_generate_profile = application
+        .as_ref()
+        .is_some_and(|app| !app.executable_name.is_empty())
         && profile.source != "reference";
+    let profile_key = application.as_ref().map(crate::profiles::key);
     let independent_roots = members
         .iter()
         .filter(|p| {
@@ -200,6 +221,7 @@ pub fn inspect(
         origin_summary,
         origin_limit,
         can_generate_profile,
+        profile_key,
     })
 }
 
@@ -231,6 +253,38 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn search_finds_quiet_processes_beyond_the_dashboard() {
+        let mut snapshot = Snapshot {
+            workloads: (0..80)
+                .map(|i| Workload {
+                    id: format!("workload-{i}"),
+                    label: format!("Example App {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        snapshot.processes.push(ProcessRecord {
+            pid: 9876,
+            name: "quiet-helper".into(),
+            workload_id: "workload-79".into(),
+            ..Default::default()
+        });
+        assert!(!snapshot
+            .dashboard_view()
+            .workloads
+            .iter()
+            .any(|w| w.id == "workload-79"));
+        assert_eq!(
+            search(&snapshot, "quiet-helper").unwrap()[0].id,
+            "workload-79"
+        );
+        assert_eq!(search(&snapshot, "9876").unwrap()[0].id, "workload-79");
+        assert!(search(&snapshot, " ").is_err());
+        assert!(search(&snapshot, &"a".repeat(129)).is_err());
+    }
+
     #[test]
     fn traces_oldest_to_selected_and_selects_root() {
         let s = fixture();
@@ -279,6 +333,25 @@ mod tests {
             .to_string()
             .contains("/private/example"));
     }
+    #[test]
+    fn standalone_daemons_and_project_runtimes_can_be_explained() {
+        let mut s = fixture();
+        s.processes[0].executable = Some("/example/bin/service-worker".into());
+        let d = inspect(&s, "example", Some((30, 300))).unwrap();
+        assert!(d.can_generate_profile);
+        assert!(d.profile_key.is_some());
+        s.workloads[0].category = "project".into();
+        assert!(
+            inspect(&s, "example", Some((30, 300)))
+                .unwrap()
+                .can_generate_profile
+        );
+        s.processes[0].executable = None;
+        let d = inspect(&s, "example", Some((30, 300))).unwrap();
+        assert!(!d.can_generate_profile);
+        assert!(d.profile_key.is_none());
+    }
+
     #[test]
     fn details_use_full_inventory_and_bound_the_response() {
         let mut s = fixture();
