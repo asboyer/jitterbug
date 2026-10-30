@@ -33,15 +33,37 @@
     let preview: SystemRestorePreview | null = $state(null);
     let result: SystemRollbackResult | null = $state(null);
     let busy = $state(false);
-    let capabilities: SystemCapability[] = $state([]);
-    let accessError = $state('');
-    let checkingAccess = $state(false);
     let status = $state('');
     let error = $state('');
     let historyOpen = $state(false);
     let dialog: HTMLDialogElement;
     let historyTrigger: HTMLButtonElement;
     let restoreId: string | null = null;
+    let noticeFading = $state(false);
+    let noticeTimers: ReturnType<typeof setTimeout>[] = [];
+
+    function clearNoticeTimers() {
+        for (const timer of noticeTimers) clearTimeout(timer);
+        noticeTimers = [];
+        noticeFading = false;
+    }
+
+    function showSavedNotice(message: string) {
+        clearNoticeTimers();
+        status = message;
+        noticeTimers.push(
+            setTimeout(() => {
+                noticeFading = true;
+                noticeTimers.push(
+                    setTimeout(() => {
+                        status = '';
+                        noticeFading = false;
+                        noticeTimers = [];
+                    }, 1000)
+                );
+            }, 3000)
+        );
+    }
 
     function mountDialog(node: HTMLDialogElement) {
         dialog = node;
@@ -139,32 +161,15 @@
         });
     }
 
-    async function recheckAccess() {
-        if (!desktop) return;
-        checkingAccess = true;
-        accessError = '';
-        try {
-            capabilities = await invoke<SystemCapability[]>('get_system_capabilities');
-        } catch (cause) {
-            accessError = errorMessage(cause);
-        } finally {
-            checkingAccess = false;
-        }
-    }
-
-    async function openSettings(item: SystemCapability) {
-        if (!desktop || !item.pane) return;
-        await perform(async () => {
-            await invoke('open_system_settings_pane', { pane: item.pane });
-            status =
-                'System Settings opened. Make any changes there yourself, then choose Recheck access. Opening settings does not grant access or restore anything.';
-        });
-    }
-
     function preferenceValue(value: SystemPreferenceValue) {
-        return value.kind === 'absent'
-            ? 'Absent — no override in this scope'
-            : `${value.kind}: ${value.value}`;
+        if (value.kind === 'absent') return 'System default';
+        if (value.kind === 'boolean') return value.value ? 'On' : 'Off';
+        return String(value.value);
+    }
+
+    function hardwareSummary(entry: SystemDefaultSnapshot) {
+        const hardware = Object.values(entry.values?.hardware ?? {});
+        return hardware.length ? ` · ${hardware.length} extra setting${hardware.length === 1 ? '' : 's'}` : '';
     }
 
     async function setDefault() {
@@ -184,8 +189,7 @@
             } else {
                 entries = previous;
             }
-            status =
-                'Actual system settings captured as the current baseline. Review the per-setting coverage report; excluded settings were not saved.';
+            showSavedNotice('Saved. This is now your current baseline.');
         });
     }
 
@@ -249,9 +253,9 @@
 
     onMount(() => {
         void loadHistory();
-        void recheckAccess();
     });
     onDestroy(() => {
+        clearNoticeTimers();
         if (desktop && preview) void invoke('cancel_system_restore', { token: preview.token });
     });
 </script>
@@ -278,24 +282,24 @@
         {#if entry.error}
             <p class="error">{entry.error}</p>
         {:else}
-            <p>{entry.summary}</p>
+            <p>{entry.summary}{hardwareSummary(entry)}</p>
             {#if !entry.compatible}
-                <p class="muted">
-                    Unavailable for the current OS, user, machine, or output device.
-                </p>
+                <p class="muted">This snapshot doesn’t match this Mac or user.</p>
             {/if}
             {#if entry.values}
                 <details>
-                    <summary>Inspect exact values</summary>
+                    <summary>Saved settings</summary>
                     <dl class="snapshot-values">
-                        <div>
-                            <dt>Output volume</dt>
-                            <dd>{volume(entry.values.output_volume)}</dd>
-                        </div>
-                        <div>
-                            <dt>Output mute</dt>
-                            <dd>{muted(entry.values.output_muted)}</dd>
-                        </div>
+                        {#if entry.values.output_volume !== null || entry.values.output_muted !== null}
+                            <div>
+                                <dt>Volume</dt>
+                                <dd>{volume(entry.values.output_volume)}</dd>
+                            </div>
+                            <div>
+                                <dt>Mute</dt>
+                                <dd>{muted(entry.values.output_muted)}</dd>
+                            </div>
+                        {/if}
                         {#each Object.entries(entry.values.preferences ?? {}) as [key, value]}
                             <div>
                                 <dt>
@@ -307,20 +311,12 @@
                         {/each}
                     </dl>
                 </details>
-                <details>
-                    <summary>Capture coverage report</summary>
-                    {#if entry.coverage?.length}
-                        {@render coverageList(entry.coverage, false)}
-                    {:else}<p class="muted">
-                            Legacy audio-only baseline. No other preferences were captured.
-                        </p>{/if}
-                </details>
             {/if}
         {/if}
     </article>
 {/snippet}
 
-{#snippet coverageList(items: SystemCapability[], actions: boolean)}
+{#snippet coverageList(items: SystemCapability[])}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="capability-list" role="region" aria-label="Per-setting coverage" tabindex="0">
         {#each [...new Set(items.map((item) => item.group))] as group}
@@ -330,21 +326,8 @@
                     <article class="capability-item">
                         <div>
                             <strong>{item.label}</strong>
-                            <span class="capability-status">{item.status.replaceAll('_', ' ')}</span
-                            >
+                            <span class="capability-status">{item.status.replaceAll('_', ' ')}</span>
                         </div>
-                        {#if !actions}<p class="muted">
-                                {item.included
-                                    ? 'Included in this baseline'
-                                    : 'Not included in this baseline'}
-                            </p>{/if}
-                        <p>{item.detail}</p>
-                        <p class="muted">{item.verification}</p>
-                        {#if actions && item.pane}<button
-                                disabled={busy || !desktop}
-                                aria-label={`Open settings for ${item.label}`}
-                                onclick={() => openSettings(item)}>Open System Settings</button
-                            >{/if}
                     </article>
                 {/each}
             </section>
@@ -356,93 +339,50 @@
     <div class="section-title">
         <div>
             <h2>System settings baseline</h2>
-            <p class="muted">
-                Capture supported audio formats, display modes, power timers, and saved macOS
-                preferences.
-            </p>
+            <p class="muted">Save how this PC is set up. Rollback puts those settings back.</p>
         </div>
-        <button
-            class="primary"
-            disabled={!desktop || busy || selectedGroups.length === 0}
-            onclick={setDefault}>Set Default</button
-        >
+        <div class="header-actions">
+            <button
+                disabled={!desktop || busy}
+                onclick={() => (historyOpen = true)}
+                aria-haspopup="dialog"
+                bind:this={historyTrigger}>View past defaults</button
+            >
+            <button
+                class="primary"
+                disabled={!desktop || busy || selectedGroups.length === 0}
+                onclick={setDefault}>Set Default</button
+            >
+        </div>
     </div>
     {#if !desktop}
         <p class="preview-note">
             Preview only: system baselines are unavailable here; nothing is stored or restored.
         </p>
     {/if}
-    <div class="default-scope">
-        <div>
-            <h3>Included</h3>
-            <p>
-                The current default output device’s settable master volume and mute values, when
-                CoreAudio reports those controls as supported. Also captures allowlisted Dock
-                behavior, keyboard repeat and accent-menu settings, natural scrolling, and
-                mouse/trackpad tracking speed (not acceleration), text correction/substitutions, and
-                Finder .DS_Store creation preferences on macOS 13–15. Supported output nominal
-                rates/full physical stream formats, full display modes, and per-source
-                sleep/display-sleep timers also have automatic executors. Inspect coverage below;
-                this is not every OS setting.
-            </p>
-        </div>
-        <div>
-            <h3>Never included</h3>
-            <p>
-                Provider configuration, credentials, privacy/security/network controls, processes,
-                software or OS versions, device selection, arbitrary commands, and all one-time
-                cleanup or session actions. No cache deletion, DNS flushing, quarantine removal,
-                process termination, temporary priority changes, or keep-awake assertions.
-            </p>
-        </div>
-    </div>
-    <p class="muted">
-        Each Set Default creates a new immutable local snapshot. Rollback works only on the same
-        macOS version, user, machine, and default output device. Audio uses live CoreAudio readback;
-        preferences use saved-storage readback only. Live effects may require signing out or
-        relaunching affected applications yourself. Jitterbug never restarts Dock or SystemUIServer.
-        Verification confirms the setting value—not a performance improvement or full-system backup.
-    </p>
-    <fieldset class="capture-groups" disabled={!desktop || busy}>
-        <legend>Include in the next baseline</legend>
-        {#each captureGroups as group}
-            <label
-                ><input type="checkbox" bind:group={selectedGroups} value={group} /> {group}</label
-            >
-        {/each}
-    </fieldset>
-    <details class="capability-details">
-        <summary>Coverage &amp; access</summary>
-        <p>
-            Rollback automatically executes captured supported targets after preview and
-            confirmation. Hardware setters revalidate exact devices and supported formats. Power
-            timer executors require externally provided authorization; “needs permission” is
-            executable, not an unsupported adapter. Denials are reported honestly. No password
-            handling, sudo, helper installation, or automatic permission request. Manual/unavailable
-            entries are not restored. Hardware readback verifies current values, not persistence
-            after reboot or reconnect.
-        </p>
-        <button disabled={!desktop || busy || checkingAccess} onclick={recheckAccess}
-            >{checkingAccess ? 'Checking access…' : 'Recheck access'}</button
-        >
-        {#if accessError}<p class="error" role="alert">{accessError}</p>{/if}
-        {@render coverageList(capabilities, true)}
-    </details>
-    {#if currentDefault?.coverage?.length}
-        <details>
-            <summary>Current capture coverage report</summary>{@render coverageList(
-                currentDefault.coverage,
-                false
-            )}
-        </details>
+    {#if currentDefault && !currentDefault.error}
+        {@render snapshotEntry(currentDefault, true)}
+    {:else if desktop && !busy && !error}
+        <p class="empty compact">No baseline saved yet.</p>
     {/if}
-    <button
-        disabled={!desktop || busy}
-        onclick={() => (historyOpen = true)}
-        aria-haspopup="dialog"
-        bind:this={historyTrigger}>View past defaults</button
+    <details class="capability-details">
+        <summary>What to save</summary>
+        <fieldset class="capture-groups" disabled={!desktop || busy}>
+            <legend>Categories</legend>
+            {#each captureGroups as group}
+                <label
+                    ><input type="checkbox" bind:group={selectedGroups} value={group} /> {group}</label
+                >
+            {/each}
+        </fieldset>
+    </details>
+    {#if status && !historyOpen}<p
+        class="success saved-notice"
+        class:fading={noticeFading}
+        role="status"
     >
-    {#if status && !historyOpen}<p class="success" role="status">{status}</p>{/if}
+        {status}
+    </p>{/if}
     {#if error && !historyOpen}<p class="error" role="alert">{error}</p>{/if}
 </section>
 
@@ -524,7 +464,7 @@
                 {#if preview.coverage?.length}
                     <details>
                         <summary>Current capability and permission state</summary
-                        >{@render coverageList(preview.coverage, false)}
+                        >{@render coverageList(preview.coverage)}
                     </details>
                 {/if}
                 <div class="form-actions">
@@ -606,7 +546,7 @@
         width: auto;
     }
     .capability-details {
-        margin: 1rem 0;
+        margin: 0.15rem 0 0.75rem;
     }
     .capability-list {
         max-height: 24rem;
@@ -618,10 +558,6 @@
         padding: 0.8rem 0;
         border-bottom: 1px solid var(--border, #343941);
     }
-    .capability-item p {
-        margin: 0.4rem 0;
-        font-size: 0.85rem;
-    }
     .capability-status {
         display: inline-block;
         margin-left: 0.5rem;
@@ -630,5 +566,18 @@
         border: 1px solid var(--border, #343941);
         border-radius: 0.35rem;
         text-transform: capitalize;
+    }
+    .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-shrink: 0;
+    }
+    .saved-notice {
+        margin-top: 1rem;
+        transition: opacity 1s ease;
+    }
+    .saved-notice.fading {
+        opacity: 0;
     }
 </style>

@@ -673,6 +673,9 @@ td small {
 .settings-defaults .section-title {
     align-items: start;
 }
+.settings-defaults > .default-entry {
+    padding-bottom: 0;
+}
 .preview-note {
     color: var(--warning);
     background: var(--warning-soft);

@@ -186,24 +186,15 @@ test('persistent-only scope distinguishes hardware observations from restorable 
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    await defaults.getByText('What to save', { exact: true }).click();
     await expect(
         defaults.getByRole('checkbox', { name: 'Finder storage', exact: true })
     ).toBeChecked();
     await expect(
         defaults.getByRole('checkbox', { name: /sample rate|display mode|sleep|microphone/i })
     ).toHaveCount(0);
-    await expect(defaults).toContainText(
-        'Supported output nominal rates/full physical stream formats'
-    );
-    await expect(defaults).toContainText('all one-time');
-    const calls = await page
-        .locator('html')
-        .evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
-    expect(
-        calls.filter((c: { command: string }) =>
-            /confirm_system_restore|open_system_settings_pane/.test(c.command)
-        )
-    ).toHaveLength(0);
+    await expect(defaults).not.toContainText('Included');
+    await expect(defaults).not.toContainText('Never included');
 });
 
 test('automatic hardware executors are selectable and disclose interruption and authorization', async ({
@@ -213,16 +204,10 @@ test('automatic hardware executors are selectable and disclose interruption and 
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    await defaults.getByText('What to save', { exact: true }).click();
     for (const group of ['Audio hardware', 'Displays', 'Power profiles']) {
         await expect(defaults.getByRole('checkbox', { name: group, exact: true })).toBeChecked();
     }
-    await defaults.getByText('Coverage & access', { exact: true }).click();
-    await expect(defaults).toContainText('externally provided authorization');
-    await expect(defaults).toContainText('needs permission');
-    await expect(defaults).toContainText('Automatic rollback executor implemented');
-    await expect(
-        defaults.getByRole('button', { name: 'Open settings for AC Power / sleep' })
-    ).toHaveCount(0);
     await defaults.getByRole('button', { name: 'View past defaults' }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('button', { name: /Rollback current system baseline/ }).click();
@@ -239,33 +224,14 @@ test('automatic hardware executors are selectable and disclose interruption and 
     ]);
 });
 
-test('capabilities explain authorization limits and open settings only on request', async ({
-    page,
-}) => {
+test('baseline actions stay on set default and rollback', async ({ page }) => {
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
-    await defaults.getByText('Coverage & access', { exact: true }).click();
-    await expect(defaults).toContainText('Native privileged authorization is not implemented');
-    await expect(defaults).toContainText('Saved preference only');
     await expect(defaults.getByRole('button', { name: /grant|authorize/i })).toHaveCount(0);
-    const calls = async () =>
-        page.locator('html').evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
-    expect(
-        (await calls()).filter(
-            (c: { command: string }) => c.command === 'open_system_settings_pane'
-        )
-    ).toHaveLength(0);
-    await defaults.getByRole('button', { name: 'Open settings for System idle sleep' }).click();
-    expect(await calls()).toContainEqual({
-        command: 'open_system_settings_pane',
-        args: { pane: 'battery' },
-    });
-    await defaults.getByRole('button', { name: 'Recheck access' }).click();
-    expect(
-        (await calls()).filter((c: { command: string }) => c.command === 'get_system_capabilities')
-    ).toHaveLength(2);
+    await expect(defaults.getByRole('button', { name: 'Set Default' })).toBeVisible();
+    await expect(defaults.getByRole('button', { name: 'View past defaults' })).toBeVisible();
 });
 
 test('capture selection is explicit and saved preference previews disclose verification scope', async ({
@@ -275,6 +241,7 @@ test('capture selection is explicit and saved preference previews disclose verif
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    await defaults.getByText('What to save', { exact: true }).click();
     for (const group of [
         'Audio',
         'Audio hardware',
@@ -294,8 +261,7 @@ test('capture selection is explicit and saved preference previews disclose verif
         .locator('html')
         .evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
     expect(calls).toContainEqual({ command: 'set_system_default', args: { groups: ['Keyboard'] } });
-    await defaults.getByText('Current capture coverage report', { exact: true }).click();
-    await expect(defaults).toContainText('Included in this baseline');
+    await expect(defaults).toContainText('Saved. This is now your current baseline.');
     await defaults.getByRole('button', { name: 'View past defaults' }).click();
     const history = page.getByRole('dialog');
     await history.getByRole('button', { name: /Rollback current system baseline/ }).click();
@@ -303,7 +269,6 @@ test('capture selection is explicit and saved preference previews disclose verif
         history.getByRole('heading', { name: 'Desktop & Dock', exact: true })
     ).toBeVisible();
     await expect(history).toContainText('Absent (no override in this scope)');
-    await expect(history).toContainText('Saved preference only; live effect not verified');
     await expect(history).toContainText('No Dock or system process is restarted');
 });
 
@@ -312,13 +277,13 @@ test('system baseline has explicit native scope and exact confirmed rollback', a
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
-    await expect(defaults).toContainText('default output device');
-    await expect(defaults).toContainText('Provider configuration');
-    await expect(defaults).toContainText('not a performance improvement');
+    await expect(defaults).toContainText('Save how this PC is set up');
+    await expect(defaults).not.toContainText('Included');
+    await expect(defaults).not.toContainText('Never included');
     await expect(defaults).not.toContainText('provider and model choices for all three tiers');
 
     await defaults.getByRole('button', { name: 'Set Default' }).click();
-    await expect(defaults).toContainText('Actual system settings captured');
+    await expect(defaults).toContainText('Saved. This is now your current baseline.');
     await defaults.getByRole('button', { name: 'View past defaults' }).click();
     const history = page.getByRole('dialog', { name: 'System baseline history' });
     await history.getByRole('button', { name: 'Load older defaults' }).click();
@@ -412,11 +377,14 @@ test('history opens without inline growth and Escape restores trigger focus', as
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    await defaults.scrollIntoViewIfNeeded();
     const before = await defaults.boundingBox();
     const opener = defaults.getByRole('button', { name: 'View past defaults' });
     await opener.click();
     await expect(page.getByRole('dialog', { name: 'System baseline history' })).toBeVisible();
-    expect(await defaults.boundingBox()).toEqual(before);
+    const after = await defaults.boundingBox();
+    expect(after?.width).toEqual(before?.width);
+    expect(after?.height).toEqual(before?.height);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(opener).toBeFocused();

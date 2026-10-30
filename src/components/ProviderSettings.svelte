@@ -70,7 +70,6 @@
         <p class="muted">Choose how Jitterbug investigates and when it can help.</p>
     </div>
 </div>
-<SettingsDefaults {desktop} />
 <AutomationSettings {bootstrap} {desktop} {onrefresh} />
 <section class="panel settings-panel">
     <h2>Where should AI run?</h2>
@@ -223,6 +222,7 @@
             >
         </div>{/each}
 </section>
+<SettingsDefaults {desktop} />
 {#if status}<p class="success" role="status">{status}</p>{/if}{#if error}<p
         class="error"
         role="alert"
