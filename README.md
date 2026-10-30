@@ -189,8 +189,8 @@ claude mcp add jitterbug-control -- /absolute/path/to/jitterbug-run control-mcp
   Results go to the agent's model provider. They include app labels, session titles and
   folder names, tab titles, and hosts. They never include full paths, URLs, command lines,
   or page content.
-- **Exercised end to end:** a Claude Code session ran a single-core busy loop in a separate
-  Terminal window. A second Claude Code agent, connected only through this MCP server, picked
+- **Exercised end to end:** a coding-agent CLI session ran a single-core busy loop in a separate
+  Terminal window. A second coding agent, connected only through this MCP server, picked
   that session from the overview (12.6% of the machine) and asked to pause it. After the
   approval, the session used no CPU. When resumed, it finished its task.
 
