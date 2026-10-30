@@ -47,6 +47,53 @@ export interface SettingsRestorePreview {
     changes: { field: string; before: string; after: string }[];
 }
 
+export interface SystemSettingValues {
+    output_volume: number | null;
+    output_muted: boolean | null;
+}
+
+export interface SystemDefaultSnapshot {
+    id: string;
+    current: boolean;
+    created_at_ms: number | null;
+    summary: string | null;
+    values: SystemSettingValues | null;
+    compatible: boolean;
+    error: string | null;
+}
+
+export interface SystemDefaultHistory {
+    entries: SystemDefaultSnapshot[];
+    next_cursor: string | null;
+    interrupted_operations: number;
+}
+
+export interface SystemRestorePreview {
+    token: string;
+    expires_at_ms: number;
+    target: SystemDefaultSnapshot;
+    changes: { field: string; before: string; after: string }[];
+}
+
+export type SystemRollbackStatus = 'no_changes' | 'verified' | 'partial_failure';
+export type SystemOutcomeStatus =
+    'pending' | 'applying' | 'verified' | 'write_failed' | 'readback_mismatch' | 'external_drift';
+
+export interface SystemRollbackResult {
+    status: SystemRollbackStatus;
+    outcomes: {
+        setting: 'output_volume' | 'output_muted';
+        field: string;
+        before: string;
+        target: string;
+        status: SystemOutcomeStatus;
+        error: string | null;
+    }[];
+    current: SystemSettingValues | null;
+    journal_id: string | null;
+    message: string;
+}
+
 export interface Spending {
     reserved_usd: number;
     reported_estimate_usd: number;

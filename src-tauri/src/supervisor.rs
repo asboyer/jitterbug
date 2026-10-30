@@ -2,7 +2,7 @@
 use crate::{
     actions,
     automation::{self, Case, Monitor, Policy, Rule, Stage},
-    budget, details, profiles, providers, settings, settings_history, storage,
+    budget, details, profiles, providers, settings, settings_history, storage, system_settings,
     types::*,
 };
 use std::{
@@ -76,6 +76,7 @@ pub struct Runtime {
     action: tokio::sync::Mutex<()>,
     settings_revision: AtomicU64,
     settings_defaults: Mutex<()>,
+    system_settings: system_settings::Controller,
     restore_previews: Mutex<RestorePreviews>,
     settings_writer: SettingsWriter,
     pub directory: PathBuf,
@@ -99,6 +100,38 @@ impl Runtime {
         publish: Publish,
         settings_writer: SettingsWriter,
     ) -> Arc<Self> {
+        Self::new_with_components(
+            directory,
+            settings,
+            publish,
+            settings_writer,
+            system_settings::native_adapter(),
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_system_native(
+        directory: PathBuf,
+        settings: settings::Settings,
+        publish: Publish,
+        native: Arc<dyn system_settings::NativeSettings>,
+    ) -> Arc<Self> {
+        Self::new_with_components(
+            directory,
+            settings,
+            publish,
+            Arc::new(storage::write_detailed),
+            native,
+        )
+    }
+
+    fn new_with_components(
+        directory: PathBuf,
+        settings: settings::Settings,
+        publish: Publish,
+        settings_writer: SettingsWriter,
+        native: Arc<dyn system_settings::NativeSettings>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             snapshot: Arc::new(RwLock::new(Snapshot::default())),
             settings: Mutex::new(settings),
@@ -110,6 +143,7 @@ impl Runtime {
             action: tokio::sync::Mutex::new(()),
             settings_revision: AtomicU64::new(0),
             settings_defaults: Mutex::new(()),
+            system_settings: system_settings::Controller::new(directory.clone(), native),
             restore_previews: Mutex::new(RestorePreviews::default()),
             settings_writer,
             directory,
@@ -693,6 +727,66 @@ impl Runtime {
         settings_history::capture(&self.directory, &settings)
     }
 
+    pub fn set_system_default(&self) -> Result<system_settings::SnapshotView, String> {
+        self.system_settings.capture()
+    }
+
+    pub fn system_history(
+        &self,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<system_settings::HistoryPage, String> {
+        self.system_settings.history(cursor, page_size)
+    }
+
+    pub fn inspect_system_default(
+        &self,
+        id: &str,
+    ) -> Result<system_settings::SnapshotView, String> {
+        self.system_settings.inspect(id)
+    }
+
+    pub fn preview_system_restore(
+        &self,
+        id: &str,
+    ) -> Result<system_settings::RestorePreview, String> {
+        self.system_settings.preview(id)
+    }
+
+    pub fn cancel_system_restore(&self, token: &str) -> Result<(), String> {
+        self.system_settings.cancel(token)
+    }
+
+    pub async fn confirm_system_restore(
+        &self,
+        token: &str,
+    ) -> Result<system_settings::RollbackResult, String> {
+        let _action = match self.action.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                let _ = self.system_settings.cancel(token);
+                return Err(
+                    "A Jitterbug action is active. Wait for its verification before rollback."
+                        .into(),
+                );
+            }
+        };
+        if self
+            .book
+            .lock()
+            .map_err(|_| "Incident state unavailable.")?
+            .cases
+            .iter()
+            .any(|case| case.stage.running())
+        {
+            let _ = self.system_settings.cancel(token);
+            return Err(
+                "Automatic assistance is active. Wait for it to finish before rollback.".into(),
+            );
+        }
+        self.system_settings.confirm(token)
+    }
+
     pub fn settings_history(
         &self,
         cursor: Option<&str>,
@@ -856,6 +950,50 @@ mod tests {
     use crate::automation::tests::{memory_sample, sample};
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    #[derive(Clone)]
+    struct FakeSystemNative {
+        state: Arc<Mutex<crate::system_settings::NativeState>>,
+        writes: Arc<AtomicU64>,
+    }
+    impl crate::system_settings::NativeSettings for FakeSystemNative {
+        fn read(&self) -> Result<crate::system_settings::NativeState, String> {
+            Ok(self.state.lock().unwrap().clone())
+        }
+        fn write(
+            &self,
+            _expected: &crate::system_settings::NativeState,
+            _setting: crate::system_settings::Setting,
+            _value: crate::system_settings::SettingValue,
+        ) -> Result<(), String> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    fn fake_system_native() -> (
+        Arc<dyn crate::system_settings::NativeSettings>,
+        Arc<AtomicU64>,
+    ) {
+        let writes = Arc::new(AtomicU64::new(0));
+        (
+            Arc::new(FakeSystemNative {
+                state: Arc::new(Mutex::new(crate::system_settings::NativeState {
+                    identity: crate::system_settings::NativeIdentity {
+                        platform: "macos".into(),
+                        os_version: "15.7.1".into(),
+                        user: "user".into(),
+                        machine: "machine".into(),
+                        device: "device".into(),
+                    },
+                    values: crate::system_settings::SystemValues {
+                        output_volume: Some(0.5),
+                        output_muted: Some(false),
+                    },
+                })),
+                writes: writes.clone(),
+            }),
+            writes,
+        )
+    }
     struct Fixture {
         runtime: Arc<Runtime>,
         directory: PathBuf,
@@ -894,6 +1032,27 @@ mod tests {
                     settings,
                     Arc::new(|_| {}),
                     writer,
+                ),
+                directory,
+            }
+        }
+        fn with_system_native(native: Arc<dyn crate::system_settings::NativeSettings>) -> Self {
+            let directory = std::env::temp_dir().join(format!(
+                "jitterbug-supervisor-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut settings = settings::Settings {
+                budget_usd: 0.0,
+                ..Default::default()
+            };
+            settings.automation.model_analysis = false;
+            Self {
+                runtime: Runtime::new_with_system_native(
+                    directory.clone(),
+                    settings,
+                    Arc::new(|_| {}),
+                    native,
                 ),
                 directory,
             }
@@ -1245,6 +1404,25 @@ mod tests {
             .await
             .unwrap_err()
             .contains("action"));
+        drop(action);
+    }
+
+    #[tokio::test]
+    async fn system_rollback_uses_the_supervisor_action_lock() {
+        let (native, writes) = fake_system_native();
+        let f = Fixture::with_system_native(native);
+        let saved = f.runtime.set_system_default().unwrap();
+        let preview = f.runtime.preview_system_restore(&saved.id).unwrap();
+        let action = f.runtime.action.lock().await;
+
+        let error = f
+            .runtime
+            .confirm_system_restore(&preview.token)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("action is active"));
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
         drop(action);
     }
 

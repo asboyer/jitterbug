@@ -20,6 +20,7 @@ pub mod settings;
 pub mod settings_history;
 pub mod storage;
 pub mod supervisor;
+pub mod system_settings;
 pub mod types;
 pub mod workflow_summary;
 pub mod workflows;
@@ -459,6 +460,54 @@ async fn confirm_settings_restore(
 }
 
 #[tauri::command]
+fn set_system_default(state: State<'_, AppState>) -> Result<system_settings::SnapshotView, String> {
+    state.set_system_default()
+}
+
+#[tauri::command]
+fn get_system_default_history(
+    state: State<'_, AppState>,
+    cursor: Option<String>,
+    page_size: usize,
+) -> Result<system_settings::HistoryPage, String> {
+    state.system_history(cursor.as_deref(), page_size)
+}
+
+#[tauri::command]
+fn inspect_system_default(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<system_settings::SnapshotView, String> {
+    state.inspect_system_default(&id)
+}
+
+#[tauri::command]
+fn preview_system_restore(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<system_settings::RestorePreview, String> {
+    state.preview_system_restore(&id)
+}
+
+#[tauri::command]
+fn cancel_system_restore(state: State<'_, AppState>, token: String) -> Result<(), String> {
+    state.cancel_system_restore(&token)
+}
+
+#[tauri::command]
+async fn confirm_system_restore(
+    state: State<'_, AppState>,
+    token: String,
+    confirmed: bool,
+) -> Result<system_settings::RollbackResult, String> {
+    if !confirmed {
+        let _ = state.cancel_system_restore(&token);
+        return Err("Explicit rollback confirmation is required.".into());
+    }
+    state.confirm_system_restore(&token).await
+}
+
+#[tauri::command]
 fn save_credential(provider: settings::Provider, credential: String) -> Result<(), String> {
     settings::save_key(provider, &credential)
 }
@@ -711,6 +760,12 @@ pub fn run() {
             preview_settings_restore,
             cancel_settings_restore,
             confirm_settings_restore,
+            set_system_default,
+            get_system_default_history,
+            inspect_system_default,
+            preview_system_restore,
+            cancel_system_restore,
+            confirm_system_restore,
             save_credential,
             list_local_models,
             unload_model,

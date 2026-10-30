@@ -3,25 +3,22 @@
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage } from '../lib/format';
     import type {
-        Bootstrap,
-        Settings,
-        SettingsDefaultHistory,
-        SettingsDefaultSnapshot,
-        SettingsRestorePreview,
-        SupportedSettings,
+        SystemDefaultHistory,
+        SystemDefaultSnapshot,
+        SystemRestorePreview,
+        SystemRollbackResult,
     } from '../lib/types';
 
     const PAGE_SIZE = 20;
 
-    let {
-        desktop,
-        onrestored,
-    }: { desktop: boolean; onrestored: (settings: Settings) => Promise<void> } = $props();
-    let entries: SettingsDefaultSnapshot[] = $state([]);
-    let currentDefault: SettingsDefaultSnapshot | null = $state(null);
+    let { desktop }: { desktop: boolean } = $props();
+    let entries: SystemDefaultSnapshot[] = $state([]);
+    let currentDefault: SystemDefaultSnapshot | null = $state(null);
     let cursor: string | null = $state(null);
     let viewingLatest = $state(true);
-    let preview: SettingsRestorePreview | null = $state(null);
+    let interruptedOperations = $state(0);
+    let preview: SystemRestorePreview | null = $state(null);
+    let result: SystemRollbackResult | null = $state(null);
     let busy = $state(false);
     let status = $state('');
     let error = $state('');
@@ -29,13 +26,6 @@
     let dialog: HTMLDialogElement;
     let historyTrigger: HTMLButtonElement;
     let restoreId: string | null = null;
-
-    function focusSnapshot() {
-        const button = Array.from(
-            dialog.querySelectorAll<HTMLButtonElement>('[data-snapshot-id]')
-        ).find((element) => element.dataset.snapshotId === restoreId);
-        button?.focus();
-    }
 
     function mountDialog(node: HTMLDialogElement) {
         dialog = node;
@@ -48,14 +38,6 @@
                 document.body.style.overflow = overflow;
             },
         };
-    }
-
-    async function closeHistory() {
-        if (busy) return;
-        if (preview) await cancelRestore();
-        historyOpen = false;
-        await tick();
-        historyTrigger?.focus();
     }
 
     function dialogKeydown(event: KeyboardEvent) {
@@ -103,8 +85,13 @@
         }
     }
 
-    function tier(value: SupportedSettings['decision']) {
-        return `${value.provider} / ${value.model}`;
+    function volume(value: number | null) {
+        return value === null ? 'Not supported' : `${(value * 100).toFixed(1)}%`;
+    }
+
+    function muted(value: boolean | null) {
+        if (value === null) return 'Not supported';
+        return value ? 'Muted' : 'Unmuted';
     }
 
     async function perform(action: () => Promise<void>) {
@@ -123,7 +110,7 @@
     async function loadHistory(next: string | null = null) {
         if (!desktop) return;
         await perform(async () => {
-            const page = await invoke<SettingsDefaultHistory>('get_settings_default_history', {
+            const page = await invoke<SystemDefaultHistory>('get_system_default_history', {
                 cursor: next,
                 pageSize: PAGE_SIZE,
             });
@@ -132,13 +119,14 @@
             if (pageCurrent) currentDefault = pageCurrent;
             cursor = page.next_cursor;
             viewingLatest = next === null;
+            interruptedOperations = page.interrupted_operations;
         });
     }
 
     async function setDefault() {
         if (!desktop) return;
         await perform(async () => {
-            const saved = await invoke<SettingsDefaultSnapshot>('set_settings_default');
+            const saved = await invoke<SystemDefaultSnapshot>('set_system_default');
             currentDefault = saved;
             const previous = entries
                 .filter((entry) => entry.id !== saved.id)
@@ -146,22 +134,27 @@
             if (viewingLatest) {
                 const combined = [saved, ...previous];
                 entries = combined.slice(0, PAGE_SIZE);
-                if (combined.length > PAGE_SIZE) {
-                    // Resume after the visible page so displaced snapshots are not skipped.
-                    cursor = entries[entries.length - 1].id;
-                }
+                if (combined.length > PAGE_SIZE) cursor = entries[entries.length - 1].id;
             } else {
                 entries = previous;
             }
-            status = 'Saved settings captured as the current default.';
+            status = 'Actual system audio settings captured as the current baseline.';
         });
+    }
+
+    function focusSnapshot() {
+        const button = Array.from(
+            dialog.querySelectorAll<HTMLButtonElement>('[data-snapshot-id]')
+        ).find((element) => element.dataset.snapshotId === restoreId);
+        button?.focus();
     }
 
     async function startRestore(id: string) {
         if (!desktop) return;
         restoreId = id;
+        result = null;
         await perform(async () => {
-            preview = await invoke<SettingsRestorePreview>('preview_settings_restore', { id });
+            preview = await invoke<SystemRestorePreview>('preview_system_restore', { id });
         });
         await tick();
         dialog.querySelector<HTMLButtonElement>('.restore-cancel')?.focus();
@@ -172,8 +165,8 @@
         preview = null;
         if (!pending || !desktop) return;
         await perform(async () => {
-            await invoke('cancel_settings_restore', { token: pending.token });
-            status = 'Restore canceled. No settings were changed.';
+            await invoke('cancel_system_restore', { token: pending.token });
+            status = 'Rollback canceled. No system settings were changed.';
         });
         await tick();
         focusSnapshot();
@@ -184,54 +177,51 @@
         if (!pending || !desktop) return;
         preview = null;
         await perform(async () => {
-            let effective: Settings;
-            try {
-                effective = await invoke<Settings>('confirm_settings_restore', {
-                    token: pending.token,
-                    confirmed: true,
-                });
-            } catch (cause) {
-                try {
-                    const reconciled = await invoke<Bootstrap>('get_bootstrap');
-                    await onrestored(reconciled.settings);
-                } catch {
-                    // Preserve the restore error even if a best-effort refresh also fails.
-                }
-                throw cause;
+            result = await invoke<SystemRollbackResult>('confirm_system_restore', {
+                token: pending.token,
+                confirmed: true,
+            });
+            if (result.status === 'partial_failure') {
+                error = result.message;
+            } else {
+                status = result.message;
             }
-            await onrestored(effective);
-            status = 'Settings restored and read back from disk.';
         });
         await tick();
         focusSnapshot();
     }
 
+    async function closeHistory() {
+        if (busy) return;
+        if (preview) await cancelRestore();
+        historyOpen = false;
+        result = null;
+        await tick();
+        historyTrigger?.focus();
+    }
+
     onMount(() => void loadHistory());
     onDestroy(() => {
-        if (desktop && preview) {
-            void invoke('cancel_settings_restore', { token: preview.token });
-        }
+        if (desktop && preview) void invoke('cancel_system_restore', { token: preview.token });
     });
 </script>
 
-{#snippet snapshotEntry(entry: SettingsDefaultSnapshot, current: boolean)}
+{#snippet snapshotEntry(entry: SystemDefaultSnapshot, current: boolean)}
     <article class:error-entry={entry.error} class="default-entry">
         <div class="default-entry-heading">
             <div>
-                <strong>{current ? 'Current saved default' : 'Historic default'}</strong>
+                <strong>{current ? 'Current system baseline' : 'Past system baseline'}</strong>
                 <time datetime={datetime(entry.created_at_ms)}
                     >{timestamp(entry.created_at_ms)}</time
                 >
             </div>
             {#if !entry.error}
                 <button
-                    disabled={busy}
+                    disabled={busy || !entry.compatible}
                     onclick={() => startRestore(entry.id)}
                     data-snapshot-id={entry.id}
-                    aria-label={current
-                        ? `Rollback current saved default from ${timestamp(entry.created_at_ms)}`
-                        : `Preview historic restore from ${timestamp(entry.created_at_ms)}`}
-                    >{current ? 'Rollback' : 'Preview restore'}</button
+                    aria-label={`${current ? 'Rollback current' : 'Preview past'} system baseline from ${timestamp(entry.created_at_ms)}`}
+                    >{current ? 'Rollback' : 'Preview rollback'}</button
                 >
             {/if}
         </div>
@@ -239,33 +229,22 @@
             <p class="error">{entry.error}</p>
         {:else}
             <p>{entry.summary}</p>
-            {#if entry.settings}
+            {#if !entry.compatible}
+                <p class="muted">
+                    Unavailable for the current OS, user, machine, or output device.
+                </p>
+            {/if}
+            {#if entry.values}
                 <details>
-                    <summary>Inspect snapshot</summary>
+                    <summary>Inspect exact values</summary>
                     <dl class="snapshot-values">
                         <div>
-                            <dt>Privacy mode</dt>
-                            <dd>{entry.settings.mode}</dd>
+                            <dt>Output volume</dt>
+                            <dd>{volume(entry.values.output_volume)}</dd>
                         </div>
                         <div>
-                            <dt>Decision tier</dt>
-                            <dd>{tier(entry.settings.decision)}</dd>
-                        </div>
-                        <div>
-                            <dt>Cheap tier</dt>
-                            <dd>{tier(entry.settings.cheap)}</dd>
-                        </div>
-                        <div>
-                            <dt>Intelligent tier</dt>
-                            <dd>{tier(entry.settings.intelligent)}</dd>
-                        </div>
-                        <div>
-                            <dt>Decision model</dt>
-                            <dd>{entry.settings.decision_enabled ? 'Enabled' : 'Disabled'}</dd>
-                        </div>
-                        <div>
-                            <dt>Budget ceiling</dt>
-                            <dd>${entry.settings.budget_usd.toFixed(2)}</dd>
+                            <dt>Output mute</dt>
+                            <dd>{muted(entry.values.output_muted)}</dd>
                         </div>
                     </dl>
                 </details>
@@ -274,56 +253,47 @@
     </article>
 {/snippet}
 
-<section class="panel settings-panel settings-defaults" aria-label="Saved settings defaults">
+<section class="panel settings-panel settings-defaults" aria-label="System settings baseline">
     <div class="section-title">
         <div>
-            <h2>Saved settings defaults</h2>
-            <p class="muted">Create a rollback point from settings already saved in Jitterbug.</p>
+            <h2>System settings baseline</h2>
+            <p class="muted">Capture actual macOS audio settings before an optimization.</p>
         </div>
-        <button
-            class="primary"
-            disabled={!desktop || busy}
-            onclick={setDefault}
-            aria-label="Set current saved settings as default">Set Default</button
+        <button class="primary" disabled={!desktop || busy} onclick={setDefault}>Set Default</button
         >
     </div>
     {#if !desktop}
         <p class="preview-note">
-            Preview only: saved-default history is nonpersistent here; nothing is stored or
-            restored.
+            Preview only: system baselines are unavailable here; nothing is stored or restored.
         </p>
     {/if}
     <div class="default-scope">
         <div>
             <h3>Included</h3>
             <p>
-                Provider privacy mode; provider and model choices for all three tiers; optional
-                decision model enabled state; and the cloud budget ceiling.
+                The current default output device’s settable master volume and mute values, when
+                CoreAudio reports those controls as supported.
             </p>
         </div>
         <div>
             <h3>Never included</h3>
             <p>
-                Automation policy and permissions; credentials; spent or reserved budget
-                consumption; ledger and telemetry data; process priorities or other OS settings;
-                queue state; and command authorization.
+                Provider configuration, credentials, privacy/security/network controls, processes,
+                software or OS versions, device selection, and arbitrary commands.
             </p>
         </div>
     </div>
     <p class="muted">
-        This is Jitterbug configuration history, not an operating-system backup. Set Default reads
-        the backend’s currently saved configuration, not unsaved edits in this form. Every prior
-        default remains as an individual snapshot unless storage is removed outside Jitterbug.
+        Each Set Default creates a new immutable local snapshot. Rollback works only on the same
+        macOS version, user, machine, and default output device, and verifies CoreAudio readback.
+        Verification confirms the setting value—not a performance improvement or full-system backup.
     </p>
-
     <button
         disabled={!desktop || busy}
         onclick={() => (historyOpen = true)}
         aria-haspopup="dialog"
-        bind:this={historyTrigger}
+        bind:this={historyTrigger}>View past defaults</button
     >
-        View past defaults
-    </button>
     {#if status && !historyOpen}<p class="success" role="status">{status}</p>{/if}
     {#if error && !historyOpen}<p class="error" role="alert">{error}</p>{/if}
 </section>
@@ -335,46 +305,42 @@
         aria-labelledby="defaults-dialog-title"
         oncancel={(event) => {
             event.preventDefault();
-            if (preview) {
-                if (!busy) void cancelRestore();
-            } else void closeHistory();
+            if (preview && !busy) void cancelRestore();
+            else void closeHistory();
         }}
         onkeydown={dialogKeydown}
         onclick={(event) => {
-            if (event.target === dialog) {
-                const rect = dialog.getBoundingClientRect();
-                if (
-                    event.clientX < rect.left ||
-                    event.clientX > rect.right ||
-                    event.clientY < rect.top ||
-                    event.clientY > rect.bottom
-                )
-                    void closeHistory();
-            }
+            if (event.target !== dialog) return;
+            const rect = dialog.getBoundingClientRect();
+            if (
+                event.clientX < rect.left ||
+                event.clientX > rect.right ||
+                event.clientY < rect.top ||
+                event.clientY > rect.bottom
+            )
+                void closeHistory();
         }}
     >
         <div class="section-title">
             <h2 id="defaults-dialog-title">
-                {preview ? 'Confirm settings restore' : 'Saved default history'}
+                {preview ? 'Confirm system settings rollback' : 'System baseline history'}
             </h2>
-            <button disabled={busy} onclick={closeHistory} aria-label="Close default history"
+            <button disabled={busy} onclick={closeHistory} aria-label="Close baseline history"
                 >Close</button
             >
         </div>
-        <!-- Keyboard users must be able to scroll the bounded history region itself. -->
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div
             class="defaults-dialog-scroll"
             role="region"
             tabindex="0"
-            aria-label="Default snapshots"
+            aria-label="System baseline snapshots"
         >
             {#if preview}
-                <p class="eyebrow">One-time preview · expires in five minutes</p>
+                <p class="eyebrow">One-use preview · expires in five minutes</p>
                 <p>
-                    Restore the supported fields from
-                    <strong>{timestamp(preview.target.created_at_ms)}</strong>? Excluded state
-                    remains untouched.
+                    Roll back to the exact supported values captured on
+                    <strong>{timestamp(preview.target.created_at_ms)}</strong>?
                 </p>
                 {#if preview.changes.length}
                     <dl class="restore-changes">
@@ -386,26 +352,31 @@
                         {/each}
                     </dl>
                 {:else}
-                    <p class="muted">The supported values already match this snapshot.</p>
+                    <p class="muted">Actual supported values already match this baseline.</p>
                 {/if}
                 <p class="muted">
-                    Automation, permissions, credentials, spending consumption, telemetry,
-                    processes, queue state, and command authorization will not be restored.
+                    Jitterbug will recheck compatibility and current values before confirmation and
+                    before each CoreAudio write. Any mismatch stops the remaining writes.
                 </p>
                 <div class="form-actions">
                     <button class="restore-cancel" disabled={busy} onclick={cancelRestore}
                         >Cancel</button
                     >
                     <button class="primary" disabled={busy} onclick={confirmRestore}
-                        >Restore saved settings</button
+                        >Roll back system settings</button
                     >
                 </div>
             {:else}
-                {#if currentDefault}
-                    {@render snapshotEntry(currentDefault, true)}
+                {#if interruptedOperations > 0}
+                    <p class="error" role="alert">
+                        {interruptedOperations} earlier rollback {interruptedOperations === 1
+                            ? 'journal needs'
+                            : 'journals need'} review. Jitterbug did not replay any writes.
+                    </p>
                 {/if}
+                {#if currentDefault}{@render snapshotEntry(currentDefault, true)}{/if}
                 {#if desktop && !busy && entries.length === 0 && !currentDefault && !error}
-                    <p class="empty compact">No saved defaults yet.</p>
+                    <p class="empty compact">No system baselines yet.</p>
                 {/if}
                 {#each entries.filter((entry) => entry.id !== currentDefault?.id) as entry (entry.id)}
                     {@render snapshotEntry(entry, false)}
@@ -422,6 +393,16 @@
                         >
                     {/if}
                 </div>
+            {/if}
+            {#if result}
+                <dl class="restore-changes">
+                    {#each result.outcomes as outcome}
+                        <div>
+                            <dt>{outcome.field}</dt>
+                            <dd>{outcome.status.replaceAll('_', ' ')}</dd>
+                        </div>
+                    {/each}
+                </dl>
             {/if}
             {#if status}<p class="success" role="status">{status}</p>{/if}
             {#if error}<p class="error" role="alert">{error}</p>{/if}

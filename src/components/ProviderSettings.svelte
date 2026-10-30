@@ -62,11 +62,6 @@
             status = 'Credential saved in your operating-system credential store.';
         });
     }
-
-    async function reconcileRestored(effective: Bootstrap['settings']) {
-        settings = $state.snapshot(effective);
-        await onrefresh();
-    }
 </script>
 
 <div class="page-heading">
@@ -75,7 +70,7 @@
         <p class="muted">Choose how Jitterbug investigates and when it can help.</p>
     </div>
 </div>
-<SettingsDefaults {desktop} onrestored={reconcileRestored} />
+<SettingsDefaults {desktop} />
 <AutomationSettings {bootstrap} {desktop} {onrefresh} />
 <section class="panel settings-panel">
     <h2>Where should AI run?</h2>

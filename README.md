@@ -183,35 +183,25 @@ Meta and Claude use fixed official endpoints. Jev is wired for the decision tier
 
 Cloud calls come from activity checks, chat requests, opening uncached process details, explicitly requested task summaries, or enabled automatic incident investigations. They are bounded and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests. Successful calls with complete token usage settle their own reservation to the estimated charge; failures and unknown usage keep the reservation across restarts. Legacy reservations remain conservative. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
 
-## Saved settings defaults and rollback
+## System settings baseline and rollback
 
-**Set Default** in Settings captures the backend's currently saved provider configuration, not
-unsaved form edits. Its scope is deliberately narrow: privacy mode, the provider and model for the
-decision/cheap/intelligent tiers, whether the optional decision model is enabled, and the cloud
-budget ceiling. Setting another default makes the new snapshot current without deleting or pruning
-any earlier snapshot. History is cursor-paginated and read one bounded page at a time; each snapshot
-is an individual versioned file so history does not become one ever-growing in-memory document.
+**Set Default** in Settings captures actual values from the current macOS default audio output
+device before an optimization. The allowlist contains only supported, settable CoreAudio master
+volume and mute controls. Every capture creates a new immutable snapshot; history is cursor-paginated
+and displayed in a bounded modal. Windows and other platforms report this feature as unsupported.
 
-Automation policy and permissions are excluded and preserved during restore. Credentials, actual
-spent/reserved budget consumption, the spending ledger, telemetry, process priorities and other OS
-settings, validation queues, and command authorization are never captured or restored. This is not
-an OS backup. The browser preview is explicitly nonpersistent and cannot set or restore defaults.
+Rollback starts with an exact before/after preview and explicit confirmation. Its one-use token binds
+the selected snapshot to fresh actual values and expires after five minutes. Compatibility is limited
+to the same OS version, effective user, machine, and default output device. Jitterbug rechecks actual
+state before each typed native write, records a durable intent first, verifies native readback after
+each write, and stops on external drift or partial failure. Interrupted journals are reported and
+never replayed automatically. Rollback shares the supervisor action lock with automation.
 
-Restore starts with a field-by-field preview and requires explicit confirmation. Preview tokens are
-backend-issued, random, one-shot, limited to 32 outstanding entries, and expire after five minutes.
-Confirmation rechecks the live settings revision/content, selected snapshot content, current-default
-revision, active inference, automatic investigations, and process-action measurement. A changed or
-expired preview fails closed. Successful restore writes settings atomically, reads and validates the
-effective file, preserves current automation, and returns that read-back configuration to reconcile
-the form. The spending ledger is a separate file and is never rewritten by this flow.
-
-Snapshots and current-default metadata live under `settings-default-history` in Jitterbug's private
-OS application-data directory. Files use schema and size checks, private permissions, collision-safe
-temporary files, file synchronization, atomic publication/replacement, and directory synchronization
-where the OS supports it. Invalid future schemas fail closed. A corrupt history entry remains visible
-with its error while other valid entries remain usable. Jitterbug has no history-delete or automatic
-retention operation; removal outside Jitterbug is permanent and may leave an explicitly reported
-missing entry.
+This is not an OS upgrade/downgrade, disk backup, provider-configuration history, output-device
+switcher, or performance claim. It never changes credentials, privacy/security/network controls,
+processes, or arbitrary preferences. Legacy provider-history files remain untouched in their old
+namespace but are no longer shown in Settings. See
+[system settings rollback](docs/system-settings-rollback.md) for native API scope and verification.
 
 ## What is a demo or future work
 
@@ -244,7 +234,8 @@ src-tauri/src/
   actions.rs            native process-action validation and OS priority verification
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
   settings.rs           inference modes, model tiers, credentials, reviewed prices
-  settings_history.rs   immutable defaults, paginated history, guarded rollback previews
+  settings_history.rs   preserved legacy provider-history backend
+  system_settings.rs    native baseline history, journals, guarded CoreAudio rollback
   budget.rs             locked, persistent pre-request spending reservations
   storage.rs            private local settings and ledger writes
   desktop.rs            template tray icon, native quick-view window, visibility-aware events
