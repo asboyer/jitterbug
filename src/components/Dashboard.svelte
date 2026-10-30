@@ -57,7 +57,7 @@
             <h1>Activity</h1>
         </div>
         <button class="primary" onclick={onask}
-            >Ask Jitterbug <span aria-hidden="true">↗</span></button
+            >Find a slowdown <span aria-hidden="true">↗</span></button
         >
     </div>
     <section class="health-summary" class:busy aria-label="Computer health" data-tour="health">
@@ -77,7 +77,7 @@
                       ? 'Memory is tight. Start with the largest apps below.'
                       : busy
                         ? 'Review the busiest workloads or ask Jitterbug to investigate.'
-                        : 'No system pressure detected. Here’s where resources are going.'}
+                        : 'No system pressure detected. An individual app can still stall.'}
             </p>
         </div>
     </section>
@@ -198,7 +198,7 @@
         <div class="section-title">
             <div>
                 <h2>{memoryTight ? 'Using the most memory' : 'Using the most CPU'}</h2>
-                <p class="muted">Select an app to see what it’s doing and what you can change.</p>
+                <p class="muted">Select an app to investigate.</p>
             </div>
             <button class="text-button" onclick={onworkloads}>All workloads ↗</button>
         </div>

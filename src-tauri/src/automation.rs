@@ -99,6 +99,7 @@ pub enum Kind {
     AppCpu,
     CpuAnomaly,
     MemoryGrowth,
+    AppUnresponsive,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -357,6 +358,14 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
         });
     }
     for w in &s.workloads {
+        if w.unresponsive == Some(true) {
+            found.push(Trigger {
+                key: format!("unresponsive:{}", w.id), kind: Kind::AppUnresponsive,
+                title: format!("{} is not responding", w.label),
+                reason: "The macOS window server repeatedly reports an unresponsive app. Low CPU does not rule out a blocked main thread or another stalled operation. This signal does not monitor individual web pages.".into(),
+                target: Some(target(w)), cpu_floor_percent: None, memory_floor_bytes: None,
+            });
+        }
         let core_cpu = w.cpu_percent * s.logical_cpus.max(1) as f32;
         if w.cpu_percent >= policy.app_cpu_percent && core_cpu >= policy.app_cpu_core_percent {
             found.push(Trigger { cpu_floor_percent: None, memory_floor_bytes: None, key: format!("app-cpu:{}", w.id), kind: Kind::AppCpu, title: format!("{} is using sustained CPU", w.label), reason: format!("Workload CPU exceeded {:.0}% of total capacity and {:.0}% on a one-core scale (100% = one logical core). High usage may be legitimate work.", policy.app_cpu_percent, policy.app_cpu_core_percent), target: Some(target(w)) });
@@ -385,6 +394,8 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
             }
         }
     }
+    // A stalled window is more specific than simultaneous resource thresholds.
+    found.sort_by_key(|trigger| trigger.kind != Kind::AppUnresponsive);
     found
 }
 
@@ -440,16 +451,21 @@ impl Monitor {
         {
             self.recent.pop_front();
         }
-        if busy
-            || self.snoozed_until > s.captured_at
+        if self.snoozed_until > s.captured_at
             || self.recent.len() >= policy.max_investigations_per_hour
-            || self
-                .last_dispatch
-                .is_some_and(|at| s.captured_at.saturating_sub(at) < 60)
         {
             return None;
         }
+        let resource_alert_waiting = busy
+            || self
+                .last_dispatch
+                .is_some_and(|at| s.captured_at.saturating_sub(at) < 60);
         for trigger in found {
+            // A newly hung app must not disappear behind an unrelated resource
+            // investigation. The supervisor still serializes all model requests.
+            if resource_alert_waiting && trigger.kind != Kind::AppUnresponsive {
+                continue;
+            }
             let track = self.tracks.get_mut(&trigger.key).unwrap();
             let sustained = if trigger.key == MEMORY_KEY {
                 let seconds = if s.platform.memory_pressure.as_deref() == Some("critical") {
@@ -577,7 +593,10 @@ pub fn still_present(s: &Snapshot, policy: &Policy, trigger: &Trigger) -> bool {
 }
 
 pub fn proposal(s: &Snapshot, trigger: &Trigger) -> Option<Proposal> {
-    if matches!(trigger.kind, Kind::MemoryGrowth | Kind::MemoryPressure) {
+    if matches!(
+        trigger.kind,
+        Kind::MemoryGrowth | Kind::MemoryPressure | Kind::AppUnresponsive
+    ) {
         return None;
     }
     let target = trigger.target.as_ref()?;
@@ -656,6 +675,65 @@ pub(crate) mod tests {
     }
     fn tick(m: &mut Monitor, at: u64, cpu: f32, p: &Policy) -> Option<Trigger> {
         m.observe(&sample(at, cpu), p, false)
+    }
+
+    #[test]
+    fn unresponsive_apps_alert_at_low_cpu_without_a_priority_proposal() {
+        let mut m = Monitor::default();
+        let policy = Policy::default();
+        let mut s = sample(100, 0.2);
+        s.workloads[0].unresponsive = Some(true);
+        assert!(m.observe(&s, &policy, false).is_none());
+        s.captured_at = 105;
+        s.workloads[0].unresponsive = None; // unavailable is not a hang
+        assert!(m.observe(&s, &policy, false).is_none());
+        for at in [110, 115, 120] {
+            s.captured_at = at;
+            s.workloads[0].unresponsive = Some(true);
+            let result = m.observe(&s, &policy, false);
+            if at == 120 {
+                let trigger = result.unwrap();
+                assert_eq!(trigger.kind, Kind::AppUnresponsive);
+                assert!(proposal(&s, &trigger).is_none());
+                assert!(still_present(&s, &policy, &trigger));
+                s.workloads[0].unresponsive = Some(false);
+                assert!(!still_present(&s, &policy, &trigger));
+            } else {
+                assert!(result.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn hung_apps_are_not_hidden_by_resource_cooldowns_but_obey_pause_and_hourly_cap() {
+        let mut m = Monitor {
+            last_dispatch: Some(100),
+            ..Default::default()
+        };
+        let policy = Policy {
+            max_investigations_per_hour: 1,
+            ..Default::default()
+        };
+        let mut s = sample(105, 0.1);
+        s.workloads[0].unresponsive = Some(true);
+        for at in [105, 110, 115] {
+            s.captured_at = at;
+            let result = m.observe(&s, &policy, true);
+            assert_eq!(result.is_some(), at == 115);
+        }
+        s.workloads[0].id = "different-app".into();
+        for at in [120, 125, 130] {
+            s.captured_at = at;
+            assert!(m.observe(&s, &policy, false).is_none());
+        }
+        let mut paused = Monitor {
+            snoozed_until: 1000,
+            ..Default::default()
+        };
+        for at in [135, 140, 145] {
+            s.captured_at = at;
+            assert!(paused.observe(&s, &policy, false).is_none());
+        }
     }
 
     #[test]

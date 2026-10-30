@@ -154,6 +154,34 @@ impl Attribution {
             }
             ancestor = parent;
         }
+        // WebKit's XPC services can have launchd as their parent. The kernel's
+        // responsibility relationship distinguishes Safari from other WebKit clients.
+        // Never group all WebKit processes by name or assume the only browser owns them.
+        if name.starts_with("com.apple.WebKit.") && crate::platform::same_user(p) {
+            if let Some(owner) = crate::platform::responsible_pid(p.pid().as_u32())
+                .and_then(|pid| system.process(sysinfo::Pid::from_u32(pid)))
+                .filter(|owner| {
+                    owner.start_time() <= p.start_time() && owner.user_id() == p.user_id()
+                })
+            {
+                if let Some(app) = owner.exe().and_then(|exe| application_bundle(exe)) {
+                    let label: String = app
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .chars()
+                        .take(60)
+                        .collect();
+                    let (category, description) = category(&label);
+                    return Label {
+                        id: opaque_id(&format!("app:{}", app.display())), label,
+                        category: category.into(), description: description.into(),
+                        evidence: vec!["macOS reports this application as responsible for the WebKit helper. This does not identify a tab.".into()],
+                        confidence: "macOS responsible application".into(),
+                    };
+                }
+            }
+        }
         Label {
             id: format!("p-{}-{}", p.pid(), p.start_time()),
             label: name.chars().take(60).collect(),

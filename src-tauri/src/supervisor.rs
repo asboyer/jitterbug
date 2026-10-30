@@ -179,7 +179,15 @@ impl Runtime {
         // Keep a finished memory warning from lingering after the machine recovers.
         // Running investigations already recheck pressure before and after inference.
         for case in self.cases()? {
-            if case.trigger.kind == automation::Kind::MemoryPressure
+            let recovered = case.trigger.kind == automation::Kind::MemoryPressure
+                || (case.trigger.kind == automation::Kind::AppUnresponsive
+                    && case
+                        .trigger
+                        .target
+                        .as_ref()
+                        .and_then(|t| sample.workloads.iter().find(|w| w.id == t.workload_id))
+                        .is_some_and(|w| w.unresponsive == Some(false)));
+            if recovered
                 && matches!(case.stage, Stage::Completed | Stage::Blocked)
                 && sample.sample_ready
                 && sample.captured_at.saturating_add(20) >= now()
@@ -188,7 +196,7 @@ impl Runtime {
                 self.update(case.id, |c| {
                     c.transition(
                         Stage::Resolved,
-                        "Memory pressure has cleared. No process changes were needed.",
+                        "The observed problem has cleared. No process changes were needed.",
                     )
                 })?;
             }

@@ -53,6 +53,20 @@
     let previousContext = $state('');
     let focused: Target | null = $state(null);
     let conversationElement: HTMLDivElement;
+    let historyOpen = $state(false);
+    const latestUserIndex = $derived(
+        conversation.reduce(
+            (last, entry, index) => (entry.message.role === 'user' ? index : last),
+            -1
+        )
+    );
+    const visibleFrom = $derived(Math.max(0, latestUserIndex));
+    const earlier = $derived(conversation.slice(0, visibleFrom));
+    const visible = $derived(conversation.slice(visibleFrom));
+    function followUp(text: string) {
+        question = text;
+        void send();
+    }
 
     async function revealLatest() {
         await tick();
@@ -76,6 +90,7 @@
     $effect(() => {
         const context = `${snapshot.source}:${workload?.id ?? 'system'}:${incident?.id ?? ''}:${questionProcess?.pid ?? ''}:${questionProcess?.start_time ?? ''}:${initialReply?.text ?? ''}`;
         if (context !== previousContext) {
+            historyOpen = false;
             conversation = initialReply
                 ? [
                       {
@@ -140,6 +155,7 @@
         const requestContext = previousContext;
         conversation = [...conversation, { message: { role: 'user', content } }];
         question = '';
+        historyOpen = false;
         void revealLatest();
         try {
             // Rules-only replies can contain private process/project labels. Keep them on-device.
@@ -213,9 +229,7 @@
                 <h2>{focused?.label ?? workload?.label ?? 'Your computer'}</h2>
             </div>
         </div>
-        <button class="icon-button" aria-label="Close assistant" onclick={onclose} disabled={busy}
-            >×</button
-        >
+        <button class="icon-button" aria-label="Close assistant" onclick={onclose}>×</button>
     </div>
     <div class="context-line">
         <span class="status-dot"></span><span
@@ -224,13 +238,14 @@
                 : questionProcess
                   ? `Selected process · PID ${questionProcess.pid}`
                   : workload
-                    ? 'Selected workload · live readings'
+                    ? 'Live app investigation'
                     : 'Live readings'}</span
         ><InfoTip label="Privacy and model settings"
             ><p>
-                Models receive the selected app’s name, process names, measurements, recent history
-                and your question. Paths, environment variables and transcripts stay on this device.
-                Actions require confirmation.
+                Models receive the selected app’s name, process names, measurements, recent history,
+                your question, and short local-check summaries. Raw commands, paths, stack reports,
+                environment variables and transcripts stay on this device. Actions require
+                confirmation.
             </p>
             <label
                 >Reasoning tier<select aria-label="Reasoning tier" bind:value={tier} disabled={busy}
@@ -243,7 +258,29 @@
             ></InfoTip
         >
     </div>
-    <div class="conversation" bind:this={conversationElement} aria-live="polite" aria-busy={busy}>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access to the scroll region) -->
+    <div
+        class="conversation"
+        bind:this={conversationElement}
+        aria-live="polite"
+        aria-busy={busy}
+        tabindex="0"
+        role="log"
+        aria-label="Investigation conversation"
+    >
+        {#if earlier.length}<details class="conversation-history" bind:open={historyOpen}>
+                <summary
+                    >Earlier in this investigation <span>{Math.ceil(earlier.length / 2)}</span
+                    ></summary
+                >
+                {#each earlier as entry}<div
+                        class="past-message"
+                        class:past-user={entry.message.role === 'user'}
+                    >
+                        <small>{entry.message.role === 'user' ? 'You' : 'Jitterbug'}</small>
+                        <p>{entry.message.content}</p>
+                    </div>{/each}
+            </details>{/if}
         {#if !conversation.length}<div class="chat-welcome">
                 <h3>{workload ? 'What would help?' : 'Let’s find what needs attention.'}</h3>
                 <p>
@@ -261,7 +298,7 @@
                         >{/each}
                 </div>
             </div>{/if}
-        {#each conversation as entry}<article
+        {#each visible as entry}<article
                 class:user-message={entry.message.role === 'user'}
                 class="chat-message"
             >
@@ -272,6 +309,15 @@
                             disabled={busy || actionBusy || snapshot.source !== 'live'}
                             {onaction}
                         />{/if}
+                    {#if entry.reply.follow_ups?.length}<div
+                            class="answer-options"
+                            aria-label="Narrow down the problem"
+                        >
+                            {#each entry.reply.follow_ups as option}<button
+                                    disabled={busy}
+                                    onclick={() => followUp(option)}>{option}</button
+                                >{/each}
+                        </div>{/if}
                     {#if entry.reply.choices.length}<div class="quick-questions">
                             {#each entry.reply.choices as choice}<button
                                     disabled={busy}
@@ -282,7 +328,7 @@
             </article>{/each}
         {#if actionReport}<ActionResult report={actionReport} />{/if}
         {#if actionBusy}<p class="muted">Applying your change and measuring the result…</p>{/if}
-        {#if busy}<p class="muted" role="status">Checking current activity…</p>{/if}
+        {#if busy}<p class="muted" role="status">Investigating the app and its helpers…</p>{/if}
     </div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <form
@@ -297,14 +343,14 @@
             placeholder={workload
                 ? `Ask about ${workload.label}…`
                 : 'Ask about an app or your computer…'}
-            rows="2"
+            rows="1"
             maxlength="2000"
             bind:value={question}
             disabled={busy}></textarea>
         <div class="form-actions">
             <span class="muted"
                 >{tier === 'auto'
-                    ? 'Automatic routing'
+                    ? 'Automatic'
                     : tier === 'rules'
                       ? 'No model'
                       : `${tier} tier`}</span
@@ -395,9 +441,8 @@
     .chat-message {
         padding: 0 0 22px;
         border: 0;
-        border-bottom: 1px solid var(--border);
         border-radius: 0;
-        margin-bottom: 22px;
+        margin-bottom: 12px;
     }
     .chat-message.user-message {
         padding: 10px 12px;
@@ -414,10 +459,50 @@
         align-items: center;
         font-size: 10px;
     }
+    .answer-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+    }
+    .answer-options button {
+        border-radius: 20px;
+        padding: 7px 11px;
+        font-size: 11px;
+        background: var(--accent-soft);
+        border-color: transparent;
+        color: var(--accent);
+    }
+    .conversation-history {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 18px;
+    }
+    .conversation-history summary {
+        padding: 6px 0;
+    }
+    .conversation-history summary span {
+        margin-left: 6px;
+    }
+    .past-message {
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .past-message p {
+        white-space: pre-wrap;
+        font-size: 12px;
+        margin: 5px 0 0;
+    }
+    .past-user p {
+        color: var(--text);
+    }
     .chat-form textarea {
         border-radius: 9px;
         padding: 12px;
         line-height: 1.5;
-        resize: vertical;
+        resize: none;
+        max-height: 120px;
+        min-height: 46px;
+        field-sizing: content;
     }
 </style>

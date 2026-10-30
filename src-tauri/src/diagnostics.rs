@@ -18,6 +18,8 @@ pub enum Resolution {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Investigation {
+    #[serde(default)]
+    pub stack_checks: Vec<crate::probe::StackCheck>,
     pub target: Target,
     pub captured_at: u64,
     pub cpu_percent: f32,
@@ -26,6 +28,12 @@ pub struct Investigation {
     pub history: Vec<ResourcePoint>,
     pub processes: Vec<ProcessRecord>,
     pub limits: String,
+    #[serde(default)]
+    pub responsiveness: String,
+    #[serde(default)]
+    pub coverage: String,
+    #[serde(default)]
+    pub recently_unresponsive: bool,
 }
 
 fn words(text: &str) -> String {
@@ -274,11 +282,34 @@ pub fn investigate(snapshot: &Snapshot, target: Target) -> Investigation {
     } else {
         workload.map(|w| w.process_count).unwrap_or_default()
     };
+    let responsiveness = match if target.pid.is_some() {
+        processes.first().and_then(|p| p.unresponsive)
+    } else {
+        workload.and_then(|w| w.unresponsive)
+    } {
+        Some(true) => "not_responding",
+        Some(false) => "responding",
+        None => "unknown",
+    }
+    .into();
+    let helpers = processes
+        .iter()
+        .filter(|p| p.name.starts_with("com.apple.WebKit."))
+        .count();
+    let coverage = if workload.is_some_and(|w| w.category == "browser") {
+        format!("{helpers} WebKit helpers included through observed ownership. Tab contents, extensions, and page/network responsiveness are not measured. Low CPU cannot rule out a stuck page.")
+    } else {
+        "Includes observed workload members. Native window responsiveness does not establish whether every task inside the app is progressing.".into()
+    };
+    let recently_unresponsive =
+        workload.is_some_and(|w| w.history.iter().any(|p| p.unresponsive == Some(true)));
     processes.truncate(8);
     Investigation {
+        stack_checks: vec![],
+        responsiveness, coverage, recently_unresponsive,
         target, captured_at: snapshot.captured_at, cpu_percent, memory_bytes, process_count,
         history: workload.map(|w| w.history.clone()).unwrap_or_default(), processes,
-        limits: "CPU is % of total machine capacity. History covers the whole workload, including for a PID question. Memory is summed RSS and can count shared pages twice. Disk bytes cover the last collection interval. No call stacks, app settings, GPU usage, network traffic, or agent transcripts were inspected. Helper roles inferred from names are hypotheses; resource use alone cannot prove a root cause.".into(),
+        limits: "CPU is % of total machine capacity. History covers the whole workload, including for a PID question. Memory is summed RSS and can count shared pages twice. Disk bytes cover the last collection interval. App settings, GPU usage, network traffic, and agent transcripts were not inspected. Any short stack checks are reported separately. Helper roles inferred from names are hypotheses; resource use alone cannot prove a root cause.".into(),
     }
 }
 
@@ -292,13 +323,26 @@ impl Investigation {
             .is_some_and(|w| w.category == "project");
         let history: Vec<_> = self.history.iter().map(|p| json!({"seconds_ago":self.captured_at.saturating_sub(p.time),"cpu_percent":p.cpu_percent,"resident_mib":p.memory_bytes/1048576})).collect();
         let processes: Vec<_> = self.processes.iter().map(|p| json!({"name":p.name,"cpu_percent":p.cpu_percent,"cpu_percent_one_core_scale":p.cpu_percent*snapshot.logical_cpus as f32,"resident_mib":p.memory_bytes/1048576,"disk_read_bytes":p.disk_read_bytes,"disk_written_bytes":p.disk_written_bytes,"available_actions":p.actions})).collect();
-        let identity = self.processes.iter().find_map(|process| {
-            process
-                .executable
-                .as_deref()
-                .map(|path| crate::profiles::model_payload(&crate::applications::identify(path)))
-        });
-        json!({"executable_identity":identity,"target":if project {"Selected development workload"} else {&self.target.label},"scope":if self.target.pid.is_some(){"single PID; history is its containing workload"}else{"application/workload"},"cpu_percent":self.cpu_percent,"resident_mib":self.memory_bytes/1048576,"process_count":self.process_count,"history":history,"busiest_processes":processes,"limits":self.limits})
+        let members: Vec<_> = snapshot
+            .processes
+            .iter()
+            .filter(|p| {
+                p.workload_id == self.target.workload_id
+                    && self.target.pid.is_none_or(|pid| p.pid == pid)
+            })
+            .collect();
+        let identity = (!members.is_empty())
+            .then(|| crate::details::representative(&members))
+            .and_then(|process| {
+                process.executable.as_deref().map(|path| {
+                    crate::profiles::model_payload(&crate::applications::identify(path))
+                })
+            });
+        let launch = (!members.is_empty())
+            .then(|| crate::details::representative(&members))
+            .and_then(|p| crate::origins::inspect(snapshot, p))
+            .map(|origin| origin.model_context());
+        json!({"launch_origin":launch,"stack_checks":self.stack_checks,"executable_identity":identity,"target":if project {"Selected development workload"} else {&self.target.label},"scope":if self.target.pid.is_some(){"single PID; history is its containing workload"}else{"application/workload"},"cpu_percent":self.cpu_percent,"resident_mib":self.memory_bytes/1048576,"process_count":self.process_count,"history":history,"busiest_processes":processes,"limits":self.limits,"window_responsiveness":self.responsiveness,"recently_unresponsive":self.recently_unresponsive,"coverage":self.coverage})
     }
 }
 

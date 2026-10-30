@@ -727,6 +727,7 @@ impl WorkflowTracker {
                     workflow.observed_samples += 1;
                     workflow.peak_cpu_percent = workflow.peak_cpu_percent.max(workflow.cpu_percent);
                     workflow.history.push(ResourcePoint {
+                        unresponsive: None,
                         time: at,
                         cpu_percent: workflow.cpu_percent,
                         memory_bytes: workflow.memory_bytes,

@@ -14,6 +14,7 @@
     import OptimizationReview from './OptimizationReview.svelte';
     import ActionResult from './ActionResult.svelte';
     import Investigation from './Investigation.svelte';
+    import InsightCard from './InsightCard.svelte';
 
     let {
         incident,
@@ -113,7 +114,9 @@
     </div>
     <div class="conversation automatic-conversation">
         {#key incident.id}
-            <p class="observation">{incidentObservation(incident)}</p>
+            {#if incident.diagnosis?.insight && !incident.proposal}
+                <InsightCard reply={incident.diagnosis} />
+            {:else}<p class="observation">{incidentObservation(incident)}</p>{/if}
             {#if incident.proposal}
                 <section class="proposal-card" data-tour="proposal">
                     <div class="tip-heading">
@@ -155,7 +158,7 @@
                     {/if}
                 </section>
             {/if}
-            {#if !['awaiting_approval', 'detected', 'investigating', 'applying', 'verifying'].includes(incident.stage)}
+            {#if (!incident.diagnosis?.insight || incident.report) && !['awaiting_approval', 'detected', 'investigating', 'applying', 'verifying'].includes(incident.stage)}
                 <section class="incident-summary outcome" aria-label="Investigation outcome">
                     <h3>{incident.verification ? 'Result' : 'Outcome'}</h3>
                     <p>{incidentOutcome(incident)}</p>

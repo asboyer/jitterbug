@@ -40,11 +40,13 @@
     const reading = $derived(
         !snapshot.sample_ready
             ? 'Taking a reading'
-            : workload.cpu_percent < 5
-              ? 'Light CPU activity'
-              : workload.cpu_percent < 20
-                ? 'Actively using CPU'
-                : 'Busy right now'
+            : workload.unresponsive
+              ? 'Not responding'
+              : workload.cpu_percent < 5
+                ? 'Light CPU activity'
+                : workload.cpu_percent < 20
+                  ? 'Actively using CPU'
+                  : 'Busy right now'
     );
     async function check() {
         if (busy || disabled) return;
@@ -112,14 +114,14 @@
         </div>
         <p class="intro">
             {snapshot.pressure.level === 'normal'
-                ? 'Your computer has available capacity.'
-                : 'Your computer is under pressure.'} Check this workload for a useful next step.
+                ? 'A slowdown can happen even with low CPU.'
+                : 'Your computer is under pressure.'}
         </p>
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="insight-actions">
         <button class="primary" disabled={busy || disabled} onclick={check}
-            >{busy ? 'Checking activity…' : reply ? 'Check again' : 'Check activity'}</button
+            >{busy ? 'Checking activity…' : reply ? 'Check again' : 'Investigate'}</button
         >
         <button class="text-button" disabled={busy} onclick={() => onask(reply)}
             >Ask a follow-up <span aria-hidden="true">↗</span></button

@@ -164,7 +164,11 @@
         <AppIcon workloadId={workload.id} category={workload.category} size={44} {demo} />
         <div class="heading-copy">
             <h1>{workload.label}</h1>
-            <p>{detail?.application?.installation ?? workload.category}</p>
+            <p>
+                {detail?.launch
+                    ? `${detail.launch.program} · ${detail.launch.task}`
+                    : (detail?.application?.installation ?? workload.category)}
+            </p>
         </div>
         <button disabled={demo} onclick={() => onmanage({ workload_id: workload.id })}
             >Manage workload</button
@@ -210,46 +214,60 @@
                 aria-busy={generating}
             >
                 <div class="section-title">
-                    <h2>What it does</h2>
+                    <h2>{detail.launch ? 'Why it’s running' : 'What it does'}</h2>
                     <div class="explanation-source">
                         <span
-                            >{detail.profile.source === 'model'
-                                ? detail.profile.cached
-                                    ? 'AI · saved on this device'
-                                    : 'AI explanation'
-                                : detail.profile.source === 'reference'
-                                  ? 'Built-in reference'
-                                  : demo
-                                    ? 'Synthetic example'
-                                    : generating
-                                      ? 'Identifying…'
-                                      : 'Local evidence'}</span
+                            >{detail.launch
+                                ? 'Command verified locally'
+                                : detail.profile.source === 'model'
+                                  ? detail.profile.cached
+                                      ? 'AI · saved on this device'
+                                      : 'AI explanation'
+                                  : detail.profile.source === 'reference'
+                                    ? 'Built-in reference'
+                                    : demo
+                                      ? 'Synthetic example'
+                                      : generating
+                                        ? 'Identifying…'
+                                        : 'Local evidence'}</span
                         >
                         <InfoTip label="About this explanation">
-                            <p>
-                                General purpose, not a diagnosis of current activity. Cached for up
-                                to 30 days; changes to the executable or app version invalidate the
-                                saved explanation.
-                            </p>
-                            <p>
-                                Models receive the executable name, component and bundle identifier.
-                                Paths, arguments, working directories and files stay on this device.
-                            </p>
-                            {#if detail.profile.generated_at}<p>
-                                    {detail.profile.provider} · {detail.profile.model} · {date(
-                                        detail.profile.generated_at
-                                    )}
-                                </p>{/if}
-                            {#if detail.application}<p>
-                                    {detail.application.identity_source}{detail.application
-                                        .identifier
-                                        ? ` · ${detail.application.identifier}`
-                                        : ''}. This does not verify a publisher’s signature.
-                                </p>{/if}
+                            {#if detail.launch}
+                                <p>{detail.launch.limitation}</p>
+                                <p>
+                                    Commands are inspected on this device. Only a recognized job
+                                    category can be sent for an AI investigation.
+                                </p>
+                            {:else}
+                                <p>
+                                    General purpose, not a diagnosis of current activity. Cached for
+                                    up to 30 days; changes to the executable or app version
+                                    invalidate the saved explanation.
+                                </p>
+                                <p>
+                                    Models receive the executable name, component and bundle
+                                    identifier. Paths, arguments, working directories and files stay
+                                    on this device.
+                                </p>
+                                {#if detail.profile.generated_at}<p>
+                                        {detail.profile.provider} · {detail.profile.model} · {date(
+                                            detail.profile.generated_at
+                                        )}
+                                    </p>{/if}
+                                {#if detail.application}<p>
+                                        {detail.application.identity_source}{detail.application
+                                            .identifier
+                                            ? ` · ${detail.application.identifier}`
+                                            : ''}. This does not verify a publisher’s signature.
+                                    </p>{/if}
+                            {/if}
                         </InfoTip>
                     </div>
                 </div>
-                {#if generating && detail.profile.source === 'inference'}<p
+                {#if detail.launch}
+                    <h3 class="launch-task">{detail.launch.program} · {detail.launch.task}</h3>
+                    <p class="explanation-text">{detail.launch.summary}</p>
+                {:else if generating && detail.profile.source === 'inference'}<p
                         class="explanation-text identifying"
                         role="status"
                     >
@@ -271,16 +289,18 @@
                     <Icon name="app" size={16} />
                     <div>
                         <small>Part of</small><strong
-                            >{detail.application?.component ??
+                            >{detail.launch?.program ??
+                                detail.application?.component ??
                                 detail.application?.executable_name ??
                                 detail.process.name}</strong
                         >
                     </div>
                     <div>
-                        <small>Observed parent</small><strong
-                            >{parent?.name === 'launchd'
-                                ? 'macOS · launchd'
-                                : (parent?.name ?? 'Parent not observed')}</strong
+                        <small>Launched by</small><strong
+                            >{detail.launch?.launcher ??
+                                (parent?.name === 'launchd'
+                                    ? 'macOS · launchd'
+                                    : (parent?.name ?? 'Parent not observed'))}</strong
                         >
                     </div>
                     <button class="text-button" onclick={showOrigin}
@@ -356,6 +376,16 @@
                         ></summary
                     >
                     <div class="origin-content">
+                        {#if detail.launch}
+                            <div class="launch-evidence">
+                                {#each detail.launch.evidence as evidence}<p>{evidence}</p>{/each}
+                                {#if detail.launch.reference_url}<a
+                                        href={detail.launch.reference_url}
+                                        target="_blank"
+                                        rel="noreferrer">About this background service ↗</a
+                                    >{/if}
+                            </div>
+                        {/if}
                         <div class="origin-title">
                             <div>
                                 <h2>{process.name}</h2>
@@ -381,8 +411,11 @@
                                     <span class="origin-dot" aria-hidden="true"></span>
                                     <div class="ancestor-copy">
                                         <div class="ancestor-heading">
-                                            <strong>{ancestor.name}</strong><span class="pid"
-                                                >PID {ancestor.pid}</span
+                                            <strong
+                                                >{detail.launch?.chain.find(
+                                                    (step) => step.pid === ancestor.pid
+                                                )?.role ?? ancestor.name}</strong
+                                            ><span class="pid">PID {ancestor.pid}</span
                                             >{#if index === detail.ancestry.length - 1}<span
                                                     class="selected-label">Selected</span
                                                 >{/if}
@@ -438,6 +471,21 @@
 </div>
 
 <style>
+    .launch-task {
+        font-size: 17px;
+        margin: 18px 0 8px;
+        letter-spacing: -0.2px;
+    }
+    .launch-evidence {
+        padding: 0 0 18px;
+        margin-bottom: 18px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        line-height: 1.6;
+    }
+    .launch-evidence p {
+        margin: 4px 0;
+    }
     .workload-detail {
         container-type: inline-size;
         container-name: process-detail;

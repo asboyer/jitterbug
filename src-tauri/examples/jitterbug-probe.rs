@@ -56,6 +56,48 @@ async fn main() {
     println!("Live collector smoke passed: sample, process inventory, workload attribution, and bounded history.");
 
     let option = std::env::args().nth(1);
+    if option.as_deref() == Some("--responsiveness-fixture") {
+        let mut monitor = jitterbug_lib::automation::Monitor::default();
+        let policy = jitterbug_lib::automation::Policy::default();
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.local/verification");
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut detected = false;
+        for _ in 0..12 {
+            let snapshot = collector.sample();
+            let workload = snapshot
+                .workloads
+                .iter()
+                .find(|w| w.label == "ResponsivenessFixture");
+            let signal = workload.and_then(|w| w.unresponsive);
+            println!("Owned fixture window signal: {signal:?}");
+            if let Some(trigger) = monitor.observe(&snapshot, &policy, false) {
+                println!("Monitor dispatched: {:?}", trigger.kind);
+                if trigger.kind == jitterbug_lib::automation::Kind::AppUnresponsive
+                    && trigger
+                        .target
+                        .as_ref()
+                        .is_some_and(|t| t.label == "ResponsivenessFixture")
+                {
+                    detected = true;
+                    let checks = jitterbug_lib::probe::inspect(
+                        &snapshot,
+                        trigger.target.as_ref().unwrap(),
+                        &directory,
+                    )
+                    .await;
+                    assert!(checks.iter().any(|check| check.state == "sleep"));
+                    println!("Owned fixture stack check: sleeping main thread detected.");
+                }
+            }
+            if detected && signal == Some(false) {
+                println!("Owned fixture responsiveness smoke passed: sustained hang and recovery.");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        panic!("Owned fixture did not complete a detected hang and recovery cycle.");
+    }
     if option.as_deref() == Some("--credential-store") {
         let account = format!("verification-{}", std::process::id());
         let entry = keyring::Entry::new("com.jitterbug.verification", &account).unwrap();

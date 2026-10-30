@@ -105,10 +105,7 @@
                                             ><small>{running ? 'memory' : 'peak memory'}</small
                                             ></span
                                         >
-                                    {:else}<small
-                                            >{running
-                                                ? 'Sampling…'
-                                                : 'No resource samples available'}</small
+                                    {:else}<small>{running ? 'Sampling…' : 'Not measured'}</small
                                         >{/if}
                                 </div>
                                 <span

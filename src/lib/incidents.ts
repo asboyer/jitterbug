@@ -21,6 +21,7 @@ export function incidentTitle(incident: AutomationCase): string {
         app_cpu: `${subject} is busy`,
         cpu_anomaly: `${subject} became busier than usual`,
         memory_growth: `${subject}’s memory use grew`,
+        app_unresponsive: `${subject} is not responding`,
     };
     return titles[incident.trigger.kind] ?? incident.trigger.title;
 }
@@ -33,6 +34,7 @@ export function incidentObservation(incident: AutomationCase): string {
         app_cpu: 'This workload stayed above your CPU limit. It may be doing useful work.',
         cpu_anomaly: 'CPU activity rose above this workload’s recent baseline.',
         memory_growth: 'Reported memory rose above its recent baseline. This alone is not a leak.',
+        app_unresponsive: 'macOS repeatedly reported that the app was not responding.',
     };
     return observations[incident.trigger.kind] ?? 'Resource use crossed a monitoring limit.';
 }

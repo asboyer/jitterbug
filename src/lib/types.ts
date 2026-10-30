@@ -32,6 +32,7 @@ export interface Bootstrap {
 }
 
 export interface Workload {
+    unresponsive?: boolean | null;
     id: string;
     label: string;
     category: string;
@@ -86,6 +87,16 @@ export interface WorkloadDetails {
         identity_source: string;
     } | null;
     profile: AppProfile;
+    launch?: {
+        program: string;
+        task: string;
+        summary: string;
+        launcher: string;
+        evidence: string[];
+        chain: { pid: number; role: string }[];
+        limitation: string;
+        reference_url: string | null;
+    } | null;
     ancestry: {
         pid: number;
         start_time: number;
@@ -158,6 +169,15 @@ export interface Insight {
 }
 
 export interface Reply {
+    follow_ups?: string[];
+    unavailable?: string | null;
+    research?: {
+        title: string;
+        url: string;
+        summary: string;
+        checked_at: number | null;
+        status: string;
+    } | null;
     insight?: Insight | null;
     text: string;
     source: 'rules' | 'model' | 'demo' | 'guidance';
@@ -189,6 +209,10 @@ export interface Target {
 }
 
 export interface Investigation {
+    stack_checks?: { role: string; state: string; summary: string; captured_at: number }[];
+    responsiveness?: string;
+    coverage?: string;
+    recently_unresponsive?: boolean;
     target: Target;
     captured_at: number;
     cpu_percent: number;

@@ -69,6 +69,17 @@ impl Collector {
             group.cpu_percent += cpu;
             group.memory_bytes = group.memory_bytes.saturating_add(p.memory());
             group.process_count += 1;
+            let unresponsive = if crate::platform::same_user(p)
+                && p.exe()
+                    .is_some_and(|path| crate::attribution::application_bundle(path).is_some())
+            {
+                crate::platform::app_unresponsive(p.pid().as_u32())
+            } else {
+                None
+            };
+            if let Some(value) = unresponsive {
+                group.unresponsive = Some(group.unresponsive.unwrap_or(false) || value);
+            }
             let actions = crate::actions::permitted(p, &self.system);
             let disk = p.disk_usage();
             processes.push(ProcessRecord {
@@ -91,6 +102,7 @@ impl Collector {
                 evidence: label.evidence,
                 actionable: !actions.is_empty(),
                 actions,
+                unresponsive,
                 disk_read_bytes: if self.samples > 0 { disk.read_bytes } else { 0 },
                 disk_written_bytes: if self.samples > 0 {
                     disk.written_bytes
@@ -123,6 +135,7 @@ impl Collector {
                     time: captured_at,
                     cpu_percent: workload.cpu_percent,
                     memory_bytes: workload.memory_bytes,
+                    unresponsive: workload.unresponsive,
                 });
                 if history.len() > 24 {
                     history.pop_front();

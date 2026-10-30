@@ -25,6 +25,31 @@ pub fn readings() -> PlatformReadings {
     }
 }
 
+/// Optional macOS window-server signal, not a test of individual web pages or network requests.
+pub fn app_unresponsive(pid: u32) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::app_unresponsive(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+pub fn responsible_pid(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::responsible_pid(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 pub fn same_user(process: &sysinfo::Process) -> bool {
     #[cfg(unix)]
     {
