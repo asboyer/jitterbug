@@ -17,17 +17,21 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
+#[cfg(unix)]
+use sysinfo::Signal;
 use sysinfo::{
-    Pid, Process, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, Signal, System, UpdateKind,
+    Pid, Process, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind,
 };
 
 /// Paused work resumes by itself after this long unless resumed sooner.
 pub const LIMIT_SECONDS: u64 = 15 * 60;
+#[cfg(unix)]
 const SHELLS: &[&str] = &[
     "zsh", "bash", "fish", "sh", "dash", "nu", "tcsh", "csh", "ksh",
 ];
 const TREE_LIMIT: usize = 512;
 /// The watchdog waits this much past the limit, so the in-app expiry normally runs first.
+#[cfg(unix)]
 const WATCHDOG_GRACE_SECONDS: u64 = 30;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -78,6 +82,7 @@ fn system() -> System {
     system
 }
 
+#[cfg(unix)]
 fn shell(p: &Process) -> bool {
     let name = p.name().to_string_lossy().to_lowercase();
     SHELLS.contains(&name.trim_start_matches('-'))
@@ -332,6 +337,7 @@ pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
     }
 }
 
+#[cfg(unix)]
 fn system_tree(pid: u32, start: u64) -> Vec<(u32, u64)> {
     let system = system();
     system
