@@ -122,6 +122,24 @@ async function mockDesktop(page: Page) {
     );
 }
 
+test('history opens above Settings without inline growth and closes with Escape', async ({
+    page,
+}) => {
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const defaults = page.getByRole('region', { name: 'Saved settings defaults' });
+    const before = await defaults.boundingBox();
+    await expect(defaults.locator('.default-entry')).toHaveCount(0);
+    const opener = defaults.getByRole('button', { name: 'View past defaults' });
+    await opener.click();
+    await expect(page.getByRole('dialog', { name: 'Saved default history' })).toBeVisible();
+    expect(await defaults.boundingBox()).toEqual(before);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(opener).toBeFocused();
+});
+
 test('settings defaults use paginated backend history and confirmed restore', async ({ page }) => {
     await mockDesktop(page);
     await page.goto('/');
@@ -131,12 +149,15 @@ test('settings defaults use paginated backend history and confirmed restore', as
     await expect(defaults).toContainText('provider and model choices for all three tiers');
     await expect(defaults).toContainText('Automation policy and permissions');
     await expect(defaults).toContainText('not an operating-system backup');
-    await expect(defaults).toContainText('This saved default is corrupt.');
-    await expect(defaults).toContainText('Timestamp unavailable');
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    const history = page.getByRole('dialog');
+    await expect(history).toContainText('This saved default is corrupt.');
+    await expect(history).toContainText('Timestamp unavailable');
     await expect(
-        defaults.getByRole('button', { name: /Rollback current saved default/ })
+        history.getByRole('button', { name: /Rollback current saved default/ })
     ).toBeVisible();
 
+    await history.getByRole('button', { name: 'Close default history' }).click();
     await page.getByLabel('Cloud budget ceiling (USD)').fill('9');
     await defaults.getByRole('button', { name: 'Set current saved settings as default' }).click();
     await expect(defaults).toContainText('Saved settings captured');
@@ -149,14 +170,15 @@ test('settings defaults use paginated backend history and confirmed restore', as
         );
     expect(setCall.args).toEqual({});
 
-    await defaults.getByRole('button', { name: 'Load older defaults' }).click();
-    await expect(defaults).toContainText('Current saved default');
-    await expect(defaults).toContainText('Hybrid privacy · $2.00 ceiling');
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    await history.getByRole('button', { name: 'Load older defaults' }).click();
+    await expect(history).toContainText('Current saved default');
+    await expect(history).toContainText('Hybrid privacy · $2.00 ceiling');
     await expect(
-        defaults.getByRole('button', { name: /Rollback current saved default/ })
+        history.getByRole('button', { name: /Rollback current saved default/ })
     ).toBeVisible();
-    await expect(defaults.getByRole('button', { name: 'Return to latest defaults' })).toBeVisible();
-    await defaults
+    await expect(history.getByRole('button', { name: 'Return to latest defaults' })).toBeVisible();
+    await history
         .getByRole('button', { name: /Preview historic restore from/ })
         .first()
         .click();
@@ -165,7 +187,7 @@ test('settings defaults use paginated backend history and confirmed restore', as
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
 
-    await defaults
+    await history
         .getByRole('button', { name: /Preview historic restore from/ })
         .first()
         .click();
@@ -197,10 +219,14 @@ test('settings default pages and repeated captures keep bounded DOM state', asyn
             .getByRole('button', { name: 'Set current saved settings as default' })
             .click();
     }
-    expect(await defaults.locator('article.default-entry').count()).toBeLessThanOrEqual(20);
+    const history = page.getByRole('dialog');
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    expect(await history.locator('article.default-entry').count()).toBeLessThanOrEqual(20);
+    await history.getByRole('button', { name: 'Close default history' }).click();
 
-    await defaults.getByRole('button', { name: 'Load older defaults' }).click();
-    await expect(defaults.locator('article.default-entry')).toHaveCount(2);
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    await history.getByRole('button', { name: 'Load older defaults' }).click();
+    await expect(history.locator('article.default-entry')).toHaveCount(2);
     const historyCalls = await page
         .locator('html')
         .evaluate((element) =>
@@ -210,9 +236,9 @@ test('settings default pages and repeated captures keep bounded DOM state', asyn
         );
     // After 25 captures, the last visible entry is capture 8, not the original page cursor.
     expect(historyCalls.at(-1).args.cursor).toBe('0000000000003-0000000000000008');
-    await expect(defaults.getByText('Current saved default')).toBeVisible();
-    await defaults.getByRole('button', { name: 'Return to latest defaults' }).click();
-    await expect(defaults.getByText('Current saved default')).toBeVisible();
+    await expect(history.getByText('Current saved default')).toBeVisible();
+    await history.getByRole('button', { name: 'Return to latest defaults' }).click();
+    await expect(history.getByText('Current saved default')).toBeVisible();
 });
 
 test('uncertain restore failure refreshes effective settings while preserving the error', async ({
@@ -222,18 +248,20 @@ test('uncertain restore failure refreshes effective settings while preserving th
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'Saved settings defaults' });
-    await defaults.getByRole('button', { name: 'Load older defaults' }).click();
+    const history = page.getByRole('dialog');
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    await history.getByRole('button', { name: 'Load older defaults' }).click();
     await page.locator('html').evaluate((element) => {
         element.dataset.failRestore = 'true';
     });
-    await defaults.getByRole('button', { name: /Preview historic restore from/ }).click();
+    await history.getByRole('button', { name: /Preview historic restore from/ }).click();
     await page
         .getByRole('dialog', { name: 'Confirm settings restore' })
         .getByRole('button', { name: 'Restore saved settings' })
         .click();
 
     await expect(page.getByLabel('Cloud budget ceiling (USD)')).toHaveValue('6');
-    await expect(defaults.getByRole('alert')).toContainText(
+    await expect(history.getByRole('alert')).toContainText(
         'Cannot durably persist local application state.'
     );
 });
@@ -247,4 +275,84 @@ test('browser preview states that saved defaults are nonpersistent', async ({ pa
     await expect(
         defaults.getByRole('button', { name: 'Set current saved settings as default' })
     ).toBeDisabled();
+});
+
+test('history supports keyboard paging, details, preview cancellation and backdrop dismissal', async ({
+    page,
+}) => {
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const opener = page.getByRole('button', { name: 'View past defaults' });
+    await opener.click();
+    const dialog = page.getByRole('dialog');
+    const close = dialog.getByRole('button', { name: 'Close default history' });
+    await expect(close).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(dialog.getByRole('button', { name: 'Load older defaults' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(close).toBeFocused();
+    await dialog.getByRole('button', { name: 'Load older defaults' }).focus();
+    await page.keyboard.press('Enter');
+    const historic = dialog.locator('article').last();
+    await historic.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    await expect(historic).toContainText('claude-haiku-5-5');
+    const preview = historic.getByRole('button', { name: /Preview historic restore/ });
+    await preview.focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveAccessibleName('Saved default history');
+    await expect(preview).toBeFocused();
+    await page.mouse.click(2, 2);
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
+    await opener.click();
+    await close.click();
+    await expect(opener).toBeFocused();
+});
+
+test('history scroll stays bounded at minimum window size without scrolling Settings', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 760, height: 560 });
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const defaults = page.getByRole('region', { name: 'Saved settings defaults' });
+    for (let index = 0; index < 25; index += 1) {
+        await defaults
+            .getByRole('button', { name: 'Set current saved settings as default' })
+            .click();
+    }
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    const dialog = page.getByRole('dialog');
+    const bounds = await dialog.boundingBox();
+    expect(bounds!.height).toBeLessThanOrEqual(528);
+    expect(bounds!.width).toBeLessThanOrEqual(728);
+    const scroller = dialog.getByRole('region', { name: 'Default snapshots' });
+    expect(await scroller.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+        true
+    );
+    await scroller.focus();
+    await page.keyboard.press('End');
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    const before = await page.evaluate(() => ({
+        y: window.scrollY,
+        main: document.querySelector('main')?.scrollTop,
+    }));
+    await page.mouse.move(2, 2);
+    await page.mouse.wheel(0, 600);
+    await expect
+        .poll(() =>
+            page.evaluate(() => ({
+                y: window.scrollY,
+                main: document.querySelector('main')?.scrollTop,
+            }))
+        )
+        .toEqual(before);
+    await expect(defaults.locator('.default-entry')).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Close default history' }).click();
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
 });

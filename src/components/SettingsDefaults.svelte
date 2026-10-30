@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onDestroy, onMount } from 'svelte';
+    import { onDestroy, onMount, tick } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage } from '../lib/format';
     import type {
@@ -25,6 +25,54 @@
     let busy = $state(false);
     let status = $state('');
     let error = $state('');
+    let historyOpen = $state(false);
+    let dialog: HTMLDialogElement;
+    let historyTrigger: HTMLButtonElement;
+    let restoreId: string | null = null;
+
+    function focusSnapshot() {
+        const button = Array.from(
+            dialog.querySelectorAll<HTMLButtonElement>('[data-snapshot-id]')
+        ).find((element) => element.dataset.snapshotId === restoreId);
+        button?.focus();
+    }
+
+    function mountDialog(node: HTMLDialogElement) {
+        dialog = node;
+        const overflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        node.showModal();
+        return {
+            destroy() {
+                node.close();
+                document.body.style.overflow = overflow;
+            },
+        };
+    }
+
+    async function closeHistory() {
+        if (busy) return;
+        if (preview) await cancelRestore();
+        historyOpen = false;
+        await tick();
+        historyTrigger?.focus();
+    }
+
+    function dialogKeydown(event: KeyboardEvent) {
+        if (event.key !== 'Tab') return;
+        const controls = Array.from(
+            dialog.querySelectorAll<HTMLElement>('button:not(:disabled), summary, [tabindex="0"]')
+        ).filter((element) => element.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+        }
+    }
 
     function validDate(value: number | null) {
         if (value === null || !Number.isFinite(value)) return null;
@@ -111,9 +159,12 @@
 
     async function startRestore(id: string) {
         if (!desktop) return;
+        restoreId = id;
         await perform(async () => {
             preview = await invoke<SettingsRestorePreview>('preview_settings_restore', { id });
         });
+        await tick();
+        dialog.querySelector<HTMLButtonElement>('.restore-cancel')?.focus();
     }
 
     async function cancelRestore() {
@@ -124,6 +175,8 @@
             await invoke('cancel_settings_restore', { token: pending.token });
             status = 'Restore canceled. No settings were changed.';
         });
+        await tick();
+        focusSnapshot();
     }
 
     async function confirmRestore() {
@@ -149,6 +202,8 @@
             await onrestored(effective);
             status = 'Settings restored and read back from disk.';
         });
+        await tick();
+        focusSnapshot();
     }
 
     onMount(() => void loadHistory());
@@ -172,6 +227,7 @@
                 <button
                     disabled={busy}
                     onclick={() => startRestore(entry.id)}
+                    data-snapshot-id={entry.id}
                     aria-label={current
                         ? `Rollback current saved default from ${timestamp(entry.created_at_ms)}`
                         : `Preview historic restore from ${timestamp(entry.created_at_ms)}`}
@@ -260,59 +316,115 @@
         default remains as an individual snapshot unless storage is removed outside Jitterbug.
     </p>
 
-    {#if currentDefault}
-        {@render snapshotEntry(currentDefault, true)}
-    {/if}
-    {#if desktop && !busy && entries.length === 0 && !currentDefault && !error}
-        <p class="empty compact">No saved defaults yet.</p>
-    {/if}
-    {#each entries.filter((entry) => entry.id !== currentDefault?.id) as entry (entry.id)}
-        {@render snapshotEntry(entry, false)}
-    {/each}
-    <div class="form-actions">
-        {#if !viewingLatest}
-            <button disabled={busy} onclick={() => loadHistory()}>Return to latest defaults</button>
-        {/if}
-        {#if cursor}
-            <button disabled={busy} onclick={() => loadHistory(cursor)}>Load older defaults</button>
-        {/if}
-    </div>
-    {#if status}<p class="success" role="status">{status}</p>{/if}
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    <button
+        disabled={!desktop || busy}
+        onclick={() => (historyOpen = true)}
+        aria-haspopup="dialog"
+        bind:this={historyTrigger}
+    >
+        View past defaults
+    </button>
+    {#if status && !historyOpen}<p class="success" role="status">{status}</p>{/if}
+    {#if error && !historyOpen}<p class="error" role="alert">{error}</p>{/if}
 </section>
 
-{#if preview}
-    <div class="modal-backdrop" role="presentation">
-        <div class="modal panel" role="dialog" aria-modal="true" aria-labelledby="restore-title">
-            <p class="eyebrow">One-time preview · expires in five minutes</p>
-            <h2 id="restore-title">Confirm settings restore</h2>
-            <p>
-                Restore the supported fields from
-                <strong>{timestamp(preview.target.created_at_ms)}</strong>? Excluded state remains
-                untouched.
-            </p>
-            {#if preview.changes.length}
-                <dl class="restore-changes">
-                    {#each preview.changes as change}
-                        <div>
-                            <dt>{change.field}</dt>
-                            <dd>{change.before} → {change.after}</dd>
-                        </div>
-                    {/each}
-                </dl>
-            {:else}
-                <p class="muted">The supported values already match this snapshot.</p>
-            {/if}
-            <p class="muted">
-                Automation, permissions, credentials, spending consumption, telemetry, processes,
-                queue state, and command authorization will not be restored.
-            </p>
-            <div class="form-actions">
-                <button disabled={busy} onclick={cancelRestore}>Cancel</button>
-                <button class="primary" disabled={busy} onclick={confirmRestore}
-                    >Restore saved settings</button
-                >
-            </div>
+{#if historyOpen}
+    <dialog
+        class="panel defaults-dialog"
+        use:mountDialog
+        aria-labelledby="defaults-dialog-title"
+        oncancel={(event) => {
+            event.preventDefault();
+            if (preview) {
+                if (!busy) void cancelRestore();
+            } else void closeHistory();
+        }}
+        onkeydown={dialogKeydown}
+        onclick={(event) => {
+            if (event.target === dialog) {
+                const rect = dialog.getBoundingClientRect();
+                if (
+                    event.clientX < rect.left ||
+                    event.clientX > rect.right ||
+                    event.clientY < rect.top ||
+                    event.clientY > rect.bottom
+                )
+                    void closeHistory();
+            }
+        }}
+    >
+        <div class="section-title">
+            <h2 id="defaults-dialog-title">
+                {preview ? 'Confirm settings restore' : 'Saved default history'}
+            </h2>
+            <button disabled={busy} onclick={closeHistory} aria-label="Close default history"
+                >Close</button
+            >
         </div>
-    </div>
+        <!-- Keyboard users must be able to scroll the bounded history region itself. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+            class="defaults-dialog-scroll"
+            role="region"
+            tabindex="0"
+            aria-label="Default snapshots"
+        >
+            {#if preview}
+                <p class="eyebrow">One-time preview · expires in five minutes</p>
+                <p>
+                    Restore the supported fields from
+                    <strong>{timestamp(preview.target.created_at_ms)}</strong>? Excluded state
+                    remains untouched.
+                </p>
+                {#if preview.changes.length}
+                    <dl class="restore-changes">
+                        {#each preview.changes as change}
+                            <div>
+                                <dt>{change.field}</dt>
+                                <dd>{change.before} → {change.after}</dd>
+                            </div>
+                        {/each}
+                    </dl>
+                {:else}
+                    <p class="muted">The supported values already match this snapshot.</p>
+                {/if}
+                <p class="muted">
+                    Automation, permissions, credentials, spending consumption, telemetry,
+                    processes, queue state, and command authorization will not be restored.
+                </p>
+                <div class="form-actions">
+                    <button class="restore-cancel" disabled={busy} onclick={cancelRestore}
+                        >Cancel</button
+                    >
+                    <button class="primary" disabled={busy} onclick={confirmRestore}
+                        >Restore saved settings</button
+                    >
+                </div>
+            {:else}
+                {#if currentDefault}
+                    {@render snapshotEntry(currentDefault, true)}
+                {/if}
+                {#if desktop && !busy && entries.length === 0 && !currentDefault && !error}
+                    <p class="empty compact">No saved defaults yet.</p>
+                {/if}
+                {#each entries.filter((entry) => entry.id !== currentDefault?.id) as entry (entry.id)}
+                    {@render snapshotEntry(entry, false)}
+                {/each}
+                <div class="form-actions">
+                    {#if !viewingLatest}
+                        <button disabled={busy} onclick={() => loadHistory()}
+                            >Return to latest defaults</button
+                        >
+                    {/if}
+                    {#if cursor}
+                        <button disabled={busy} onclick={() => loadHistory(cursor)}
+                            >Load older defaults</button
+                        >
+                    {/if}
+                </div>
+            {/if}
+            {#if status}<p class="success" role="status">{status}</p>{/if}
+            {#if error}<p class="error" role="alert">{error}</p>{/if}
+        </div>
+    </dialog>
 {/if}

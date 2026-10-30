@@ -1426,3 +1426,34 @@ summary:focus-visible {
         filter: brightness(0.7);
     }
 }
+
+.defaults-dialog {
+    width: min(560px, calc(100vw - 32px));
+    max-width: none;
+    max-height: min(600px, calc(100dvh - 32px));
+    box-sizing: border-box;
+    padding: 20px;
+    color: var(--text);
+    overflow: hidden;
+}
+.defaults-dialog[open] {
+    display: flex;
+    flex-direction: column;
+}
+.defaults-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+}
+.defaults-dialog > .section-title {
+    flex-shrink: 0;
+    gap: 16px;
+}
+.defaults-dialog-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    min-height: 0;
+    scrollbar-gutter: stable;
+}
+.defaults-dialog .default-entry-heading,
+.defaults-dialog .default-entry-heading > div {
+    flex-wrap: wrap;
+}
