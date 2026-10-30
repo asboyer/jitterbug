@@ -1,5 +1,11 @@
 import { demoWorkflow, demoCompletedWorkflow, demoUnobservedWorkflow } from './demo-workflow';
-import type { AutomationCase, Bootstrap, Snapshot, WorkloadDetails } from './types';
+import type {
+    ActionPopupCase,
+    AutomationCase,
+    Bootstrap,
+    Snapshot,
+    WorkloadDetails,
+} from './types';
 
 export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
     const workload = snapshot.workloads.find((w) => w.id === id)!;
@@ -183,6 +189,9 @@ export const demoBootstrap: Bootstrap = {
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,
             rules: [],
+            jitter_mode: 'auto',
+            action_popups: true,
+            auto_snapshots: false,
         },
     },
     automation_cases: [],
@@ -236,8 +245,90 @@ export function demoIncidents(): AutomationCase[] {
         verification: null,
         automatic: false,
     };
+    const press = snapshot.captured_at - 300;
+    const builder = { ...snapshot.processes[0], pid: 9100, name: 'example-bundler' };
+    const snapshotCase: AutomationCase = {
+        ...base,
+        id: -3,
+        origin: 'snapshot',
+        detected_at: press,
+        stage: 'completed',
+        trigger: {
+            key: 'demo-snapshot',
+            kind: 'user_reported',
+            title: 'Jitter Snapshot',
+            reason: 'Synthetic example.',
+            target: { workload_id: 'demo-project', label: 'sample-web-app', pid: null },
+        },
+        proposal: null,
+        evidence: null,
+        diagnosis: {
+            ...base.diagnosis!,
+            text: 'Synthetic explanation: a bundler rebuild saturated one core while you typed in the example editor. This is not a diagnosis of this device.',
+        },
+        steps: [
+            {
+                at: press,
+                stage: 'detected',
+                message: 'Example snapshot. No samples were collected on this device.',
+            },
+            {
+                at: press + 12,
+                stage: 'completed',
+                message: 'Example analysis complete. Nothing has been changed.',
+            },
+        ],
+        jitter: {
+            origin: 'snapshot',
+            press_at_ms: press * 1000,
+            forward_only: false,
+            window: [-60, 10],
+            suspect: [-15, 10],
+            timeline: Array.from({ length: 71 }, (_, index) => {
+                const offset = index - 60;
+                const busy = offset >= -6 && offset <= 3;
+                return {
+                    offset_s: offset,
+                    cpu_percent: busy ? 21 : 9 + Math.sin(index / 4) * 2,
+                    core_max: busy ? 100 : 28 + Math.sin(index / 3) * 8,
+                    lag_ms: busy ? 4 : 1,
+                    paging_mib_s: 0,
+                };
+            }),
+            findings: [
+                {
+                    kind: 'core_pegged',
+                    strength: 'strong',
+                    title: 'sample-web-app saturated one core',
+                    observed: [
+                        'A CPU core stayed at or near 100% for 10 s starting −6s, while whole-machine CPU averaged 21%.',
+                        'sample-web-app (example-bundler) averaged 99% of one core in that run.',
+                    ],
+                    inferred:
+                        'Single-threaded work cannot use the other cores, so anything waiting on that thread stalls even when total CPU looks low.',
+                    workload_id: 'demo-project',
+                    label: 'sample-web-app',
+                    category: 'project',
+                },
+            ],
+            victim: { workload_id: 'demo-browser', label: 'Example Editor', category: 'app' },
+            culprit: { workload_id: 'demo-project', label: 'sample-web-app', category: 'project' },
+            happened:
+                'A CPU core stayed at or near 100% for 10 s starting −6s, while whole-machine CPU averaged 21%.',
+            likely_cause:
+                'Single-threaded work cannot use the other cores, so anything waiting on that thread stalls even when total CPU looks low.',
+            in_app: { action: 'lower_priority', process: builder, label: 'sample-web-app' },
+            manual: 'If sample-web-app is not urgent, pause or quit it while you work in Example Editor.',
+            if_again:
+                'Press ⌘⇧J the moment it happens. Jitterbug keeps the last 60 seconds of one-second samples in memory only.',
+            recurrence: 1,
+            offer_permission: false,
+            limits: 'Synthetic example. GPU, display, disk, and network activity are not measured.',
+        },
+    };
     return [
         base,
+        snapshotCase,
         {
             ...base,
             id: -2,
@@ -260,4 +351,51 @@ export function demoIncidents(): AutomationCase[] {
             ],
         },
     ];
+}
+
+/** Synthetic out-of-app popup, trimmed exactly like the desktop payload. Nothing is applied. */
+export function demoActionPopup(): ActionPopupCase {
+    const incident = demoIncidents()[0];
+    const label = incident.trigger.target?.label ?? 'the app';
+    const source = incident.proposal?.process;
+    const process = source && {
+        name: source.name,
+        cpu_percent: source.cpu_percent,
+        memory_bytes: source.memory_bytes,
+    };
+    // The fixture incident carries no evidence block; describe a plausible three-process app.
+    const impact = process && {
+        label,
+        workload_cpu_percent: incident.evidence?.cpu_percent ?? process.cpu_percent + 6,
+        workload_memory_bytes: incident.evidence?.memory_bytes ?? process.memory_bytes * 1.5,
+        process_count: incident.evidence?.process_count ?? 3,
+        whole_app: false,
+    };
+    return {
+        kind: 'case',
+        id: incident.id,
+        source: 'demo',
+        stage: 'awaiting_approval',
+        trigger: {
+            kind: incident.trigger.kind,
+            title: incident.trigger.title,
+            target: incident.trigger.target && { label: incident.trigger.target.label },
+        },
+        proposal: process
+            ? { action: 'lower_priority', process, impact: impact ?? null, closes: null }
+            : null,
+        alternative: process
+            ? {
+                  action: 'terminate',
+                  process,
+                  impact: impact ? { ...impact, whole_app: true } : null,
+                  closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
+              }
+            : null,
+        report: null,
+        verification: null,
+        origin: 'automatic',
+        jitter: null,
+        more: 1,
+    };
 }

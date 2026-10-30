@@ -38,6 +38,27 @@ pub fn app_unresponsive(pid: u32) -> Option<bool> {
     }
 }
 
+/// Cumulative kernel paging counters in bytes. Unavailable outside macOS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VmCounters {
+    pub swap_in: u64,
+    pub swap_out: u64,
+    pub page_in: u64,
+    pub compressed: u64,
+    pub decompressed: u64,
+}
+
+pub fn vm_counters() -> Option<VmCounters> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::vm_counters()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 pub fn responsible_pid(pid: u32) -> Option<u32> {
     #[cfg(target_os = "macos")]
     {
@@ -47,6 +68,44 @@ pub fn responsible_pid(pid: u32) -> Option<u32> {
     {
         let _ = pid;
         None
+    }
+}
+
+/// Native per-process CPU time for the pulse sampler (nanoseconds), checked against start time.
+/// `None` means unavailable; callers fall back to sysinfo outside macOS.
+#[cfg(target_os = "macos")]
+pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
+    macos::process_cpu_ns(pid, start_time)
+}
+
+/// PID and display name of the foreground application, when the OS exposes one.
+pub fn frontmost() -> Option<(u32, Option<String>)> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::frontmost()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::frontmost()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+/// Holds an OS activity assertion while a latency-sensitive sampler runs (macOS App Nap).
+pub struct Activity {
+    #[cfg(target_os = "macos")]
+    _token: macos::Activity,
+}
+
+impl Activity {
+    pub fn begin() -> Self {
+        Self {
+            #[cfg(target_os = "macos")]
+            _token: macos::Activity::begin(),
+        }
     }
 }
 

@@ -117,6 +117,56 @@ Use **Settings** to change limits, disable model analysis or automation, and rem
 
 Automatic process changes currently work on **macOS only**. Windows can detect, investigate, and display evidence, but has no native action adapter yet. This is workload reprioritization, not moving arbitrary running work between machines.
 
+## Jitter Snapshot
+
+Felt a hitch? Press **⌘⇧J** (Ctrl+Shift+J on Windows), choose **Jitter Snapshot** from the
+menu-bar menu, or use the quick view button. Jitterbug records the app in front (the
+**victim**), keeps sampling for 10 seconds, then freezes the window from 60 seconds before
+to 10 seconds after the press. The case shows a one-second timeline with your press and the
+suspect window (−15 s to +10 s against a −60 s to −15 s baseline), then **What happened**,
+**Likely cause**, **What you can do**, and **If it happens again**.
+
+- **Signals:** a separate one-second pulse sampler reads per-core CPU, the 16 busiest
+  processes from the last full sample, system swap/compressor/page-in counters, OS memory
+  pressure, thermal state, and how late a 10 ms sleep wakes up (scheduler delay). It keeps
+  120 samples in memory only. The five-second collector is unchanged. GPU, display, disk,
+  and network activity are not measured, and processes owned by other users have no
+  per-process CPU without privileges.
+- **Findings** are deterministic, labeled observed or inferred, and rated strong, possible,
+  or unexplained: a process spike (at least 3× baseline and over 25% of one core), one
+  saturated core even when total CPU is low, memory paging with rising pressure, thermal
+  escalation, scheduler delay with no visible cause, or nothing found.
+- **Victim vs culprit:** actions target culprits only. If the app in front was itself busy,
+  the case says it was limited by its own work. CPU culprits can get **Lower priority**;
+  strong memory findings can offer **Stop process** only where actions are already
+  permitted. Priority is never suggested as a memory fix. The model only explains the
+  findings and cannot add actions. Its request includes the victim and culprit app names and
+  the bounded findings; project labels, paths, and PIDs stay local.
+- **Always your approval:** snapshot and short-hitch cases never auto-apply, even with a
+  saved workload permission. A manual snapshot bypasses the automatic cooldown and hourly
+  cap and runs even when automatic assistance is off or paused; one-request-at-a-time,
+  privacy modes, and spending limits still apply. Verification is an OS priority readback;
+  current CPU says nothing about a past spike.
+- **Recurrence:** a private tally in the app-data directory (`jitter-tally.json`) keeps up
+  to 50 workload names with counts, no paths. When a workload appears in three of your last
+  six snapshots, its review offers the existing per-workload lower-priority permission.
+  Clear it in **Settings**.
+- **Modes (Settings → Automatic assistance):** **Auto** (default) samples continuously and
+  also opens a **Short hitch** case when scheduler delay lasts three seconds, or a saturated
+  core coincides with delay, subject to the same pause, global gap, per-reason cooldown, and
+  hourly cap as sustained incidents. **Snapshot only** runs no background sampler; a press
+  records the next 15 seconds and compares against five-second workload history.
+
+Measured cost of Auto mode on an 8-core Apple silicon Mac (120 s, release build): about
+0.06% of one core (0.07% in a debug build), +0.4 MiB resident, about two wakeups per second
+(tick plus probe), and 0.5 ms of work per tick. While sampling, Jitterbug holds a macOS activity assertion so
+App Nap timer coalescing is not misread as scheduler delay; this keeps the process from
+napping (idle system sleep is still allowed). Snapshot only avoids that cost. The global
+shortcut is registered from Rust; the webview has no shortcut permission. Another app that
+already owns ⌘⇧J keeps it, and the menu-bar and quick-view triggers still work.
+
+See the [jitter lab](docs/jitter-lab.md) for reproducible loads and the headless probe.
+
 ## Registered agent workflows
 
 Heavy validation can now use a [shared validation queue](docs/validation-queue.md):
@@ -210,6 +260,9 @@ src-tauri/src/
   pressure.rs           sustained incidents and local-inference resource gates
   platform/             native OS adapters (macOS readings; explicit Windows gaps)
   automation.rs         sustained thresholds, anomaly detection, permissions, verification
+  pulse.rs              one-second in-memory sampler and scheduler-delay probe
+  jitter.rs             deterministic Jitter Snapshot findings, victim/culprit, recurrence tally
+  capture.rs            global shortcut, snapshot triggers, and hand-off to the runtime
   supervisor.rs         background investigation → proposal → action → measurement
   actions.rs            native process-action validation and OS priority verification
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
@@ -217,6 +270,7 @@ src-tauri/src/
   budget.rs             locked, persistent pre-request spending reservations
   storage.rs            private local settings and ledger writes
   desktop.rs            template tray icon, native quick-view window, visibility-aware events
+  popup.rs              out-of-app approval popup: display decision, non-activating window
   lib.rs                Tauri IPC, background sampler, lifecycle
 ```
 
@@ -321,6 +375,20 @@ New sustained incidents surface a compact “Hey, I noticed…” prompt across 
 replacing the selected task. The native window is shown and requests attention when unfocused;
 Later leaves the incident in Inbox and suppresses repeats for that case. The existing sustained
 sample, cooldown, snooze, and hourly-budget rules still control detection.
+
+When a suggestion needs approval while you are in another app, a small **action popup** appears at
+the top right of the display under the pointer, on every Space and over full-screen apps, without
+taking focus. It shows the same title, observation, and proposed change as the in-app review, with
+**Apply once & measure**, **Allow for this workload & apply**, **Details**, and **Later**. Buttons
+call the existing approval commands, so every identity, ownership, trigger, and permission recheck
+still applies. After approval it follows progress and verification, then hides about 8 seconds after
+the result (pointing at it keeps it open); Escape acts as Later. Only one popup shows at a time: the
+newest request, with a “+N more” count. It stays hidden while the main window is focused, for cases
+you chose Later on (in the popup or in-app), while automation is paused, and when **Settings →
+Show action popups over other apps** is off. The payload carries no paths, PIDs, or evidence.
+**Demo & testing → Preview action popup** shows a synthetic request after 5 seconds, giving you time
+to switch apps; its apply flow is played locally and nothing is changed. The browser preview renders
+the same component at `?view=popup`.
 
 In the demo, **See Jitterbug step in** exercises the real native monitor with three in-memory synthetic
 samples (the browser preview uses fixtures). Investigation and proposal stages are explicitly

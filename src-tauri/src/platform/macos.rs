@@ -1,6 +1,9 @@
 use super::memory::{account, VmPages};
 use crate::types::{MemoryBreakdown, PlatformReadings};
-use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_foundation::{
+    NSActivityOptions, NSObjectProtocol, NSProcessInfo, NSProcessInfoThermalState, NSString,
+};
 use std::{mem, sync::OnceLock};
 
 // Optional private, read-only OS signals. Resolve at runtime so an OS change yields
@@ -57,7 +60,7 @@ pub fn responsible_pid(pid: u32) -> Option<u32> {
     (owner > 1 && owner as u32 != pid).then_some(owner as u32)
 }
 
-fn memory() -> Option<MemoryBreakdown> {
+fn statistics() -> Option<libc::vm_statistics64> {
     // Keep one host send right for this process, rather than leaking one each sample.
     static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();
     #[allow(deprecated)] // libc exposes the stable Mach host API; no extra runtime is needed.
@@ -78,6 +81,11 @@ fn memory() -> Option<MemoryBreakdown> {
     if result != libc::KERN_SUCCESS || count < requested {
         return None;
     }
+    Some(stats)
+}
+
+fn memory() -> Option<MemoryBreakdown> {
+    let stats = statistics()?;
     account(
         VmPages {
             active: stats.active_count.into(),
@@ -133,5 +141,95 @@ pub fn readings() -> PlatformReadings {
         thermal: Some(thermal.into()),
         process_actions: true,
         memory: memory(),
+    }
+}
+
+/// Cumulative VM counters for the one-second pulse sampler. Only deltas are meaningful.
+pub fn vm_counters() -> Option<super::VmCounters> {
+    let stats = statistics()?;
+    let page = unsafe { libc::vm_page_size } as u64;
+    Some(super::VmCounters {
+        swap_in: stats.swapins.checked_mul(page)?,
+        swap_out: stats.swapouts.checked_mul(page)?,
+        page_in: stats.pageins.checked_mul(page)?,
+        compressed: stats.compressions.checked_mul(page)?,
+        decompressed: stats.decompressions.checked_mul(page)?,
+    })
+}
+
+/// Total CPU time of one process in nanoseconds, only while its start time still matches.
+/// Two `proc_pidinfo` calls; processes owned by other users are unavailable without privileges.
+#[allow(deprecated)] // Stable Mach timebase API; task times are in Mach ticks on Apple silicon.
+pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
+    static TIMEBASE: OnceLock<(u64, u64)> = OnceLock::new();
+    let (numer, denom) = *TIMEBASE.get_or_init(|| {
+        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+        let ok = unsafe { libc::mach_timebase_info(&mut info) } == libc::KERN_SUCCESS;
+        if ok && info.denom > 0 {
+            (info.numer as u64, info.denom as u64)
+        } else {
+            (1, 1)
+        }
+    });
+    let mut bsd: libc::proc_bsdinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut bsd as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if read != size || bsd.pbi_start_tvsec != start_time {
+        return None;
+    }
+    let mut task: libc::proc_taskinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&mut task as *mut libc::proc_taskinfo).cast(),
+            size,
+        )
+    };
+    if read != size {
+        return None;
+    }
+    let ticks = task.pti_total_user.saturating_add(task.pti_total_system) as u128;
+    u64::try_from(ticks * numer as u128 / denom as u128).ok()
+}
+
+/// The app the user is looking at. NSRunningApplication properties are safe to read off-main.
+pub fn frontmost() -> Option<(u32, Option<String>)> {
+    let app = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let pid = u32::try_from(app.processIdentifier()).ok()?;
+    Some((pid, app.localizedName().map(|name| name.to_string())))
+}
+
+/// Keeps App Nap from coalescing the pulse timers while sampling. The display and system may
+/// still sleep. Ends automatically when dropped on the sampler thread.
+pub struct Activity(Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>);
+
+impl Activity {
+    pub fn begin() -> Self {
+        let reason = NSString::from_str("Measuring short scheduling delays for Jitter Snapshot");
+        Self(Some(
+            NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+                NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+                &reason,
+            ),
+        ))
+    }
+}
+
+impl Drop for Activity {
+    fn drop(&mut self) {
+        if let Some(token) = self.0.take() {
+            unsafe { NSProcessInfo::processInfo().endActivity(&token) };
+        }
     }
 }

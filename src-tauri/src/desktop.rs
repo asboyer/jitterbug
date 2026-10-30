@@ -115,9 +115,16 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
         _ => (),
     });
     let show = MenuItem::with_id(app, "show", "Open Jitterbug", true, None::<&str>)?;
+    let snapshot = MenuItem::with_id(
+        app,
+        "jitter-snapshot",
+        "Jitter Snapshot",
+        true,
+        None::<&str>,
+    )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Jitterbug", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &snapshot, &settings, &quit])?;
     TrayIconBuilder::with_id("jitterbug")
         .icon(template_icon())
         .icon_as_template(true)
@@ -130,6 +137,9 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
             }
             "settings" => {
                 let _ = open_main(app.clone(), "settings".into(), None);
+            }
+            "jitter-snapshot" => {
+                let _ = crate::capture::trigger(app);
             }
             "quit" => app.exit(0),
             _ => (),
@@ -183,12 +193,16 @@ fn toggle(app: &tauri::AppHandle) -> tauri::Result<()> {
                     .radius(10.0)
                     .build(),
             );
-            builder.build()?
+            let window = builder.build()?;
+            crate::floating::prepare(&window);
+            window
         }
     };
     position_quick_view(app, &window)?;
-    window.show()?;
-    window.set_focus()?;
+    // The quick view's snapshot button should treat the previous app as the victim.
+    crate::capture::remember_frontmost(app);
+    // Opens over the current app, including a full-screen one, without switching Spaces.
+    crate::floating::show(&window, true)?;
     let state = app.state::<AppState>();
     if let Ok(snapshot) = state.snapshot.read() {
         let _ = window.emit("telemetry", snapshot.quick_view());

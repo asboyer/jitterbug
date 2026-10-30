@@ -1,8 +1,8 @@
 //! Native incident lifecycle. It continues while the window is hidden; models cannot execute tools.
 use crate::{
     actions,
-    automation::{self, Case, Monitor, Policy, Rule, Stage},
-    budget, details, profiles, providers, settings, storage,
+    automation::{self, Case, Monitor, Origin, Policy, Rule, Stage},
+    budget, details, jitter, profiles, providers, settings, storage,
     types::*,
 };
 use std::{
@@ -19,6 +19,25 @@ struct Book {
     monitor: Monitor,
     cases: VecDeque<Case>,
     sequence: u64,
+}
+
+/// Triggers about the same workload within this window form one incident.
+const MERGE_SECONDS: u64 = 300;
+
+/// An open or recent case about the same workload.
+fn related(cases: &VecDeque<Case>, workload: Option<&str>, at: u64) -> Option<u64> {
+    let workload = workload?;
+    cases
+        .iter()
+        .find(|c| {
+            c.stage != Stage::Dismissed
+                && at.saturating_sub(c.detected_at) <= MERGE_SECONDS
+                && c.trigger
+                    .target
+                    .as_ref()
+                    .is_some_and(|t| t.workload_id == workload)
+        })
+        .map(|c| c.id)
 }
 
 pub struct Runtime {
@@ -167,9 +186,14 @@ impl Runtime {
             .clone())
     }
     fn enabled(&self, id: u64) -> Result<bool, String> {
+        let case = self.case(id)?;
+        // A manual snapshot is an explicit request: it runs even when automation is off or paused.
+        if case.origin == Origin::Snapshot {
+            return Ok(case.stage != Stage::Dismissed);
+        }
         Ok(self.policy()?.enabled
             && self.snoozed_until()? <= now()
-            && self.case(id)?.stage != Stage::Dismissed)
+            && case.stage != Stage::Dismissed)
     }
     pub fn observe(&self, sample: &Snapshot) -> Result<Option<u64>, String> {
         *self
@@ -192,7 +216,9 @@ impl Runtime {
                         .and_then(|t| sample.workloads.iter().find(|w| w.id == t.workload_id))
                         .is_some_and(|w| w.unresponsive == Some(false)));
             if recovered
-                && matches!(case.stage, Stage::Completed | Stage::Blocked)
+                // An unanswered stop offer is withdrawn too; nothing has been applied yet.
+                && (matches!(case.stage, Stage::Completed | Stage::Blocked)
+                    || (case.stage == Stage::AwaitingApproval && case.proposal.is_none()))
                 && sample.sample_ready
                 && sample.captured_at.saturating_add(20) >= now()
                 && !automation::still_present(sample, &policy, &case.trigger)
@@ -201,7 +227,8 @@ impl Runtime {
                     c.transition(
                         Stage::Resolved,
                         "The observed problem has cleared. No process changes were needed.",
-                    )
+                    );
+                    c.alternative = None;
                 })?;
             }
         }
@@ -214,6 +241,21 @@ impl Runtime {
             let Some(trigger) = book.monitor.observe(sample, &policy, busy) else {
                 return Ok(None);
             };
+            let workload = trigger.target.as_ref().map(|t| t.workload_id.as_str());
+            if let Some(id) = related(&book.cases, workload, sample.captured_at) {
+                // Same workload, same incident: add to the existing card instead of a second one.
+                let Some(case) = book.cases.iter_mut().find(|c| c.id == id) else {
+                    return Ok(None);
+                };
+                case.note(&format!(
+                    "Automatic monitoring also flagged this: {}",
+                    trigger.reason
+                ));
+                let changed = case.clone();
+                drop(book);
+                (self.publish)(changed);
+                return Ok(None);
+            }
             book.sequence += 1;
             let id = now().saturating_mul(1000).saturating_add(book.sequence);
             let case = Case::new(id, sample, trigger);
@@ -223,6 +265,171 @@ impl Runtime {
         };
         (self.publish)(case.clone());
         Ok(Some(case.id))
+    }
+    /// Open a case for a user's Jitter Snapshot. It bypasses the monitor's cooldown and hourly
+    /// cap because the user asked, but inference, mode, and spending limits still apply.
+    /// When a recent case already covers the culprit, the snapshot joins that case instead.
+    /// Returns the case and whether it needs a (new) investigation run.
+    pub fn report(
+        &self,
+        capture: jitter::Capture,
+        tally: &mut jitter::Tally,
+    ) -> Result<(u64, bool), String> {
+        let report = {
+            let snapshot = self.snapshot.read().map_err(|_| "Telemetry unavailable.")?;
+            if snapshot.source != "live" || !snapshot.sample_ready {
+                return Err("Wait for live telemetry before taking a Jitter Snapshot.".into());
+            }
+            let mut report = jitter::analyze(&capture, &snapshot);
+            tally.record(report.implicated().as_deref(), now());
+            // The tally is a convenience; failing to persist it never loses the snapshot.
+            let _ = tally.save(&self.directory);
+            report.apply_recurrence(tally);
+            report
+        };
+        let culprit = report.culprit.as_ref().and_then(|c| c.workload_id.clone());
+        let merged = {
+            let mut book = self
+                .book
+                .lock()
+                .map_err(|_| "Incident state unavailable.")?;
+            related(&book.cases, culprit.as_deref(), now()).and_then(|id| {
+                let case = book.cases.iter_mut().find(|c| c.id == id)?;
+                case.jitter = Some(report.clone());
+                case.origin = Origin::Snapshot;
+                // A finished case is analyzed again with your snapshot; a live one keeps going.
+                let rerun = matches!(
+                    case.stage,
+                    Stage::Completed | Stage::Resolved | Stage::Blocked
+                );
+                if rerun {
+                    case.proposal = None;
+                    case.transition(
+                        Stage::Detected,
+                        "You took a Jitter Snapshot of this incident; analyzing it next.",
+                    );
+                } else {
+                    case.note("You took a Jitter Snapshot; it was added to this incident.");
+                }
+                Some((case.clone(), rerun))
+            })
+        };
+        if let Some((case, rerun)) = merged {
+            (self.publish)(case.clone());
+            return Ok((case.id, rerun));
+        }
+        Ok((self.open_capture_case(report, Origin::Snapshot)?.id, true))
+    }
+    /// Attach the automatic snapshot taken when the monitor opened this case.
+    pub fn attach_snapshot(&self, id: u64, capture: jitter::Capture) -> Result<(), String> {
+        let report = {
+            let snapshot = self.snapshot.read().map_err(|_| "Telemetry unavailable.")?;
+            jitter::analyze(&capture, &snapshot)
+        };
+        self.update(id, |c| {
+            c.jitter = Some(report);
+            c.note("Captured a snapshot of the surrounding one-second samples.");
+        })?;
+        Ok(())
+    }
+    /// Open a case for an Auto-mode short spike, under the monitor's automatic limits. Spikes
+    /// without a measured finding are dropped silently.
+    pub fn spike(&self, capture: jitter::Capture) -> Result<Option<u64>, String> {
+        if !self.policy()?.auto_snapshots {
+            return Ok(None);
+        }
+        let report = {
+            let snapshot = self.snapshot.read().map_err(|_| "Telemetry unavailable.")?;
+            if snapshot.source != "live" || !snapshot.sample_ready {
+                return Ok(None);
+            }
+            jitter::analyze(&capture, &snapshot)
+        };
+        if report.findings.iter().all(|f| {
+            matches!(
+                f.kind,
+                jitter::FindingKind::NothingFound | jitter::FindingKind::SchedulerLag
+            )
+        }) {
+            return Ok(None);
+        }
+        let key = format!("spike:{:?}", report.findings[0].kind);
+        let policy = self.policy()?;
+        let culprit = report.culprit.as_ref().and_then(|c| c.workload_id.clone());
+        {
+            let mut book = self
+                .book
+                .lock()
+                .map_err(|_| "Incident state unavailable.")?;
+            if related(&book.cases, culprit.as_deref(), now()).is_some() {
+                return Ok(None);
+            }
+            let busy = book.cases.iter().any(|c| c.stage.running());
+            if !book.monitor.admit(&key, now(), &policy, busy) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(self.open_capture_case(report, Origin::Spike)?.id))
+    }
+    fn open_capture_case(&self, report: jitter::Report, origin: Origin) -> Result<Case, String> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .clone();
+        let target = report.culprit.as_ref().and_then(|c| {
+            Some(crate::diagnostics::Target {
+                workload_id: c.workload_id.clone()?,
+                label: c.label.clone(),
+                pid: None,
+            })
+        });
+        let snapshot_case = origin == Origin::Snapshot;
+        let trigger = automation::Trigger {
+            key: format!(
+                "{}:{}",
+                if snapshot_case { "snapshot" } else { "spike" },
+                report.press_at_ms
+            ),
+            kind: if snapshot_case {
+                automation::Kind::UserReported
+            } else {
+                automation::Kind::ShortSpike
+            },
+            title: if snapshot_case {
+                "Jitter Snapshot".into()
+            } else {
+                "Short hitch detected".into()
+            },
+            reason: report.happened.clone(),
+            target,
+            cpu_floor_percent: None,
+            memory_floor_bytes: None,
+        };
+        let case = {
+            let mut book = self
+                .book
+                .lock()
+                .map_err(|_| "Incident state unavailable.")?;
+            book.sequence += 1;
+            let id = now().saturating_mul(1000).saturating_add(book.sequence);
+            let mut case = Case::new(id, &snapshot, trigger);
+            case.origin = origin;
+            case.detected_at = report.press_at_ms / 1000;
+            if let Some(step) = case.steps.first_mut() {
+                step.message = if snapshot_case {
+                    "Captured. The surrounding one-second samples were analyzed with local rules; analyzing the findings next.".into()
+                } else {
+                    "A sustained short hitch was detected in the one-second samples and analyzed with local rules.".into()
+                };
+            }
+            case.jitter = Some(report);
+            book.cases.push_front(case.clone());
+            book.cases.truncate(12);
+            case
+        };
+        (self.publish)(case.clone());
+        Ok(case)
     }
     pub fn save_policy(&self, policy: Policy) -> Result<(), String> {
         policy.validate()?;
@@ -289,7 +496,13 @@ impl Runtime {
         Ok(())
     }
     pub async fn run(self: &Arc<Self>, id: u64) {
-        if let Err(error) = self.investigate(id).await {
+        let capture = self.case(id).is_ok_and(|c| c.origin != Origin::Automatic);
+        let result = if capture {
+            self.investigate_capture(id).await
+        } else {
+            self.investigate(id).await
+        };
+        if let Err(error) = result {
             let _ = self.update(id, |case| case.transition(Stage::Blocked, &error));
         }
     }
@@ -340,7 +553,7 @@ impl Runtime {
             };
             let reply = self
                 .engine
-                .chat(
+                .chat_with_capture(
                     &settings,
                     &snapshot,
                     vec![providers::ChatMessage {
@@ -354,6 +567,7 @@ impl Runtime {
                         "rules"
                     },
                     None,
+                    case.jitter.as_ref().map(|j| j.model_context()),
                 )
                 .await?;
             self.update(id, |c| {
@@ -371,23 +585,147 @@ impl Runtime {
             self.update(id, |c| c.transition(Stage::Resolved, "The resource trigger cleared during investigation. No optimization was applied."))?;
             return Ok(());
         }
-        let Some(proposal) = automation::proposal(&snapshot, &case.trigger) else {
-            self.update(id, |c| c.transition(Stage::Completed, "Investigation complete. No supported priority adjustment fits this incident. Review the diagnosis; memory problems and protected processes need a different intervention."))?;
-            return Ok(());
-        };
-        if actions::priority(proposal.process.pid, proposal.process.start_time)
-            .is_ok_and(|priority| priority >= 10)
-        {
-            self.update(id, |c| c.transition(Stage::Completed, "The busy process already has reduced scheduling priority. No repeated change was applied."))?;
+        // An already-lowered process gets no repeated change.
+        let proposal = automation::proposal(&snapshot, &case.trigger).filter(|p| {
+            !actions::priority(p.process.pid, p.process.start_time).is_ok_and(|n| n >= 10)
+        });
+        let alternative = case
+            .trigger
+            .target
+            .as_ref()
+            .and_then(|t| automation::stop_option(&snapshot, &t.workload_id));
+        if proposal.is_none() && alternative.is_none() {
+            self.update(id, |c| c.transition(Stage::Completed, "Investigation complete. No supported change fits this incident. Review the diagnosis; protected processes and app helpers need a different intervention."))?;
             return Ok(());
         }
-        let automatic = policy.allows(&proposal);
-        self.update(id, |c| { c.proposal = Some(proposal); c.transition(Stage::AwaitingApproval,
+        let automatic = proposal.as_ref().is_some_and(|p| policy.allows(p));
+        self.update(id, |c| { c.proposal = proposal; c.alternative = alternative; c.transition(Stage::AwaitingApproval,
             if automatic { "This workload has permission for automatic priority changes. Rechecking live evidence before acting." }
-            else { "A priority adjustment is available. Approve it once, or allow future automatic priority changes for this workload." }); })?;
+            else { "A change is available. Approve it once, or allow future automatic priority changes for this workload." }); })?;
         if automatic {
             self.apply(id, false, false).await?;
         }
+        Ok(())
+    }
+    /// Snapshot and spike cases describe a past moment: no trigger recheck, and they always stop
+    /// at approval. The model explains the deterministic findings and cannot add actions.
+    async fn investigate_capture(self: &Arc<Self>, id: u64) -> Result<(), String> {
+        if !self.enabled(id)? {
+            return Ok(());
+        }
+        let claimed = {
+            let mut book = self
+                .book
+                .lock()
+                .map_err(|_| "Incident state unavailable.")?;
+            let case = book
+                .cases
+                .iter_mut()
+                .find(|c| c.id == id)
+                .ok_or("Incident unavailable.")?;
+            if case.stage != Stage::Detected {
+                return Ok(());
+            }
+            case.transition(Stage::Investigating, "Asking the intelligent tier to explain the findings. One inference request runs at a time.");
+            case.clone()
+        };
+        (self.publish)(claimed);
+        let report = self
+            .case(id)?
+            .jitter
+            .ok_or("Snapshot evidence unavailable.")?;
+        {
+            let _guard = tokio::time::timeout(Duration::from_secs(50), self.inference.lock())
+                .await
+                .map_err(|_| {
+                    "The model was busy. The local findings are still shown; no action was started."
+                })?;
+            if !self.enabled(id)? {
+                return Ok(());
+            }
+            let snapshot = self.snapshot()?;
+            let settings = self
+                .settings
+                .lock()
+                .map_err(|_| "Settings unavailable.")?
+                .clone();
+            let case = self.case(id)?;
+            let target = case.trigger.target.as_ref().map(|t| t.workload_id.as_str());
+            let question = if target.is_some() {
+                "Investigate this selected workload around a Jitter Snapshot. Explain the supplied jitter_capture findings in plain language: what happened, the likely cause, and what the user could try. Keep the frontmost app (victim) separate from culprits. No action has been applied."
+            } else {
+                "Explain this Jitter Snapshot of my computer using the supplied jitter_capture findings: what happened, the likely cause, and what the user could try. No action has been applied."
+            };
+            // Manual snapshots always ask; automatic spikes respect the model-analysis setting.
+            let tier = if case.origin == Origin::Snapshot || settings.automation.model_analysis {
+                "intelligent"
+            } else {
+                "rules"
+            };
+            let mut reply = self
+                .engine
+                .chat_with_capture(
+                    &settings,
+                    &snapshot,
+                    vec![providers::ChatMessage {
+                        role: "user".into(),
+                        content: question.into(),
+                    }],
+                    target,
+                    tier,
+                    None,
+                    Some(report.model_context()),
+                )
+                .await?;
+            if reply.source != "model" {
+                reply.text = report.text();
+            }
+            self.update(id, |c| {
+                c.evidence = reply.investigation.clone().or(c.evidence.clone());
+                c.diagnosis = Some(reply);
+            })?;
+        }
+        if !self.enabled(id)? {
+            return Ok(());
+        }
+        let snapshot = self.snapshot()?;
+        let proposal = report.in_app.as_ref().filter(|s| s.action == "lower_priority").and_then(|s| {
+            // Re-resolve against fresh identity; the suggestion itself never authorizes anything.
+            let process = snapshot.processes.iter().find(|p| {
+                p.pid == s.process.pid
+                    && p.start_time == s.process.start_time
+                    && p.workload_id == s.process.workload_id
+                    && p.actions.iter().any(|a| a == "lower_priority")
+            })?;
+            Some(automation::Proposal {
+                impact: automation::impact(&snapshot, process),
+                process: process.clone(),
+                action: "lower_priority".into(),
+                rationale: "Give the app you were using scheduling preference over this workload the next time they compete. This does not free memory, and a lower priority stays until the process exits.".into(),
+            })
+        });
+        // An already-lowered culprit gets no repeated change.
+        let proposal = proposal.filter(|p| {
+            !actions::priority(p.process.pid, p.process.start_time).is_ok_and(|n| n >= 10)
+        });
+        let alternative = report
+            .culprit
+            .as_ref()
+            .and_then(|c| c.workload_id.as_deref())
+            .and_then(|workload| automation::stop_option(&snapshot, workload));
+        if proposal.is_none() && alternative.is_none() {
+            self.update(id, |c| c.transition(Stage::Completed, "Analysis complete. No in-app change fits these findings; review the suggestions."))?;
+            return Ok(());
+        }
+        // Never auto-applied, even when this workload has a saved permission.
+        self.update(id, |c| {
+            c.proposal = proposal;
+            c.alternative = alternative;
+            c.transition(
+                Stage::AwaitingApproval,
+                "A change is available for the culprit. It needs your approval.",
+            );
+        })?;
         Ok(())
     }
     /// Approval is for the stored proposal, never an arbitrary command supplied by a model or UI.
@@ -421,7 +759,8 @@ impl Runtime {
             return Ok(());
         }
         let policy = self.policy()?;
-        if !automation::still_present(&before, &policy, &case.trigger) {
+        let past = case.origin != Origin::Automatic;
+        if !past && !automation::still_present(&before, &policy, &case.trigger) {
             self.update(id, |c| {
                 c.transition(
                     Stage::Resolved,
@@ -430,12 +769,17 @@ impl Runtime {
             })?;
             return Ok(());
         }
-        if !approved && !policy.allows(&proposal) {
+        if !approved && (past || !policy.allows(&proposal)) {
             return Err("This workload is not allowed to change priority automatically.".into());
         }
         if remember {
             if !approved {
                 return Err("Only explicit user approval can add a permission.".into());
+            }
+            if past && !case.jitter.as_ref().is_some_and(|j| j.offer_permission) {
+                return Err(
+                    "A permission is offered only after this workload recurs in snapshots.".into(),
+                );
             }
             let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.")?;
             if !settings
@@ -477,8 +821,89 @@ impl Runtime {
                     .clone();
                 let verified = actions::priority(proposal.process.pid, proposal.process.start_time)
                     .is_ok_and(|p| p >= 10);
-                let verification = automation::verify(&before, &after, &report, verified);
+                let mut verification = automation::verify(&before, &after, &report, verified);
+                if past {
+                    // A past spike cannot be re-measured; readback and recurrence are the check.
+                    verification.summary = if verified {
+                        "The OS confirms the lower priority. This was a past moment, so current CPU is not a measure of success. If it recurs, take another snapshot: Jitterbug counts how often this workload is implicated."
+                    } else {
+                        "The priority change could not be confirmed by the OS. Review the process before trying again."
+                    }
+                    .into();
+                }
                 self.update(id, |c| { c.report = Some(report); c.verification = Some(verification); c.transition(Stage::Completed, "The action finished and follow-up evidence is available. No further changes will be made for this incident."); })?;
+                Ok(())
+            }
+            Err(error) => {
+                self.update(id, |c| c.transition(Stage::Blocked, &error))?;
+                Err(error)
+            }
+        }
+    }
+    /// Approve the offered stop. Always an explicit choice: never automatic, never remembered.
+    pub async fn stop(self: &Arc<Self>, id: u64) -> Result<(), String> {
+        let _guard = self
+            .action
+            .try_lock()
+            .map_err(|_| "Another action is being measured; wait before applying this proposal.")?;
+        let case = self.case(id)?;
+        if case.source != "live" || case.stage != Stage::AwaitingApproval {
+            return Err("This incident has no pending live action.".into());
+        }
+        let stop = case
+            .alternative
+            .ok_or("No stop was offered for this incident.")?;
+        let before = self.snapshot()?;
+        if !before.processes.iter().any(|p| {
+            p.pid == stop.process.pid
+                && p.start_time == stop.process.start_time
+                && p.workload_id == stop.process.workload_id
+        }) {
+            self.update(id, |c| {
+                c.transition(
+                    Stage::Resolved,
+                    "The process already exited or changed identity. Nothing was stopped.",
+                )
+            })?;
+            return Ok(());
+        }
+        self.update(id, |c| {
+            c.proposal = Some(stop.clone());
+            c.transition(
+                Stage::Applying,
+                "Rechecking identity, ownership, and action policy before stopping.",
+            );
+        })?;
+        match self
+            .apply_and_measure(
+                stop.process.pid,
+                stop.process.start_time,
+                "terminate",
+                Some((id, false)),
+            )
+            .await
+        {
+            Ok(report) => {
+                let after = self
+                    .snapshot
+                    .read()
+                    .map_err(|_| "Telemetry unavailable.")?
+                    .clone();
+                let mut verification = automation::verify(&before, &after, &report, false);
+                verification.summary = if report.after.is_none() {
+                    "The process is gone in a fresh sample. Compare whole-machine CPU and memory before and after."
+                } else {
+                    "The process is still running. It may be saving work or ignoring the request; check it before trying again."
+                }
+                .into();
+                self.update(id, |c| {
+                    c.report = Some(report);
+                    c.verification = Some(verification);
+                    c.transition(
+                        Stage::Completed,
+                        "The stop request finished and follow-up evidence is available.",
+                    );
+                })?;
                 Ok(())
             }
             Err(error) => {
@@ -522,11 +947,14 @@ impl Runtime {
             if let Some((id, automatic)) = incident {
                 let case = book.cases.iter().find(|c| c.id == id).ok_or("Incident unavailable.")?;
                 let proposal = case.proposal.as_ref().ok_or("Proposal unavailable.")?;
-                if !settings.automation.enabled || book.monitor.snoozed_until > now() || case.stage != Stage::Applying
-                    || (automatic && !settings.automation.allows(proposal)) { return Err("The permission was withdrawn or automation was paused; no action was applied.".into()); }
+                let past = case.origin != Origin::Automatic;
+                let paused = !settings.automation.enabled || book.monitor.snoozed_until > now();
+                if (paused && case.origin != Origin::Snapshot) || case.stage != Stage::Applying
+                    || (automatic && (past || !settings.automation.allows(proposal))) { return Err("The permission was withdrawn or automation was paused; no action was applied.".into()); }
                 let snapshot = runtime.snapshot()?;
-                if !automation::still_present(&snapshot, &settings.automation, &case.trigger)
-                    || !snapshot.processes.iter().any(|p| p.pid == pid && p.start_time == start_time && p.workload_id == proposal.process.workload_id && p.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= 10.0) {
+                // A past moment has no live trigger to recheck; identity and workload still must match.
+                if (!past && !automation::still_present(&snapshot, &settings.automation, &case.trigger))
+                    || !snapshot.processes.iter().any(|p| p.pid == pid && p.start_time == start_time && p.workload_id == proposal.process.workload_id && (past || p.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= 10.0)) {
                     return Err("The trigger or process activity changed. No action was applied.".into());
                 }
             }
@@ -657,7 +1085,9 @@ mod tests {
         f.runtime.run(id).await;
         let case = f.runtime.case(id).unwrap();
         assert_eq!(case.trigger.kind, automation::Kind::MemoryPressure);
-        assert_eq!(case.stage, Stage::Completed);
+        // Priority cannot free memory: only an explicit, never-automatic stop is offered.
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert!(case.alternative.is_some());
         assert_eq!(case.diagnosis.unwrap().source, "rules");
         assert!(case.proposal.is_none());
         assert!(case.report.is_none());
@@ -835,6 +1265,192 @@ mod tests {
         assert_eq!(reply.source, "rules");
         assert!(reply.route.iter().any(|r| r.contains("privacy mode")));
         assert_eq!(f.runtime.spending().unwrap().requests, 0);
+    }
+    /// A capture where the fixture workload spikes; no frontmost app, local-only inference.
+    fn spike_capture(f: &Fixture) -> jitter::Capture {
+        f.runtime.settings.lock().unwrap().mode = settings::Mode::LocalOnly;
+        *f.runtime.snapshot.write().unwrap() = sample(now(), 15.0);
+        let mut c = jitter::tests::capture(|o, t| {
+            if (-3..=0).contains(&o) {
+                t.processes[0].1 = 150.0;
+                t.lag_ms = 40.0;
+            }
+            t.processes[0].0 = u32::MAX;
+        });
+        c.identities[0].pid = u32::MAX;
+        c.identities[0].workload_id = "fixture".into();
+        c.identities[0].label = "Example".into();
+        c.victim = None;
+        c
+    }
+    #[tokio::test]
+    async fn snapshots_bypass_cooldown_and_never_auto_apply_with_a_saved_permission() {
+        let f = Fixture::new();
+        let mut p = f.runtime.policy().unwrap();
+        p.max_investigations_per_hour = 1;
+        p.rules.push(Rule {
+            workload_id: "fixture".into(),
+            label: "Example".into(),
+        });
+        f.runtime.save_policy(p).unwrap();
+        let first = f.incident();
+        f.runtime.run(first).await;
+        // Dismissed, so the snapshot cannot join it. The automatic hourly cap is now spent;
+        // a user's snapshot still opens a case.
+        f.runtime.dismiss(first).unwrap();
+        let mut tally = jitter::Tally::default();
+        let capture = spike_capture(&f);
+        let (id, run) = f.runtime.report(capture.clone(), &mut tally).unwrap();
+        assert!(run);
+        // A second snapshot of the same workload joins the open case instead of a new card.
+        let (second, rerun) = f.runtime.report(capture, &mut tally).unwrap();
+        assert_eq!((id, rerun), (second, false));
+        f.runtime.run(id).await;
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.origin, Origin::Snapshot);
+        assert_eq!(case.trigger.kind, automation::Kind::UserReported);
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert!(!case.automatic && case.report.is_none());
+        let diagnosis = case.diagnosis.unwrap();
+        assert_eq!(diagnosis.source, "rules");
+        assert!(diagnosis.text.starts_with("What happened"));
+        assert!(f
+            .runtime
+            .apply(id, false, false)
+            .await
+            .unwrap_err()
+            .contains("not allowed"));
+        assert!(f
+            .runtime
+            .apply(id, true, true)
+            .await
+            .unwrap_err()
+            .contains("recurs"));
+        assert_eq!(f.runtime.spending().unwrap().requests, 0);
+        assert_eq!(tally.recurrence("Example"), 2);
+        assert!(jitter::Tally::path(&f.directory).exists());
+    }
+    #[tokio::test]
+    async fn a_stop_runs_only_when_offered_and_never_through_priority_approval() {
+        let f = Fixture::new();
+        let id = f.incident();
+        f.runtime.run(id).await;
+        f.runtime
+            .update(id, |c| {
+                c.alternative = None;
+                c.stage = Stage::AwaitingApproval;
+            })
+            .unwrap();
+        assert!(f
+            .runtime
+            .stop(id)
+            .await
+            .unwrap_err()
+            .contains("No stop was offered"));
+        // Nothing was changed by the refused request.
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert!(case.report.is_none());
+    }
+    #[tokio::test]
+    async fn one_workload_one_incident_in_either_order() {
+        // Automatic first: the manual snapshot joins it and marks it as a snapshot.
+        let f = Fixture::new();
+        let first = f.incident();
+        let capture = spike_capture(&f);
+        let (id, _) = f
+            .runtime
+            .report(capture.clone(), &mut jitter::Tally::default())
+            .unwrap();
+        assert_eq!(id, first);
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.origin, Origin::Snapshot);
+        assert!(case.jitter.is_some());
+        assert_eq!(f.runtime.cases().unwrap().len(), 1);
+        // A finished case is analyzed again with the new snapshot.
+        f.runtime
+            .update(id, |c| c.transition(Stage::Completed, "Done."))
+            .unwrap();
+        let (again, rerun) = f
+            .runtime
+            .report(capture.clone(), &mut jitter::Tally::default())
+            .unwrap();
+        assert_eq!((again, rerun), (id, true));
+        assert_eq!(f.runtime.case(id).unwrap().stage, Stage::Detected);
+
+        // Snapshot first: a later automatic trigger adds a note instead of a second card.
+        let f = Fixture::new();
+        let (id, _) = f
+            .runtime
+            .report(spike_capture(&f), &mut jitter::Tally::default())
+            .unwrap();
+        // The monitor waits while a case is still running, as in the live loop.
+        f.runtime.run(id).await;
+        let at = now();
+        for offset in [10, 5, 0] {
+            assert!(f
+                .runtime
+                .observe(&sample(at - offset, 15.0))
+                .unwrap()
+                .is_none());
+        }
+        let cases = f.runtime.cases().unwrap();
+        assert_eq!(cases.len(), 1);
+        assert!(cases[0]
+            .steps
+            .iter()
+            .any(|s| s.message.starts_with("Automatic monitoring also flagged")));
+        assert_eq!(cases[0].id, id);
+    }
+    #[tokio::test]
+    async fn approved_snapshot_actions_skip_the_live_trigger_but_recheck_identity() {
+        let f = Fixture::new();
+        let (id, _) = f
+            .runtime
+            .report(spike_capture(&f), &mut jitter::Tally::default())
+            .unwrap();
+        f.runtime.run(id).await;
+        // The workload is quiet now; a sustained-incident case would resolve instead of acting.
+        *f.runtime.snapshot.write().unwrap() = sample(now(), 0.0);
+        assert!(f.runtime.apply(id, true, false).await.is_err());
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.stage, Stage::Blocked);
+        assert!(case.steps.last().unwrap().message.contains("exited"));
+    }
+    #[tokio::test]
+    async fn manual_snapshots_run_when_automation_is_off_but_spikes_do_not() {
+        let f = Fixture::new();
+        let capture = spike_capture(&f);
+        let mut p = f.runtime.policy().unwrap();
+        p.enabled = false;
+        f.runtime.save_policy(p.clone()).unwrap();
+        assert_eq!(f.runtime.spike(capture.clone()).unwrap(), None);
+        let (id, _) = f
+            .runtime
+            .report(capture.clone(), &mut jitter::Tally::default())
+            .unwrap();
+        f.runtime.run(id).await;
+        assert!(f.runtime.case(id).unwrap().diagnosis.is_some());
+        // While that case is open, a spike about the same workload joins it silently.
+        p.enabled = true;
+        f.runtime.save_policy(p.clone()).unwrap();
+        assert_eq!(f.runtime.spike(capture.clone()).unwrap(), None);
+        f.runtime.dismiss(id).unwrap();
+        // Short-hitch cases are opt-in, like automatic snapshots.
+        assert_eq!(f.runtime.spike(capture.clone()).unwrap(), None);
+        p.auto_snapshots = true;
+        f.runtime.save_policy(p).unwrap();
+        let spike = f.runtime.spike(capture.clone()).unwrap().unwrap();
+        assert_eq!(f.runtime.case(spike).unwrap().origin, Origin::Spike);
+        // Spikes share the automatic global gap and per-reason cooldown.
+        assert_eq!(f.runtime.spike(capture).unwrap(), None);
+        f.runtime.run(spike).await;
+        let case = f.runtime.case(spike).unwrap();
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert!(f.runtime.apply(spike, false, false).await.is_err());
+        // Spikes with nothing measured are dropped rather than interrupting the user.
+        let quiet = jitter::tests::capture(|_, _| {});
+        assert_eq!(f.runtime.spike(quiet).unwrap(), None);
     }
     #[tokio::test]
     async fn demos_and_stale_telemetry_cannot_start_actions() {
