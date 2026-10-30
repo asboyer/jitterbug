@@ -121,11 +121,14 @@ A workload's detail page can split an app into the things you can actually act o
   session with its test runs. It uses no CPU until you choose **Resume**. Nothing is closed,
   and an agent picks up where it was. Memory stays allocated, but it stops growing, and macOS
   can compress or swap it for your other sessions. Pauses resume by themselves after 15
-  minutes, when Jitterbug quits, and on the next launch after a crash. A plain stop signal
-  would make the terminal's shell report the command as suspended and take the terminal
-  away from it. Jitterbug stops that launching shell first and continues it last, so the
-  command keeps its terminal. Only your own commands can be paused; apps (a frozen window
-  cannot redraw) and anything containing Jitterbug itself are refused. This was exercised
+  minutes, when Jitterbug quits, and on the next launch after a crash. A small detached timer
+  also resumes them shortly after the 15 minutes if Jitterbug was killed and not started
+  again. A plain stop signal would make the terminal's shell report the command as suspended
+  and take the terminal away from it. For a command that owns its terminal, Jitterbug stops
+  that launching shell first and continues it last, so the command keeps its terminal; a
+  background job is paused alone, so the prompt stays usable. Only your own commands can be
+  paused; apps (a frozen window cannot redraw), jobs you already suspended, and anything
+  containing Jitterbug itself are refused. This was exercised
   with a real Claude Code session paused for 20 seconds in the middle of a tool call. It used
   no CPU while paused, then finished its task.
 - **Incidents offer the smallest fix:** when an app stays busy or memory runs short, the
