@@ -44,6 +44,7 @@ pub struct Details {
     pub independent_roots: usize,
     pub application: Option<Application>,
     pub profile: Profile,
+    pub launch: Option<crate::origins::Launch>,
     pub ancestry: Vec<OriginNode>,
     pub origin_summary: String,
     pub origin_limit: String,
@@ -184,12 +185,14 @@ pub fn inspect(
         .as_ref()
         .map(|path| applications::identify(path));
     let profile = crate::profiles::reference(application.as_ref(), &workload);
+    let launch = crate::origins::inspect(snapshot, process);
     // A system daemon or command does not need an .app bundle to be explainable.
     // Explanations describe this executable, never infer a script or project task.
     let can_generate_profile = application
         .as_ref()
         .is_some_and(|app| !app.executable_name.is_empty())
-        && profile.source != "reference";
+        && profile.source != "reference"
+        && launch.is_none();
     let profile_key = application.as_ref().map(crate::profiles::key);
     let independent_roots = members
         .iter()
@@ -217,6 +220,7 @@ pub fn inspect(
         independent_roots,
         application,
         profile,
+        launch,
         ancestry,
         origin_summary,
         origin_limit,

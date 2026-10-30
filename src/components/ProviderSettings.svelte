@@ -66,12 +66,12 @@
 <div class="page-heading">
     <div>
         <h1>Settings</h1>
-        <p class="muted">Three interchangeable tiers, with limits before every request.</p>
+        <p class="muted">Choose how Jitterbug investigates and when it can help.</p>
     </div>
 </div>
 <AutomationSettings {bootstrap} {desktop} {onrefresh} />
 <section class="panel settings-panel">
-    <h2>Where should inference run?</h2>
+    <h2>Where should AI run?</h2>
     <div class="mode-options">
         {#each [{ value: 'hybrid', label: 'Hybrid', text: 'Tiny local models when resources allow; cloud for deeper work.' }, { value: 'local_only', label: 'Local only', text: 'No cloud inference or cloud fallback. Defer when hardware is busy.' }, { value: 'cloud_only', label: 'Cloud only', text: 'No local inference. Monitoring and rules still run on your computer.' }] as mode}
             <label class:active={settings.mode === mode.value}
@@ -147,10 +147,10 @@
             <strong>${bootstrap.spending.reported_estimate_usd.toFixed(5)}</strong> estimated usage
             <span class="muted">· {bootstrap.spending.requests} requests</span>
             <p class="muted">
-                ${bootstrap.spending.reserved_usd.toFixed(4)} conservatively reserved. Reservations persist
-                after errors and restarts. The lower of this budget and the environment ceiling applies.
-                Prototype caps: $0.10/request, 200 requests, $100 maximum. This is an app ledger, not
-                your provider’s billing balance.
+                ${bootstrap.spending.reserved_usd.toFixed(4)} accounted against the budget. Successful
+                requests settle to reported usage; unknown charges stay reserved after errors and restarts.
+                The lower of this budget and the environment ceiling applies. Prototype caps: $0.10/request,
+                200 requests, $100 maximum. This is an app ledger, not your provider’s billing balance.
             </p>
         </div>
     </div>
@@ -196,14 +196,17 @@
                 })}>Check Ollama</button
         >
     </div>
-    <p class="muted">
-        One request at a time. Up to 1.5 GiB model download size, 2,048-token chat context, 256
-        generated tokens, and immediate unloading. Requires at least 4 GiB and 20% available memory,
-        CPU below 75%, and no reported resource or thermal pressure. These gates reduce risk;
-        download size is not peak memory usage. Models are never downloaded automatically.
-    </p>
-    <code>ollama pull qwen3.5:0.8b</code>
-    <p class="muted">Optional decision model: <code>ollama pull tev1:0.8b</code></p>
+    <details>
+        <summary>Resource limits & setup</summary>
+        <p class="muted">
+            One request at a time. Up to 1.5 GiB model download size, 2,048-token chat context, 256
+            generated tokens, and immediate unloading. Requires at least 4 GiB and 20% available
+            memory, CPU below 75%, and no reported resource or thermal pressure. These gates reduce
+            risk; download size is not peak memory usage. Models are never downloaded automatically.
+        </p>
+        <code>ollama pull qwen3.5:0.8b</code>
+        <p class="muted">Optional decision model: <code>ollama pull tev1:0.8b</code></p>
+    </details>
     {#each models as model}<div class="local-model">
             <span
                 >{model.name} · {memory(model.size_bytes)} · {model.eligible

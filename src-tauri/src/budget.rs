@@ -1,6 +1,7 @@
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs::OpenOptions,
     path::{Path, PathBuf},
 };
@@ -10,6 +11,8 @@ pub struct Ledger {
     pub reserved_usd: f64,
     pub reported_estimate_usd: f64,
     pub requests: u64,
+    #[serde(default)]
+    pending: BTreeMap<u64, f64>,
 }
 
 pub struct Budget {
@@ -48,6 +51,12 @@ impl Budget {
             || ledger.reserved_usd < 0.0
             || !ledger.reported_estimate_usd.is_finite()
             || ledger.reported_estimate_usd < 0.0
+            || ledger.pending.len() > 200
+            || ledger
+                .pending
+                .values()
+                .any(|v| !v.is_finite() || *v <= 0.0 || *v > 0.10)
+            || ledger.pending.values().sum::<f64>() > ledger.reserved_usd + 0.000001
         {
             return Err("Invalid spending ledger; cloud calls are blocked.".into());
         }
@@ -55,7 +64,7 @@ impl Budget {
         crate::storage::write(&self.path, &ledger)?;
         Ok(ledger)
     }
-    pub fn reserve(&self, amount: f64, configured_limit: f64) -> Result<(), String> {
+    pub fn reserve(&self, amount: f64, configured_limit: f64) -> Result<u64, String> {
         let environment_limit =
             environment_ceiling(std::env::var("JITTERBUG_SPEND_LIMIT_USD").ok())?;
         let limit = configured_limit.min(environment_limit).min(100.0);
@@ -63,17 +72,42 @@ impl Budget {
             return Err("Invalid budget or request exceeds the $0.10 per-call ceiling.".into());
         }
         self.mutate(|l| {
-            if l.reserved_usd + amount > limit || l.requests >= 200 { return Err("Cloud spending or 200-request prototype limit reached. Local observations remain available.".into()); }
-            l.reserved_usd += amount; l.requests += 1; Ok(())
-        }).map(|_| ())
+            if l.requests >= 200 {
+                return Err(
+                    "The 200-request prototype limit was reached. AI investigation is unavailable."
+                        .into(),
+                );
+            }
+            if l.reserved_usd + amount > limit {
+                let remedy = if environment_limit < configured_limit {
+                    "The local environment spending ceiling is lower than Settings."
+                } else {
+                    "Review the cloud budget in Settings."
+                };
+                return Err(format!(
+                    "The ${limit:.2} cloud budget cannot cover this request. {remedy}"
+                ));
+            }
+            l.reserved_usd += amount;
+            l.requests += 1;
+            l.pending.insert(l.requests, amount);
+            Ok(())
+        })
+        .map(|l| l.requests)
     }
-    pub fn record_usage(&self, amount: f64) -> Result<(), String> {
+    /// Settle exactly one successful request. Unknown usage and failed requests retain
+    /// their reservation, including across restarts. Legacy reservations are untouched.
+    pub fn settle(&self, request: u64, amount: f64) -> Result<(), String> {
         if !amount.is_finite() || amount < 0.0 {
             return Err("Invalid provider usage.".into());
         }
         self.mutate(|l| {
+            let reserved = l
+                .pending
+                .remove(&request)
+                .ok_or("Spending reservation is unavailable or already settled.")?;
             l.reported_estimate_usd += amount;
-            l.reserved_usd = l.reserved_usd.max(l.reported_estimate_usd);
+            l.reserved_usd = (l.reserved_usd - reserved + amount).max(l.reported_estimate_usd);
             Ok(())
         })
         .map(|_| ())
@@ -94,6 +128,43 @@ fn environment_ceiling(value: Option<String>) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_requests_release_only_their_own_unused_reservation() {
+        let path = std::env::temp_dir().join(format!(
+            "jitterbug-budget-settlement-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        let b = Budget::new(&path);
+        let first = b.reserve(0.08, 0.10).unwrap();
+        assert!(b.reserve(0.03, 0.10).is_err());
+        b.settle(first, 0.004).unwrap();
+        assert!((b.status().unwrap().reserved_usd - 0.004).abs() < 1e-9);
+        assert!(b.settle(first, 0.004).is_err()); // no double refund
+        let failed = b.reserve(0.08, 0.10).unwrap();
+        let b = Budget::new(&path);
+        assert!(b.status().unwrap().pending.contains_key(&failed));
+        assert!(b.reserve(0.03, 0.10).is_err()); // timeout/unknown charge remains reserved
+        assert_eq!(b.status().unwrap().requests, 2);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn legacy_unknown_charges_are_not_refunded_during_migration() {
+        let path =
+            std::env::temp_dir().join(format!("jitterbug-budget-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("spending.json"),
+            r#"{"reserved_usd":1.9,"reported_estimate_usd":0.2,"requests":50}"#,
+        )
+        .unwrap();
+        let b = Budget::new(&path);
+        let id = b.reserve(0.08, 2.0).unwrap();
+        b.settle(id, 0.004).unwrap();
+        assert!((b.status().unwrap().reserved_usd - 1.904).abs() < 1e-9);
+        std::fs::remove_dir_all(path).unwrap();
+    }
     #[test]
     fn invalid_environment_ceiling_cannot_disable_the_limit() {
         for value in ["NaN", "inf", "-1", "invalid", ""] {

@@ -205,6 +205,11 @@
         white-space: nowrap;
     }
     .incident-description {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
         font-size: 12px;
         color: var(--muted);
         line-height: 1.5;

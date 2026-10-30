@@ -21,6 +21,8 @@
     const subject = $derived(incident.trigger.target?.label ?? 'an app');
     const title = $derived.by(() => {
         switch (incident.trigger.kind) {
+            case 'app_unresponsive':
+                return `Hey, ${subject} has stopped responding.`;
             case 'system_cpu':
                 return 'Hey, your computer has stayed busy.';
             case 'memory_pressure':
@@ -42,7 +44,7 @@
               ? 'Your coding sessions have overlapping checks. A shared queue could help future runs take turns.'
               : incident.stage === 'awaiting_approval'
                 ? 'I found a priority change you can review to give other work more room.'
-                : incidentOutcome(incident)
+                : (incident.diagnosis?.insight?.next_step ?? incidentOutcome(incident))
     );
 </script>
 

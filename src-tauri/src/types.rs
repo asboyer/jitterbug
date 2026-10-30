@@ -45,6 +45,8 @@ pub struct ProcessRecord {
     pub actions: Vec<String>,
     pub disk_read_bytes: u64,
     pub disk_written_bytes: u64,
+    #[serde(default)]
+    pub unresponsive: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -52,6 +54,8 @@ pub struct ResourcePoint {
     pub time: u64,
     pub cpu_percent: f32,
     pub memory_bytes: u64,
+    #[serde(default)]
+    pub unresponsive: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +78,8 @@ pub struct Workload {
     pub cpu_percent: f32,
     pub memory_bytes: u64,
     pub process_count: usize,
+    #[serde(default)]
+    pub unresponsive: Option<bool>,
     pub history: Vec<ResourcePoint>,
 }
 

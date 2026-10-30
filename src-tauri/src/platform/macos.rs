@@ -3,6 +3,60 @@ use crate::types::{MemoryBreakdown, PlatformReadings};
 use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState};
 use std::{mem, sync::OnceLock};
 
+// Optional private, read-only OS signals. Resolve at runtime so an OS change yields
+// "unavailable", never a guessed healthy state or a launch-time linker failure.
+// ABI references: NUIKit/CGSInternal (CGSEvent.h), Objective-See FileMonitor.
+#[repr(C)]
+struct ProcessSerialNumber {
+    high: u32,
+    low: u32,
+}
+type ProcessSerial = unsafe extern "C" fn(i32, *mut ProcessSerialNumber) -> i32;
+type Connection = unsafe extern "C" fn() -> i32;
+type Unresponsive = unsafe extern "C" fn(i32, *const ProcessSerialNumber) -> bool;
+
+pub fn app_unresponsive(pid: u32) -> Option<bool> {
+    static API: OnceLock<Option<(ProcessSerial, Connection, Unresponsive)>> = OnceLock::new();
+    let (serial, connection, unresponsive) = API.get_or_init(|| unsafe {
+        // Retain the system framework handle for the lifetime of its function pointers.
+        let handle = libc::dlopen(c"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+        if handle.is_null() { return None; }
+        let serial = libc::dlsym(handle, c"GetProcessForPID".as_ptr());
+        let connection = libc::dlsym(handle, c"CGSMainConnectionID".as_ptr());
+        let unresponsive = libc::dlsym(handle, c"CGSEventIsAppUnresponsive".as_ptr());
+        if serial.is_null() || connection.is_null() || unresponsive.is_null() { return None; }
+        Some((mem::transmute::<*mut libc::c_void, ProcessSerial>(serial),
+            mem::transmute::<*mut libc::c_void, Connection>(connection),
+            mem::transmute::<*mut libc::c_void, Unresponsive>(unresponsive)))
+    }).as_ref()?;
+    let mut psn = ProcessSerialNumber { high: 0, low: 0 };
+    let cid = unsafe { connection() };
+    if cid == 0 || unsafe { serial(i32::try_from(pid).ok()?, &mut psn) } != 0 {
+        return None;
+    }
+    Some(unsafe { unresponsive(cid, &psn) })
+}
+
+pub fn responsible_pid(pid: u32) -> Option<u32> {
+    type Responsible = unsafe extern "C" fn(i32) -> i32;
+    static FUNCTION: OnceLock<Option<Responsible>> = OnceLock::new();
+    let function = FUNCTION
+        .get_or_init(|| unsafe {
+            let ptr = libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"responsibility_get_pid_responsible_for_pid".as_ptr(),
+            );
+            if ptr.is_null() {
+                None
+            } else {
+                Some(mem::transmute::<*mut libc::c_void, Responsible>(ptr))
+            }
+        })
+        .as_ref()?;
+    let owner = unsafe { function(i32::try_from(pid).ok()?) };
+    (owner > 1 && owner as u32 != pid).then_some(owner as u32)
+}
+
 fn memory() -> Option<MemoryBreakdown> {
     // Keep one host send right for this process, rather than leaking one each sample.
     static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();

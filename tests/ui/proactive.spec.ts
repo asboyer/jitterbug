@@ -72,7 +72,7 @@ test('unsampled completed tasks show no empty graphs, metrics, or management act
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
     const task = page.getByRole('article', { name: 'Check a small utility function', exact: true });
-    await expect(task).toContainText('No resource samples available');
+    await expect(task).toContainText('Not measured');
     await expect(task.locator('.task-readings')).toHaveCount(0);
     await task.locator('.task-disclosure > summary').click();
     const detail = page.getByRole('region', { name: 'Task detail' });
