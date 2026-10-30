@@ -2,6 +2,10 @@ import { expect, test } from '@playwright/test';
 
 test('browser workloads list tabs on request with demo actions disabled', async ({ page }) => {
     await page.goto('/');
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Activity', exact: true })
+        .click();
     await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
     await page.getByRole('button', { name: /Example Browser/ }).click();
@@ -18,6 +22,10 @@ test('editor workloads list commands with pause, and other apps show no inside v
     page,
 }) => {
     await page.goto('/');
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Activity', exact: true })
+        .click();
     await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Editor');
     await page.getByRole('button', { name: /Example Editor/ }).click();
