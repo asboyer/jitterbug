@@ -104,6 +104,19 @@ pub fn all_processes() -> Vec<NativeProcess> {
     }
 }
 
+/// Parent PID from the kernel when the process table cannot read it (another user's process).
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::parent_pid(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// Outermost application bundle name for a live process, when the OS exposes its path.
 pub fn bundle_name(pid: u32) -> Option<String> {
     #[cfg(target_os = "macos")]
