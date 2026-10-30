@@ -174,6 +174,9 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default)]
     pub impact: Option<Impact>,
+    /// The tab or command session a granular action targets (pause, close_tab).
+    #[serde(default)]
+    pub unit: Option<crate::inside::Unit>,
 }
 
 /// The workload around a proposal, measured when it was made, so "now" and "after" can be
@@ -236,6 +239,7 @@ pub fn stop_option(s: &Snapshot, workload_id: &str) -> Option<Proposal> {
         process,
         action: "terminate".into(),
         rationale,
+        unit: None,
     })
 }
 
@@ -742,7 +746,7 @@ pub fn proposal(s: &Snapshot, trigger: &Trigger) -> Option<Proposal> {
         })
         .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))?
         .clone();
-    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into() })
+    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into(), unit: None })
 }
 
 pub fn verify(

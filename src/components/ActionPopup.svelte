@@ -16,12 +16,15 @@
         snapshotBadge,
         stopAfter,
         stopLabel,
+        stopWarning,
     } from '../lib/incidents';
     import type { ActionPopupCase, ActionPopupPayload, AutomationStage } from '../lib/types';
 
     const desktop = isTauri();
     const finished: AutomationStage[] = ['completed', 'resolved', 'blocked'];
-    let payload = $state<ActionPopupPayload | null>(desktop ? null : demoActionPopup());
+    let payload = $state<ActionPopupPayload | null>(
+        desktop ? null : demoActionPopup(new URLSearchParams(location.search).get('example'))
+    );
     const capture = $derived(payload?.kind === 'capturing' ? payload : null);
     const popup = $derived(payload?.kind === 'case' ? payload : null);
     // Synthetic cases never reach an action command; their progress is played locally.
@@ -48,13 +51,15 @@
     );
     // The option the numbers describe: the priority change if offered, else the stop.
     const subject = $derived(shown ? (shown.proposal ?? shown.alternative) : null);
-    const stopping = $derived(shown?.proposal?.action === 'terminate');
+    const stopping = $derived(
+        ['terminate', 'pause', 'close_tab'].includes(shown?.proposal?.action ?? '')
+    );
     const title = $derived.by(() => {
         if (!shown) return '';
         switch (shown.stage) {
             case 'applying':
                 return stopping
-                    ? `${stopLabel(shown.proposal!).replace(/^(Quit|Stop)/, (verb) => (verb === 'Quit' ? 'Quitting' : 'Stopping'))}…`
+                    ? `${stopLabel(shown.proposal!).replace(/^(Quit|Stop|Pause|Close)/, (verb) => ({ Quit: 'Quitting', Stop: 'Stopping', Pause: 'Pausing', Close: 'Closing' })[verb] ?? verb)}…`
                     : 'Applying the priority change…';
             case 'verifying':
                 return 'Checking the result…';
@@ -155,6 +160,18 @@
             busy = false;
         }
     }
+    async function resume() {
+        if (!shown || busy) return;
+        busy = true;
+        error = '';
+        try {
+            await invoke('resume_case', { id: shown.id });
+        } catch (cause) {
+            error = errorMessage(cause);
+        } finally {
+            busy = false;
+        }
+    }
     async function stop() {
         if (!shown?.alternative || !asking || busy) return;
         if (!confirming) {
@@ -191,8 +208,8 @@
                     report: {
                         fresh: true,
                         after: null,
-                        action: 'terminate',
-                        process: option.process.name,
+                        action: option.action,
+                        process: option.unit?.title ?? option.process.name,
                         cpu_before: option.process.cpu_percent,
                         cpu_after: null,
                         memory_before: option.process.memory_bytes,
@@ -297,18 +314,26 @@
                     </li>{/if}
                 {#if shown.alternative}<li>
                         <div>
-                            <strong>{stopLabel(shown.alternative)}</strong>
+                            <strong title={stopLabel(shown.alternative)}
+                                >{stopLabel(shown.alternative)}</strong
+                            >
                             <span>{stopAfter(shown.alternative)}</span>
-                            {#if shown.alternative.closes}<span class="closes"
-                                    >{shown.alternative.closes}</span
+                            {#if shown.alternative.closes}<span
+                                    class="closes"
+                                    title={shown.alternative.closes}
+                                    >{stopWarning(shown.alternative)}</span
                                 >{/if}
                         </div>
                         <button class:danger={confirming} disabled={busy} onclick={stop}
                             >{confirming
                                 ? 'Confirm'
-                                : shown.alternative.impact?.whole_app
-                                  ? 'Quit…'
-                                  : 'Stop…'}</button
+                                : shown.alternative.action === 'pause'
+                                  ? 'Pause…'
+                                  : shown.alternative.action === 'close_tab'
+                                    ? 'Close…'
+                                    : shown.alternative.impact?.whole_app
+                                      ? 'Quit…'
+                                      : 'Stop…'}</button
                         >
                     </li>{/if}
             </ul>
@@ -316,6 +341,11 @@
             <p class="proposal">{result.meaning}</p>
             <p class="measured">{result.measured}</p>
             {#if result.note}<p class="note">{result.note}</p>{/if}
+            {#if shown.report?.resumable && shown.source === 'live'}<button
+                    class="resume"
+                    disabled={busy}
+                    onclick={resume}>{busy ? 'Resuming…' : 'Resume now'}</button
+                >{/if}
         {:else if shown.jitter && (analyzing || (shown.stage === 'completed' && !shown.report))}
             <p class="reason outcome clamp">
                 {analyzing ? shown.jitter.happened : shown.jitter.likely_cause}
@@ -437,13 +467,17 @@
         margin: 8px 0 0;
         padding: 0;
         display: grid;
-        gap: 6px;
+        gap: 5px;
+        /* The actions row always stays in the window; long options scroll instead. */
+        flex-shrink: 1;
+        min-height: 0;
+        overflow-y: auto;
     }
     .options li {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 6px 8px;
+        padding: 5px 8px;
         border-radius: 8px;
         background: var(--hover);
     }
@@ -452,14 +486,24 @@
         min-width: 0;
         display: grid;
         font-size: 11px;
-        line-height: 1.35;
+        line-height: 1.3;
     }
     .options span {
         color: var(--muted);
         font-variant-numeric: tabular-nums;
     }
+    .options strong {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
     .options .closes {
         color: var(--warning, var(--muted));
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
     .options button {
         font-size: 11px;
