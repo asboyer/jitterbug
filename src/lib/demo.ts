@@ -97,6 +97,17 @@ export function demoSnapshot(pressure = false): Snapshot {
             history: [],
             process_count: 1,
         },
+        {
+            id: 'demo-editor',
+            label: 'Example Editor',
+            category: 'editor',
+            description: 'A simulated code editor with terminal sessions.',
+            attribution: 'Simulated application ancestry',
+            cpu_percent: 3,
+            memory_bytes: 1.6 * 1024 ** 3,
+            history: [],
+            process_count: 9,
+        },
     ];
     return {
         source: 'demo',
@@ -123,7 +134,7 @@ export function demoSnapshot(pressure = false): Snapshot {
             pid: 9000 + index,
             start_time: time - 60,
             parent_pid: null,
-            name: ['node', 'example-browser', 'ollama'][index],
+            name: ['node', 'example-browser', 'ollama', 'example-editor'][index],
             cpu_percent: w.cpu_percent,
             memory_bytes: w.memory_bytes,
             workload_id: w.id,
@@ -356,7 +367,7 @@ export function demoIncidents(): AutomationCase[] {
 }
 
 /** Synthetic out-of-app popup, trimmed exactly like the desktop payload. Nothing is applied. */
-export function demoActionPopup(): ActionPopupCase {
+export function demoActionPopup(example: string | null = null): ActionPopupCase {
     const incident = demoIncidents()[0];
     const label = incident.trigger.target?.label ?? 'the app';
     const source = incident.proposal?.process;
@@ -386,14 +397,42 @@ export function demoActionPopup(): ActionPopupCase {
         proposal: process
             ? { action: 'lower_priority', process, impact: impact ?? null, closes: null }
             : null,
-        alternative: process
-            ? {
-                  action: 'terminate',
-                  process,
-                  impact: impact ? { ...impact, whole_app: true } : null,
-                  closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
-              }
-            : null,
+        alternative: !process
+            ? null
+            : example === 'tab'
+              ? {
+                    action: 'close_tab',
+                    process,
+                    impact: {
+                        label: 'Video call tab',
+                        workload_cpu_percent: 9.4,
+                        workload_memory_bytes: 640 * 1024 ** 2,
+                        process_count: 1,
+                        whole_app: false,
+                    },
+                    closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                    unit: { title: 'Video call', kind: 'tab' },
+                }
+              : example === 'pause'
+                ? {
+                      action: 'pause',
+                      process,
+                      impact: {
+                          label: 'claude · feat-search in Example Editor',
+                          workload_cpu_percent: 31,
+                          workload_memory_bytes: 2.1 * 1024 ** 3,
+                          process_count: 7,
+                          whole_app: false,
+                      },
+                      closes: 'Pause claude · feat-search in Example Editor: its 7 processes stop using CPU until you resume it (automatically after 15 minutes). Nothing is closed.',
+                      unit: { title: 'claude · feat-search in Example Editor', kind: 'session' },
+                  }
+                : {
+                      action: 'terminate',
+                      process,
+                      impact: impact ? { ...impact, whole_app: true } : null,
+                      closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
+                  },
         report: null,
         verification: null,
         origin: 'automatic',
@@ -419,14 +458,46 @@ export function demoInside(workload: Workload): InsideView {
         host,
         cpu_percent: cpu,
         memory_bytes: mem * mib,
+        process_count: 1,
         shared_with: shared,
         pid: null,
         start_time: null,
         actions: ['focus_tab', 'close_tab'],
         evidence: ['Synthetic example: no browser was contacted.'],
         confidence: 'Matched by CPU time',
+        paused_until: null,
+    });
+    const session = (
+        id: string,
+        title: string,
+        host: string,
+        cpu: number,
+        mem: number,
+        detail: string,
+        actions: string[]
+    ) => ({
+        ...tab(id, title, host, cpu, mem),
+        kind: 'session' as const,
+        detail,
+        process_count: 4,
+        actions,
+        evidence: ['Synthetic example: no process was inspected.'],
+        confidence: 'Process tree and working directory',
     });
     const browser = workload.category === 'browser';
+    if (!browser && workload.category !== 'editor')
+        return {
+            workload_id: workload.id,
+            source: 'None',
+            status: 'unavailable',
+            message: 'No inside view for this app yet.',
+            setup: [],
+            units: [],
+            remainder: [],
+            measured_seconds: 0,
+            captured_at: Math.floor(Date.now() / 1000),
+            limits: '',
+        };
     return {
         workload_id: workload.id,
         source: browser ? 'Browser DevTools' : 'Process tree',
@@ -443,18 +514,24 @@ export function demoInside(workload: Workload): InsideView {
                   tab('d4', 'Mail', 'mail.example.com', 0.1, 150, 1),
               ]
             : [
-                  {
-                      ...tab('s1', 'claude · feat-search', 'claude', 3.2, 520),
-                      kind: 'session' as const,
-                      detail: '~/example/repo.worktrees/feat-search',
-                      actions: [],
-                  },
-                  {
-                      ...tab('s2', 'npm · sample-web-app', 'npm', 11.5, 870),
-                      kind: 'session' as const,
-                      detail: '~/example/sample-web-app',
-                      actions: ['lower_priority', 'terminate'],
-                  },
+                  session(
+                      's2',
+                      'npm · sample-web-app',
+                      'npm',
+                      11.5,
+                      870,
+                      '~/example/sample-web-app',
+                      ['pause', 'lower_priority', 'terminate']
+                  ),
+                  session(
+                      's1',
+                      'claude · feat-search',
+                      'claude',
+                      3.2,
+                      520,
+                      '~/example/repo.worktrees/feat-search',
+                      ['pause']
+                  ),
               ],
         remainder: [
             {

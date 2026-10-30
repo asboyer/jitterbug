@@ -257,13 +257,95 @@ fn unit(
         host: Some(root.name.clone()),
         cpu_percent: cpu,
         memory_bytes: memory,
+        process_count: tree.len(),
         shared_with: 0,
         pid: Some(root.pid),
         start_time: Some(root.start_time),
-        actions: root.actions.clone(),
+        actions: session_actions(root),
         evidence,
         confidence,
+        paused_until: crate::pause::list()
+            .into_iter()
+            .find(|p| p.pid == root.pid && p.start_time == root.start_time)
+            .map(|p| p.until),
     }
+}
+
+/// Existing process actions, plus pause or resume for the whole command. The pause policy is
+/// rechecked against live ownership when it runs.
+fn session_actions(root: &ProcessRecord) -> Vec<String> {
+    if crate::pause::is_paused(root.pid, root.start_time) {
+        return vec!["resume".into()];
+    }
+    let mut actions = vec!["pause".into()];
+    actions.extend(root.actions.iter().cloned());
+    actions
+}
+
+/// The command inside a terminal, editor, or agent app that contains `pid`, as one unit with
+/// its whole tree. `None` when the process is an app's own or no app launched it.
+pub fn session_of(snapshot: &Snapshot, pid: u32) -> Option<Unit> {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
+    let bundle = |p: &ProcessRecord| {
+        p.executable
+            .as_deref()
+            .and_then(crate::attribution::application_bundle)
+            .and_then(|b| b.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+    };
+    let start = by_pid.get(&pid)?;
+    if bundle(start).is_some() {
+        return None;
+    }
+    let (mut root, mut current, mut app) = (*start, *start, None);
+    for _ in 0..32 {
+        let Some(parent) = current.parent_pid.and_then(|id| by_pid.get(&id)) else {
+            break;
+        };
+        if parent.start_time > current.start_time
+            || current
+                .parent_start_time
+                .is_some_and(|s| s != parent.start_time)
+        {
+            break;
+        }
+        if let Some(name) = bundle(parent) {
+            app = Some(name);
+            break;
+        }
+        if !is_wrapper(parent) {
+            root = parent;
+        }
+        current = parent;
+    }
+    let app = app?;
+    let mut children: HashMap<u32, Vec<&ProcessRecord>> = HashMap::new();
+    for p in &snapshot.processes {
+        if let Some(parent) = p.parent_pid.and_then(|id| by_pid.get(&id)) {
+            if parent.pid != p.pid && parent.start_time <= p.start_time {
+                children.entry(parent.pid).or_default().push(p);
+            }
+        }
+    }
+    let mut tree = vec![root];
+    let mut i = 0;
+    while i < tree.len() && tree.len() < 512 {
+        for child in children.get(&tree[i].pid).into_iter().flatten() {
+            if !tree.iter().any(|t| t.pid == child.pid) {
+                tree.push(child);
+            }
+        }
+        i += 1;
+    }
+    let registered: Vec<_> = snapshot
+        .agent_workflows
+        .iter()
+        .flat_map(|w| w.agents.iter().map(move |a| (w, a)))
+        .collect();
+    let mut unit = unit(root, &tree, &app, &registered);
+    unit.title = format!("{} in {app}", unit.title);
+    Some(unit)
 }
 
 #[cfg(test)]

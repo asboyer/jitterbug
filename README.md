@@ -115,17 +115,39 @@ A workload's detail page can split an app into the things you can actually act o
   Zed, Claude, JetBrains IDEs, …): each command started inside the app, such as an agent session,
   a dev server, or a test run, becomes one row with its whole process subtree, working folder,
   and busiest child. Sessions registered with `jitterbug-run` show their task. Rows reuse the
-  five-second inventory, so no extra sampling happens. Their actions are the existing
-  process actions, with the same identity checks and confirmation.
+  five-second inventory, so no extra sampling happens. Each row can be **paused**, as well as
+  the existing process actions with the same identity checks and confirmation.
+- **Pause, not quit:** pausing freezes a command and everything it started, such as an agent
+  session with its test runs. It uses no CPU until you choose **Resume**. Nothing is closed,
+  and an agent picks up where it was. Memory stays allocated, but it stops growing, and macOS
+  can compress or swap it for your other sessions. Pauses resume by themselves after 15
+  minutes, when Jitterbug quits, and on the next launch after a crash. A plain stop signal
+  would make the terminal's shell report the command as suspended and take the terminal
+  away from it. Jitterbug stops that launching shell first and continues it last, so the
+  command keeps its terminal. Only your own commands can be paused; apps (a frozen window
+  cannot redraw) and anything containing Jitterbug itself are refused. This was exercised
+  with a real Claude Code session paused for 20 seconds in the middle of a tool call. It used
+  no CPU while paused, then finished its task.
+- **Incidents offer the smallest fix:** when an app stays busy or memory runs short, the
+  out-of-app popup offers the most specific action before quitting anything:
+    - **Close the heaviest tab**, for a browser you already connected with **Show tabs**. A
+      background alert never opens a browser connection by itself.
+    - **Pause the heaviest command session** inside a terminal or editor. It is offered when that
+      session carries at least 30% of the app's use, or when it launched the busy project.
+    - Otherwise, the existing stop.
 
-Titles, addresses, and folders appear only in this local view. They are not added to
-telemetry events, incidents, or model prompts. No page content, history, or cookies are read.
+    Every option still needs your explicit click and is never applied automatically.
+
+Titles, addresses, and folders stay on this computer except the tab or session name shown in
+an incident. No page content, history, or cookies are read.
 
 ```sh
 # Opt-in check against an isolated headless Chrome profile: one busy and two idle tabs.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-inside-probe
 # Commands inside running terminal/editor apps, by command name only.
 cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-inside-probe -- --sessions
+# Pause one command's tree for 20 seconds, confirm it used no CPU, then resume it.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-pause-probe -- --pid <pid> --seconds 20
 ```
 
 ## What is real
@@ -301,6 +323,7 @@ src-tauri/src/
   bin/jitterbug-run.rs   opt-in wrapper and harness hook event bridge
   diagnostics.rs        app/PID resolution and scoped investigation evidence
   inside/               per-tab (browser DevTools) and per-command (process tree) app views
+  pause.rs              pause/resume a command tree without its shell noticing; expiry, recovery
   details.rs            local process details and bounded, identity-checked parent chains
   applications.rs       installed app identity and bounded native icon cache
   profiles.rs           built-in app reference and private, versioned AI description cache

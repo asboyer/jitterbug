@@ -120,6 +120,11 @@ pub fn view(case: &Case, more: usize) -> Value {
             "cpu_after": r.after.as_ref().map(|a| a.cpu_percent),
             "memory_before": r.before.memory_bytes,
             "memory_after": r.after.as_ref().map(|a| a.memory_bytes),
+            // A paused command can be resumed from the popup until it resumes by itself.
+            "resumable": r.action == "pause"
+                && case.proposal.as_ref().is_some_and(|p| {
+                    crate::pause::is_paused(p.process.pid, p.process.start_time)
+                }),
         })),
         "verification": case.verification.as_ref().map(|v| json!({
             "priority_verified": v.priority_verified,
@@ -151,7 +156,10 @@ fn option(p: &Proposal) -> Value {
             "memory_bytes": p.process.memory_bytes,
         },
         "impact": p.impact,
-        "closes": (p.action == "terminate").then_some(&p.rationale),
+        "closes": matches!(p.action.as_str(), "terminate" | "pause" | "close_tab")
+            .then_some(&p.rationale),
+        // A tab or command session: its title and kind only.
+        "unit": p.unit.as_ref().map(|u| json!({ "title": u.title, "kind": u.kind })),
     })
 }
 
@@ -499,12 +507,14 @@ fn demo_case(at: u64) -> Result<Case, String> {
             whole_app: true,
             ..i
         }),
+        unit: None,
     });
     case.proposal = Some(Proposal {
         process,
         action: "lower_priority".into(),
         rationale: "Demo: a synthetic busy process. Nothing will be applied.".into(),
         impact,
+        unit: None,
     });
     case.transition(
         Stage::AwaitingApproval,

@@ -122,12 +122,28 @@ async fn run(profile: &std::path::Path, browser: u32) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("; ")
     );
-    let message = jitterbug_lib::inside::chrome::act(&busy.id, &busy.detail, "close_tab")?;
+    // The incident path: a memory alert on the browser offers closing the heavy tab, not
+    // quitting the browser. The connection opened above is reused, as after "Show tabs".
+    let option = jitterbug_lib::inside::options::option(&snapshot, &workload, true)
+        .ok_or("No tab was offered for a memory incident")?;
+    let unit = option.unit.as_ref().ok_or("The offer has no tab")?;
+    println!(
+        "Incident alternative: {} → “{}” ({})",
+        option.action,
+        unit.title,
+        jitterbug_lib::inside::size(unit.memory_bytes)
+    );
+    if option.action != "close_tab" || unit.id != busy.id {
+        return Err("The memory incident did not offer closing the heavy tab".into());
+    }
+    let message = jitterbug_lib::inside::chrome::act(&unit.id, &unit.detail, "close_tab")?;
     println!("{message}");
     if jitterbug_lib::inside::chrome::act(&busy.id, &busy.detail, "focus_tab").is_ok() {
         return Err("Closed tab is still open".into());
     }
-    println!("Inside probe passed: busy tab matched to its renderer, ranked first, and closed.");
+    println!(
+        "Inside probe passed: busy tab matched, ranked first, offered for closing, and closed."
+    );
     Ok(())
 }
 

@@ -354,11 +354,13 @@ export interface ActionImpact {
 }
 
 export interface ActionPopupOption {
-    action: 'lower_priority' | 'terminate';
+    action: 'lower_priority' | 'terminate' | 'pause' | 'close_tab';
     process: { name: string; cpu_percent: number; memory_bytes: number };
     impact: ActionImpact | null;
-    /** For a stop: what ends, in plain words. */
+    /** For a stop, pause, or tab close: what it does, in plain words. */
     closes: string | null;
+    /** The tab or command session a granular action targets. */
+    unit?: { title: string; kind: 'tab' | 'session' } | null;
 }
 
 /** Trimmed case for the out-of-app popup: no paths, PIDs, evidence, or diagnosis. */
@@ -379,6 +381,7 @@ export interface ActionPopupCase {
         cpu_after: number | null;
         memory_before: number;
         memory_after: number | null;
+        resumable?: boolean;
     } | null;
     verification: {
         priority_verified: boolean;
@@ -495,12 +498,14 @@ export interface InsideUnit {
     host: string | null;
     cpu_percent: number;
     memory_bytes: number;
+    process_count: number;
     shared_with: number;
     pid: number | null;
     start_time: number | null;
     actions: string[];
     evidence: string[];
     confidence: string;
+    paused_until: number | null;
 }
 
 export interface InsideView {

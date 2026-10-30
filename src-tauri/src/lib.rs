@@ -13,6 +13,7 @@ pub mod harness;
 pub mod inside;
 pub mod jitter;
 pub mod origins;
+pub mod pause;
 pub mod platform;
 mod popup;
 pub mod pressure;
@@ -567,6 +568,35 @@ async fn approve_stop(state: State<'_, AppState>, id: u64) -> Result<(), String>
 }
 
 #[tauri::command]
+fn resume_case(state: State<'_, AppState>, id: u64) -> Result<String, String> {
+    state.inner().resume(id)
+}
+
+/// Pause or resume one command session from the inside view. Pausing rechecks ownership.
+#[tauri::command]
+async fn session_control(
+    pid: u32,
+    start_time: u64,
+    action: String,
+    label: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || match action.as_str() {
+        "pause" => pause::pause(pid, start_time, &label).map(|p| {
+            format!(
+                "Paused {} ({} processes). It resumes automatically after {} minutes.",
+                p.label,
+                p.members.len(),
+                pause::LIMIT_SECONDS / 60
+            )
+        }),
+        "resume" => pause::resume(pid, start_time),
+        _ => Err("Unknown session action.".into()),
+    })
+    .await
+    .map_err(|_| "Session control unavailable.")?
+}
+
+#[tauri::command]
 async fn approve_optimization(
     state: State<'_, AppState>,
     id: u64,
@@ -631,6 +661,8 @@ pub fn run() {
             let directory = app.path().app_data_dir()?;
             let settings = storage::read::<settings::Settings>(&directory.join("settings.json"))?;
             settings.validate()?;
+            // Anything a previous run left paused (a crash or forced quit) resumes now.
+            pause::init(&directory);
             let jitter = capture::Service::new(directory.clone(), settings.automation.jitter_mode);
             app.manage(jitter.clone());
             app.manage(popup::Popups::default());
@@ -652,6 +684,7 @@ pub fn run() {
                     let mut last_workflow_notice = types::now();
                     loop {
                         let sample = collector.sample();
+                        pause::expire();
                         if let (Ok(directory), Ok(executable)) =
                             (queue::directory(), std::env::current_exe())
                         {
@@ -746,6 +779,8 @@ pub fn run() {
             dismiss_automation_case,
             approve_optimization,
             approve_stop,
+            resume_case,
+            session_control,
             capture::report_jitter,
             capture::get_jitter_tally,
             capture::clear_jitter_tally,
@@ -757,6 +792,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")
         .run(|app, event| {
+            // Never leave a paused command frozen after Jitterbug exits.
+            if matches!(event, tauri::RunEvent::Exit) {
+                pause::resume_all();
+            }
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::RunEvent::Reopen { .. }) {
                 if let Some(window) = app.get_webview_window("main") {
@@ -765,6 +804,6 @@ pub fn run() {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
+            let _ = app;
         });
 }

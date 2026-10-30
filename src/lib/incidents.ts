@@ -182,6 +182,10 @@ export function priorityAfter(victim?: string | null): string {
 /** A stop frees what ends: the whole app for its main executable, else that one process. */
 export function stopAfter(option: ActionPopupOption): string {
     const impact = option.impact;
+    if (option.action === 'pause')
+        return `Now: ${percent(option.impact?.workload_cpu_percent ?? 0)} CPU · ${memory(option.impact?.workload_memory_bytes ?? 0)}. After: no CPU until resumed; memory stays allocated`;
+    if (option.action === 'close_tab')
+        return `After: frees about ${percent(impact?.workload_cpu_percent ?? 0)} CPU · ${memory(impact?.workload_memory_bytes ?? 0)}`;
     const [cpu, bytes] = impact?.whole_app
         ? [impact.workload_cpu_percent, impact.workload_memory_bytes]
         : [option.process.cpu_percent, option.process.memory_bytes];
@@ -189,6 +193,9 @@ export function stopAfter(option: ActionPopupOption): string {
 }
 
 export function stopLabel(option: ActionPopupOption): string {
+    if (option.action === 'pause') return `Pause ${option.unit?.title ?? option.process.name}`;
+    if (option.action === 'close_tab')
+        return `Close the “${option.unit?.title ?? option.process.name}” tab`;
     return option.impact?.whole_app ? `Quit ${option.impact.label}` : `Stop ${option.process.name}`;
 }
 
@@ -206,6 +213,37 @@ export function actionResult(
               verification.system_cpu_after === null ? null : percent(verification.system_cpu_after)
           )}`
         : '';
+    if (report.action === 'pause') {
+        return {
+            title: `Paused ${name}`,
+            meaning: `${name} is frozen, not closed: no CPU until you resume it, and it resumes by itself after 15 minutes. Its memory stays allocated; macOS can compress or swap it for your other work.`,
+            measured: report.fresh
+                ? `${name} ${change(
+                      percent(report.cpu_before),
+                      report.cpu_after === null ? null : percent(report.cpu_after)
+                  )} · ${machine}`
+                : 'A fresh measurement was unavailable.',
+            note: '',
+        };
+    }
+    if (report.action === 'close_tab') {
+        const free = verification
+            ? `free memory ${change(
+                  memory(verification.available_memory_before),
+                  verification.available_memory_after === null
+                      ? null
+                      : memory(verification.available_memory_after)
+              )}`
+            : '';
+        return {
+            title: `Closed the “${name}” tab`,
+            meaning: 'The rest of the browser stays open.',
+            measured: report.fresh
+                ? [machine, free].filter(Boolean).join(' · ')
+                : 'A fresh measurement was unavailable.',
+            note: 'The browser releases the tab’s memory shortly; other activity may also have changed.',
+        };
+    }
     if (report.action === 'terminate') {
         const gone = report.fresh && report.after === null;
         const what = option?.impact?.whole_app

@@ -40,6 +40,21 @@ fn related(cases: &VecDeque<Case>, workload: Option<&str>, at: u64) -> Option<u6
         .map(|c| c.id)
 }
 
+/// The most specific alternative for a workload: close its heaviest tab or pause the command
+/// session using it, else stop a supported process. Never applied without approval.
+async fn alternative(
+    snapshot: &Snapshot,
+    workload: &str,
+    memory: bool,
+) -> Option<automation::Proposal> {
+    let (sample, id) = (snapshot.clone(), workload.to_string());
+    tokio::task::spawn_blocking(move || crate::inside::options::option(&sample, &id, memory))
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| automation::stop_option(snapshot, workload))
+}
+
 pub struct Runtime {
     pub snapshot: Arc<RwLock<Snapshot>>,
     pub settings: Mutex<settings::Settings>,
@@ -589,11 +604,17 @@ impl Runtime {
         let proposal = automation::proposal(&snapshot, &case.trigger).filter(|p| {
             !actions::priority(p.process.pid, p.process.start_time).is_ok_and(|n| n >= 10)
         });
-        let alternative = case
-            .trigger
-            .target
-            .as_ref()
-            .and_then(|t| automation::stop_option(&snapshot, &t.workload_id));
+        let memory = matches!(
+            case.trigger.kind,
+            automation::Kind::MemoryPressure | automation::Kind::MemoryGrowth
+        );
+        let alternative = match (&case.trigger.target, &case.trigger.kind) {
+            (Some(t), automation::Kind::AppUnresponsive) => {
+                automation::stop_option(&snapshot, &t.workload_id)
+            }
+            (Some(t), _) => alternative(&snapshot, &t.workload_id, memory).await,
+            (None, _) => None,
+        };
         if proposal.is_none() && alternative.is_none() {
             self.update(id, |c| c.transition(Stage::Completed, "Investigation complete. No supported change fits this incident. Review the diagnosis; protected processes and app helpers need a different intervention."))?;
             return Ok(());
@@ -715,17 +736,22 @@ impl Runtime {
                 process: process.clone(),
                 action: "lower_priority".into(),
                 rationale: "Give the app you were using scheduling preference over this workload the next time they compete. This does not free memory, and a lower priority stays until the process exits.".into(),
+                unit: None,
             })
         });
         // An already-lowered culprit gets no repeated change.
         let proposal = proposal.filter(|p| {
             !actions::priority(p.process.pid, p.process.start_time).is_ok_and(|n| n >= 10)
         });
-        let alternative = report
-            .culprit
-            .as_ref()
-            .and_then(|c| c.workload_id.as_deref())
-            .and_then(|workload| automation::stop_option(&snapshot, workload));
+        let culprit = report.culprit.as_ref().and_then(|c| c.workload_id.clone());
+        let memory = report
+            .findings
+            .iter()
+            .any(|f| f.kind == jitter::FindingKind::MemoryThrash && f.workload_id == culprit);
+        let alternative = match &culprit {
+            Some(workload) => alternative(&snapshot, workload, memory).await,
+            None => None,
+        };
         if proposal.is_none() && alternative.is_none() {
             self.update(id, |c| c.transition(Stage::Completed, "Analysis complete. No in-app change fits these findings; review the suggestions."))?;
             return Ok(());
@@ -866,6 +892,9 @@ impl Runtime {
         let stop = case
             .alternative
             .ok_or("No stop was offered for this incident.")?;
+        if matches!(stop.action.as_str(), "pause" | "close_tab") {
+            return self.granular(id, stop).await;
+        }
         let before = self.snapshot()?;
         if !before.processes.iter().any(|p| {
             p.pid == stop.process.pid
@@ -925,6 +954,142 @@ impl Runtime {
             }
         }
     }
+    /// Pause a command session or close a tab, then measure with a fresh sample.
+    async fn granular(
+        self: &Arc<Self>,
+        id: u64,
+        option: automation::Proposal,
+    ) -> Result<(), String> {
+        let unit = option
+            .unit
+            .clone()
+            .ok_or("The offered target is unavailable.")?;
+        let before = self.snapshot()?;
+        let pausing = option.action == "pause";
+        self.update(id, |c| {
+            c.proposal = Some(option.clone());
+            c.transition(
+                Stage::Applying,
+                if pausing {
+                    "Rechecking ownership and pausing the whole command."
+                } else {
+                    "Checking the tab still shows the same page, then closing it."
+                },
+            );
+        })?;
+        let (pid, start) = (option.process.pid, option.process.start_time);
+        let target = unit.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            if pausing {
+                crate::pause::pause(pid, start, &target.title).map(|p| {
+                    format!(
+                        "Paused {} ({} processes). It resumes automatically after {} minutes.",
+                        p.label,
+                        p.members.len(),
+                        crate::pause::LIMIT_SECONDS / 60
+                    )
+                })
+            } else {
+                crate::inside::chrome::act(&target.id, &target.detail, "close_tab")
+            }
+        })
+        .await
+        .map_err(|_| "The action could not finish.".to_string())
+        .and_then(|r| r);
+        let message = match result {
+            Ok(message) => message,
+            Err(error) => {
+                self.update(id, |c| c.transition(Stage::Blocked, &error))?;
+                return Err(error);
+            }
+        };
+        let applied_at = now();
+        self.update(id, |c| {
+            c.transition(
+                Stage::Verifying,
+                "Waiting for a complete new sampling interval to measure the result.",
+            )
+        })?;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if self
+                .snapshot
+                .read()
+                .map_err(|_| "Telemetry unavailable.")?
+                .captured_at
+                >= applied_at + 6
+            {
+                break;
+            }
+        }
+        let after = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .clone();
+        let fresh = after.captured_at >= applied_at + 6;
+        let as_record = |cpu: f32, memory: u64| ProcessRecord {
+            name: unit.title.clone(),
+            cpu_percent: cpu,
+            memory_bytes: memory,
+            ..option.process.clone()
+        };
+        let now_unit = (pausing && fresh)
+            .then(|| crate::inside::sessions::session_of(&after, pid))
+            .flatten()
+            .filter(|u| u.start_time == Some(start));
+        let report = ActionReport {
+            action: option.action.clone(),
+            message,
+            before: as_record(unit.cpu_percent, unit.memory_bytes),
+            after: now_unit
+                .as_ref()
+                .map(|u| as_record(u.cpu_percent, u.memory_bytes)),
+            measured_after_seconds: after.captured_at.saturating_sub(applied_at),
+            fresh,
+        };
+        let mut verification = automation::verify(&before, &after, &report, false);
+        verification.summary = match (pausing, fresh) {
+            (_, false) => "The action was sent, but no fresh follow-up sample arrived yet.".into(),
+            (true, true) => format!(
+                "Paused. Its memory stays allocated until it resumes; macOS can compress or swap it meanwhile. Choose Resume when you want it back, or it resumes by itself in {} minutes.",
+                crate::pause::LIMIT_SECONDS / 60
+            ),
+            (false, true) => "The tab is closed. The browser releases that renderer's memory shortly; compare available memory before and after.".into(),
+        };
+        self.update(id, |c| {
+            c.report = Some(report);
+            c.verification = Some(verification);
+            c.transition(
+                Stage::Completed,
+                if pausing {
+                    "The command is paused and follow-up evidence is available."
+                } else {
+                    "The tab was closed and follow-up evidence is available."
+                },
+            );
+        })?;
+        Ok(())
+    }
+
+    /// Resume the command an incident paused.
+    pub fn resume(&self, id: u64) -> Result<String, String> {
+        let case = self.case(id)?;
+        let paused = case
+            .proposal
+            .filter(|p| p.action == "pause")
+            .ok_or("This incident paused nothing.")?;
+        let message = crate::pause::resume(paused.process.pid, paused.process.start_time)?;
+        self.update(id, |c| {
+            c.steps.push(automation::Step {
+                at: now(),
+                stage: c.stage.clone(),
+                message: message.clone(),
+            })
+        })?;
+        Ok(message)
+    }
+
     pub async fn process_action(
         self: &Arc<Self>,
         pid: u32,

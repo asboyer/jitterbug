@@ -80,6 +80,26 @@
         }
     }
 
+    async function session(unit: InsideUnit, action: 'pause' | 'resume') {
+        if (demo || tabBusy || unit.pid === null || unit.start_time === null) return;
+        tabBusy = true;
+        try {
+            notice = await invoke<string>('session_control', {
+                pid: unit.pid,
+                startTime: unit.start_time,
+                action,
+                label: unit.title,
+            });
+            await load();
+        } catch (cause) {
+            notice = errorMessage(cause);
+        } finally {
+            tabBusy = false;
+        }
+    }
+    const until = (time: number) =>
+        new Date(time * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
     function processAction(unit: InsideUnit, action: string) {
         if (unit.pid === null || unit.start_time === null) return;
         onaction(
@@ -143,7 +163,9 @@
                             <small title={unit.detail}
                                 >{unit.kind === 'tab'
                                     ? (unit.host ?? unit.detail)
-                                    : unit.detail || unit.confidence}{unit.shared_with
+                                    : unit.detail || unit.confidence}{unit.paused_until
+                                    ? ` · paused, resumes by ${until(unit.paused_until)}`
+                                    : ''}{unit.shared_with
                                     ? ` · shares a process with ${unit.shared_with} other tab${unit.shared_with === 1 ? '' : 's'}`
                                     : ''}</small
                             >
@@ -168,7 +190,16 @@
                                         : 'Close tab…'}</button
                                 >
                             {:else}
-                                {#each unit.actions as action}<button
+                                {#each unit.actions.filter((a) => a === 'pause' || a === 'resume') as action}<button
+                                        class:primary={action === 'resume'}
+                                        disabled={demo || tabBusy}
+                                        title={action === 'pause'
+                                            ? 'Freeze this command and everything it started. Nothing is closed; it resumes by itself after 15 minutes.'
+                                            : ''}
+                                        onclick={() => session(unit, action as 'pause' | 'resume')}
+                                        >{action === 'pause' ? 'Pause' : 'Resume'}</button
+                                    >{/each}
+                                {#each unit.actions.filter((a) => a !== 'pause' && a !== 'resume') as action}<button
                                         class:danger-text={action === 'terminate'}
                                         disabled={demo || actionBusy}
                                         onclick={() => processAction(unit, action)}

@@ -2,12 +2,13 @@
 //! terminal/editor/agent sessions) with each unit's measured share. Local and on demand only:
 //! titles, URLs, and working directories reach the detail view, never events or model prompts.
 pub mod chrome;
+pub mod options;
 pub mod sessions;
 
 use crate::types::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Unit {
     /// Tab target ID or `pid-start` of a session root.
     pub id: String,
@@ -19,6 +20,8 @@ pub struct Unit {
     pub host: Option<String>,
     pub cpu_percent: f32,
     pub memory_bytes: u64,
+    /// Processes this unit's numbers cover (a session's whole tree; a tab's renderer).
+    pub process_count: usize,
     /// Other units measured in the same process(es); their split is estimated.
     pub shared_with: usize,
     pub pid: Option<u32>,
@@ -26,6 +29,8 @@ pub struct Unit {
     pub actions: Vec<String>,
     pub evidence: Vec<String>,
     pub confidence: String,
+    /// When a paused session resumes by itself.
+    pub paused_until: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

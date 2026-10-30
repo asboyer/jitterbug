@@ -182,6 +182,14 @@ fn endpoints() -> Vec<String> {
         .collect()
 }
 
+/// Whether a browser connection the person allowed is already open.
+pub fn connected() -> bool {
+    !CONNECTIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty()
+}
+
 /// Run `f` on every reachable browser, reusing open connections.
 fn with_browsers<T>(mut f: impl FnMut(&mut Cdp) -> Result<T, String>) -> (Vec<T>, Vec<String>) {
     let mut open = CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
@@ -517,6 +525,7 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
                         Some(p) => p.memory_bytes,
                         None => tab.second.heap_bytes as u64,
                     },
+                    process_count: usize::from(pid.is_some()),
                     shared_with: if shared { tabs.len() - 1 } else { 0 },
                     pid: *pid,
                     start_time: process.map(|p| p.start_time),
@@ -527,6 +536,7 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
                         (Some(_), true) => "Probable process match".into(),
                         (Some(_), false) => "Matched by CPU time".into(),
                     },
+                    paused_until: None,
                 });
             }
         }
