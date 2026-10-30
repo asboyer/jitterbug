@@ -1599,6 +1599,87 @@ mod tests {
         assert_eq!(case.stage, Stage::AwaitingApproval);
         assert!(case.report.is_none());
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_approved_pause_stops_the_whole_command_and_resume_continues_it() {
+        use std::process::{Command, Stdio};
+        fn stopped(pid: u32) -> bool {
+            let out = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().starts_with('T')
+        }
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let pid = child.id();
+        let mut system = sysinfo::System::new();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let start = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .unwrap()
+            .start_time();
+        let f = Fixture::new();
+        let id = f.incident();
+        f.runtime.run(id).await;
+        let unit = crate::inside::Unit {
+            id: format!("{pid}-{start}"),
+            kind: "session".into(),
+            title: "sh · test".into(),
+            cpu_percent: 10.0,
+            memory_bytes: 8 << 20,
+            process_count: 2,
+            pid: Some(pid),
+            start_time: Some(start),
+            actions: vec!["pause".into()],
+            ..Default::default()
+        };
+        f.runtime
+            .update(id, |c| {
+                c.alternative = Some(automation::Proposal {
+                    process: ProcessRecord {
+                        pid,
+                        start_time: start,
+                        name: "sh".into(),
+                        workload_id: "fixture".into(),
+                        ..Default::default()
+                    },
+                    action: "pause".into(),
+                    rationale: "Pause sh · test.".into(),
+                    impact: None,
+                    unit: Some(unit),
+                });
+                c.stage = Stage::AwaitingApproval;
+            })
+            .unwrap();
+        // A sample newer than the pause stands in for the collector's next one.
+        *f.runtime.snapshot.write().unwrap() = sample(now() + 30, 0.0);
+        f.runtime.stop(id).await.unwrap();
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.stage, Stage::Completed);
+        let report = case.report.unwrap();
+        assert_eq!(report.action, "pause");
+        assert!(report.fresh);
+        let members = crate::pause::list()
+            .into_iter()
+            .find(|p| p.pid == pid && p.start_time == start)
+            .unwrap()
+            .members;
+        assert!(members.len() >= 2, "{members:?}");
+        assert!(members.iter().all(|(p, _)| stopped(*p)));
+        // Approving again changes nothing; resuming continues every member.
+        assert!(f.runtime.stop(id).await.is_err());
+        assert!(f.runtime.resume(id).unwrap().ends_with("resumed."));
+        assert!(members.iter().all(|(p, _)| !stopped(*p)));
+        assert!(!crate::pause::is_paused(pid, start));
+        assert!(f.runtime.resume(id).is_err());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     #[tokio::test]
     async fn one_workload_one_incident_in_either_order() {
         // Automatic first: the manual snapshot joins it and marks it as a snapshot.
