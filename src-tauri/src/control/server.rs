@@ -155,18 +155,16 @@ mod tests {
         serve(&path, handler.clone()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        std::env::set_var("JITTERBUG_CONTROL_SOCKET", &path);
-        let reply = super::super::request("echo", &json!({ "x": 1 })).unwrap();
+        // The path is passed directly: changing the environment races other tests' reads.
+        let request = |method: &str| super::super::request_at(&path, method, &json!({ "x": 1 }));
+        let reply = request("echo").unwrap();
         // The caller's PID comes from the kernel, not from the request.
         assert_eq!(reply["pid"], std::process::id());
         assert_eq!(reply["params"]["x"], 1);
         // Answers may be larger than requests, such as a browser with 100 tabs.
-        let big = super::super::request("big", &json!({})).unwrap();
+        let big = request("big").unwrap();
         assert_eq!(big.as_str().unwrap().len(), super::super::MAX_LINE * 3);
-        assert_eq!(
-            super::super::request("nope", &json!({})).unwrap_err(),
-            "Unknown method."
-        );
+        assert_eq!(request("nope").unwrap_err(), "Unknown method.");
         // A second server refuses to steal a live socket; a plain file is never replaced.
         assert!(serve(&path, handler.clone()).is_err());
         let file = dir.join("not-a-socket");

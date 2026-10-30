@@ -35,10 +35,14 @@ pub fn socket_path() -> Result<PathBuf, String> {
 /// Send one request to the running app and wait for its answer.
 #[cfg(unix)]
 pub fn request(method: &str, params: &Value) -> Result<Value, String> {
+    request_at(&socket_path()?, method, params)
+}
+
+#[cfg(unix)]
+fn request_at(path: &std::path::Path, method: &str, params: &Value) -> Result<Value, String> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
-    let path = socket_path()?;
-    let mut stream = UnixStream::connect(&path).map_err(|_| {
+    let mut stream = UnixStream::connect(path).map_err(|_| {
         "Jitterbug is not running, or agent control is unavailable. Start the Jitterbug app."
             .to_string()
     })?;
