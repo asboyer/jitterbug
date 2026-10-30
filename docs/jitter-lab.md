@@ -53,7 +53,8 @@ cargo run --release --manifest-path src-tauri/Cargo.toml --example jitterbug-hog
 cargo run --release --manifest-path src-tauri/Cargo.toml --example jitterbug-hog-probe -- --lead 7 --exit-before 1
 ```
 
-Run from a terminal inside an editor. A single-core `perl` loop starts a few seconds before
+Add `--shell` to start the loop from a shell, as a terminal command would, and `--procs 3`
+for a command with several busy processes. Run from a terminal inside an editor. A single-core `perl` loop starts a few seconds before
 a simulated press (and optionally exits just before it), with the hosting app as the app in
 front. The probe passes only when the loop is reported as a separate culprit, not as the
 editor's own work. It prints finding kinds and labels without folder names.

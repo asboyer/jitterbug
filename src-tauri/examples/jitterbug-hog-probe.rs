@@ -3,7 +3,8 @@
 //! Starts a single-core `perl` busy loop a few seconds before a simulated Jitter Snapshot press,
 //! with the app hosting this probe (a terminal or editor) as the frontmost "victim". The hog
 //! must be found by the one-second scan and reported as a separate culprit, not as the app's
-//! own work. `--exit-before N` stops the hog N seconds before the press. Prints no paths.
+//! own work. `--exit-before N` stops the hog N seconds before the press, `--procs N` runs N
+//! loops, and `--shell` starts them from a shell as a terminal command would. Prints no paths.
 use jitterbug_lib::{
     collector::Collector,
     jitter::{self, FindingKind, Victim},
@@ -27,6 +28,8 @@ fn arg(name: &str) -> Option<f64> {
 fn main() {
     let lead = arg("--lead").unwrap_or(4.0);
     let exit_before = arg("--exit-before");
+    let procs = arg("--procs").unwrap_or(1.0).max(1.0) as usize;
+    let shell = std::env::args().any(|a| a == "--shell");
     let pulse = Pulse::new();
     pulse.set_mode(Mode::Auto);
     let mut collector = Collector::default();
@@ -34,29 +37,21 @@ fn main() {
     pulse.watch(&snapshot);
     // The app this probe runs inside plays the frontmost app the person was using.
     let victim = host_app(&snapshot);
+    // The hog is this probe's child, so it belongs to the same command inside that app.
+    let expected = jitter::suspect_id(&snapshot, std::process::id());
     let started = Instant::now();
-    let mut hog: Option<std::process::Child> = None;
+    let mut hog: Option<Hog> = None;
     let mut press: Option<u64> = None;
     let mut next_sample = Instant::now() + Duration::from_secs(5);
     loop {
         std::thread::sleep(Duration::from_millis(100));
         let elapsed = started.elapsed().as_secs_f64();
         if hog.is_none() && press.is_none() && elapsed >= BASELINE_S - lead {
-            // Bounded: perl exits on its own after 60 seconds even if this probe dies.
-            hog = Some(
-                Command::new("perl")
-                    .args(["-e", "alarm 60; 1 while 1"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .spawn()
-                    .expect("perl is required for this probe"),
-            );
+            hog = Some(Hog::start(procs, shell));
             println!("[{elapsed:4.1}s] hog started");
         }
-        if let (Some(before), Some(child)) = (exit_before, hog.as_mut()) {
-            if elapsed >= BASELINE_S - before && child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-                let _ = child.wait();
+        if let (Some(before), Some(h)) = (exit_before, hog.as_mut()) {
+            if elapsed >= BASELINE_S - before && h.stop() {
                 println!("[{elapsed:4.1}s] hog exited");
             }
         }
@@ -75,9 +70,8 @@ fn main() {
         }
     }
     let capture = pulse.freeze(press.unwrap(), victim.clone());
-    if let Some(mut child) = hog {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some(mut h) = hog {
+        h.stop();
     }
     pulse.set_mode(Mode::SnapshotOnly);
     let stats = pulse.stats();
@@ -102,10 +96,19 @@ fn main() {
         stats.work_ns_total as f64 / stats.ticks.max(1) as f64 / 1e6,
         stats.work_ns_max as f64 / 1e6
     );
-    let spiked = report
-        .findings
-        .iter()
-        .any(|f| f.kind == FindingKind::ProcessSpike);
+    let spiked = report.findings.iter().any(|f| {
+        matches!(f.kind, FindingKind::ProcessSpike | FindingKind::CorePegged)
+            && f.workload_id == expected
+    });
+    println!(
+        "hog finding: {}, top culprit: {}",
+        if spiked { "yes" } else { "no" },
+        match &report.culprit {
+            Some(c) if c.workload_id == expected => "the hog",
+            Some(_) => "other load",
+            None => "none",
+        }
+    );
     let victim_busy = report
         .findings
         .iter()
@@ -120,6 +123,53 @@ fn main() {
         std::process::exit(1);
     }
     println!("Hog probe passed: the short-lived hog was named as a separate culprit.");
+}
+
+/// Single-core `perl` loops. Bounded: each exits on its own after 60 seconds even if this probe
+/// dies. With `--shell` they are a shell's children, in their own process group.
+struct Hog(Vec<std::process::Child>);
+
+impl Hog {
+    fn start(procs: usize, shell: bool) -> Self {
+        const LOOP: &str = "alarm 60; 1 while 1";
+        let spawn = |command: &mut Command| {
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::process_group(command, 0);
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("perl and sh are required for this probe")
+        };
+        if shell {
+            let script = vec![format!("perl -e '{LOOP}' &"); procs].join(" ") + " wait";
+            Self(vec![spawn(Command::new("sh").args(["-c", &script]))])
+        } else {
+            Self(
+                (0..procs)
+                    .map(|_| spawn(Command::new("perl").args(["-e", LOOP])))
+                    .collect(),
+            )
+        }
+    }
+    /// Stop every loop. Returns whether any was still running.
+    fn stop(&mut self) -> bool {
+        let mut running = false;
+        for child in &mut self.0 {
+            if child.try_wait().ok().flatten().is_some() {
+                continue;
+            }
+            running = true;
+            // The whole group, so a shell's children stop too.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        running
+    }
 }
 
 /// Outermost app bundle among this process's ancestors, as the frontmost-app stand-in.
