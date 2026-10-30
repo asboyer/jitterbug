@@ -96,10 +96,19 @@ fn session_json(unit: &Unit, lineage: &[(u32, u64)]) -> Value {
     })
 }
 
+/// A tab's title, or its host when the browser shows the address in place of a title.
+fn tab_title(unit: &Unit) -> String {
+    if unit.title.is_empty() || unit.detail.starts_with(&unit.title) {
+        unit.host.clone().unwrap_or_else(|| "Untitled tab".into())
+    } else {
+        unit.title.clone()
+    }
+}
+
 fn tab_json(unit: &Unit) -> Value {
     json!({
         "unit_id": format!("tab:{}", unit.id),
-        "title": unit.title,
+        "title": tab_title(unit),
         "host": unit.host,
         "cpu_percent_of_machine": round(unit.cpu_percent),
         "memory_mib": mib(unit.memory_bytes),
@@ -201,13 +210,15 @@ pub fn handle(
             let id = text("unit_id")?
                 .strip_prefix("tab:")
                 .ok_or("Unknown tab ID. Call jitterbug_inspect_app first.")?;
-            let (unit, workload_id) = TABS
+            let (mut unit, workload_id) = TABS
                 .lock()
                 .map_err(|_| "Tab list unavailable.")?
                 .iter()
                 .find(|(u, _)| u.id == id)
                 .cloned()
                 .ok_or("Unknown tab ID. Call jitterbug_inspect_app on the browser first.")?;
+            // The request's title is returned to the agent, so it never carries an address.
+            unit.title = tab_title(&unit);
             let workload = snapshot
                 .workloads
                 .iter()
@@ -418,6 +429,26 @@ mod tests {
             "claude · fix-login in Visual Studio Code"
         );
         assert!(!value.to_string().contains("/private/w"));
+    }
+
+    #[test]
+    fn untitled_tabs_are_named_by_host_not_address() {
+        let tab = Unit {
+            id: "T1".into(),
+            kind: "tab".into(),
+            title: "https://example.com/reset?token=abc".into(),
+            detail: "https://example.com/reset?token=abc&more=1".into(),
+            host: Some("example.com".into()),
+            ..Default::default()
+        };
+        let value = tab_json(&tab);
+        assert_eq!(value["title"], "example.com");
+        assert!(!value.to_string().contains("token"));
+        let titled = Unit {
+            title: "Inbox".into(),
+            ..tab
+        };
+        assert_eq!(tab_json(&titled)["title"], "Inbox");
     }
 
     #[test]
