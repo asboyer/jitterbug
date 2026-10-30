@@ -199,6 +199,18 @@ export function stopLabel(option: ActionPopupOption): string {
     return option.impact?.whole_app ? `Quit ${option.impact.label}` : `Stop ${option.process.name}`;
 }
 
+/** What an option ends, without repeating its label: "Pause X: its 7 processes…" → "Its 7 processes…". */
+export function stopWarning(option: ActionPopupOption): string {
+    const text = option.closes ?? '';
+    const label = stopLabel(option);
+    if (!text.startsWith(label)) return text;
+    const rest = text
+        .slice(label.length)
+        .replace(/^\s*\([^)]*\)/, '')
+        .replace(/^[\s.:;,]+/, '');
+    return rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : text;
+}
+
 /** The popup's account of a finished action: what, what it means, and before → after. */
 export function actionResult(
     report: NonNullable<ActionPopupCase['report']>,

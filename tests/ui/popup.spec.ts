@@ -109,3 +109,24 @@ test('a tab offer closes only that tab and a session offer pauses without closin
     await expect(popup).toContainText('Nothing is closed.');
     await expect(popup.getByRole('button', { name: 'Pause…', exact: true })).toBeVisible();
 });
+
+for (const example of ['', 'tab', 'pause']) {
+    test(`every button of the ${example || 'default'} example stays inside the window`, async ({
+        page,
+    }) => {
+        await page.goto(example ? `/?view=popup&example=${example}` : '/?view=popup');
+        const popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+        await expect(popup).toBeVisible();
+        for (const button of await popup.getByRole('button').all()) {
+            const box = await button.boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.y + box!.height).toBeLessThanOrEqual(300);
+        }
+        // Nothing is clipped: neither the popup nor its options need to scroll.
+        for (const element of [popup, popup.getByRole('list')]) {
+            expect(await element.evaluate((node) => node.scrollHeight <= node.clientHeight)).toBe(
+                true
+            );
+        }
+    });
+}

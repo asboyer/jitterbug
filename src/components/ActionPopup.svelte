@@ -16,6 +16,7 @@
         snapshotBadge,
         stopAfter,
         stopLabel,
+        stopWarning,
     } from '../lib/incidents';
     import type { ActionPopupCase, ActionPopupPayload, AutomationStage } from '../lib/types';
 
@@ -313,10 +314,14 @@
                     </li>{/if}
                 {#if shown.alternative}<li>
                         <div>
-                            <strong>{stopLabel(shown.alternative)}</strong>
+                            <strong title={stopLabel(shown.alternative)}
+                                >{stopLabel(shown.alternative)}</strong
+                            >
                             <span>{stopAfter(shown.alternative)}</span>
-                            {#if shown.alternative.closes}<span class="closes"
-                                    >{shown.alternative.closes}</span
+                            {#if shown.alternative.closes}<span
+                                    class="closes"
+                                    title={shown.alternative.closes}
+                                    >{stopWarning(shown.alternative)}</span
                                 >{/if}
                         </div>
                         <button class:danger={confirming} disabled={busy} onclick={stop}
@@ -462,13 +467,17 @@
         margin: 8px 0 0;
         padding: 0;
         display: grid;
-        gap: 6px;
+        gap: 5px;
+        /* The actions row always stays in the window; long options scroll instead. */
+        flex-shrink: 1;
+        min-height: 0;
+        overflow-y: auto;
     }
     .options li {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 6px 8px;
+        padding: 5px 8px;
         border-radius: 8px;
         background: var(--hover);
     }
@@ -477,14 +486,24 @@
         min-width: 0;
         display: grid;
         font-size: 11px;
-        line-height: 1.35;
+        line-height: 1.3;
     }
     .options span {
         color: var(--muted);
         font-variant-numeric: tabular-nums;
     }
+    .options strong {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
     .options .closes {
         color: var(--warning, var(--muted));
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
     .options button {
         font-size: 11px;
