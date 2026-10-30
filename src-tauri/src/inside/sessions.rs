@@ -203,9 +203,11 @@ fn unit(
 ) -> Unit {
     let cpu: f32 = tree.iter().map(|p| p.cpu_percent).sum();
     let memory: u64 = tree.iter().map(|p| p.memory_bytes).sum();
+    // A home folder's name is the account name, not a project: leave it out of the title.
     let folder = root
         .working_directory
         .as_deref()
+        .filter(|dir| dirs::home_dir().as_deref() != Some(*dir))
         .map(basename)
         .unwrap_or_default();
     let mut evidence = vec![format!(
@@ -404,6 +406,27 @@ mod tests {
         let own = &inside.remainder[0];
         assert_eq!(own.process_count, 2);
         assert_eq!(inside.remainder[1].process_count, 3);
+    }
+
+    #[test]
+    fn a_session_in_the_home_folder_is_not_titled_by_the_account_name() {
+        let Some(home) = dirs::home_dir() else { return };
+        let app = "/Applications/Terminal.app/Contents/MacOS/Terminal";
+        let mut perl = p(3, Some(2), "perl", "/usr/bin/perl", 5.0);
+        perl.working_directory = Some(home);
+        let snapshot = Snapshot {
+            source: "live".into(),
+            captured_at: now(),
+            sample_ready: true,
+            processes: vec![
+                p(1, None, "Terminal", app, 0.0),
+                p(2, Some(1), "zsh", "/bin/zsh", 0.0),
+                perl,
+            ],
+            ..Default::default()
+        };
+        let members: Vec<_> = snapshot.processes.iter().take(2).collect();
+        assert_eq!(inspect(&snapshot, "t", &members).units[0].title, "perl");
     }
 
     #[test]

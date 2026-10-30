@@ -160,6 +160,17 @@ fn signal(pid: u32, start: u64, system: &System, signal: Signal) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `parent` runs `pid` as a job: the command leads its own process group, apart from
+/// the parent's. Only such a shell watches the command stop and takes the terminal back. A
+/// script shell that merely runs the command in its own group is never stopped: stopping it
+/// would itself be seen by the interactive shell above it.
+#[cfg(unix)]
+fn job_control(pid: u32, parent: u32) -> bool {
+    let (group, parent_group) =
+        unsafe { (libc::getpgid(pid as i32), libc::getpgid(parent as i32)) };
+    group > 0 && group == pid as i32 && parent_group > 0 && parent_group != group
+}
+
 /// Whether the command owns its terminal (its process group is the terminal's foreground
 /// group). Only then does the launching shell react to it stopping. Unknown counts as yes.
 #[cfg(unix)]
@@ -258,6 +269,7 @@ pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
             .and_then(|id| system.process(id))
             .filter(|parent| shell(parent) && crate::platform::same_user(parent))
             .filter(|parent| !protected.contains(&parent.pid().as_u32()))
+            .filter(|parent| job_control(pid, parent.pid().as_u32()))
             .filter(|_| foreground(pid))
             .map(|parent| (parent.pid().as_u32(), parent.start_time()));
         if let Some((spid, sstart)) = shell {
@@ -436,6 +448,22 @@ pub fn init(directory: &Path) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_shell_running_the_command_as_its_own_job_is_held() {
+        use std::os::unix::process::CommandExt;
+        let me = std::process::id();
+        // A job: the command leads its own group, apart from its parent's.
+        let mut job = Command::new("sleep").arg("5").process_group(0).spawn().unwrap();
+        assert!(job_control(job.id(), me));
+        // A script shell's command shares the shell's group; that shell is never stopped.
+        let mut plain = Command::new("sleep").arg("5").spawn().unwrap();
+        assert!(!job_control(plain.id(), me));
+        for child in [&mut job, &mut plain] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
