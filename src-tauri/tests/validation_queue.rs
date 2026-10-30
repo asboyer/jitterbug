@@ -540,9 +540,202 @@ fn stdio_mcp_handshake_and_tools_work_without_a_model() {
         .map(|s| serde_json::from_str(s).unwrap())
         .collect();
     assert_eq!(messages.len(), 3);
-    assert_eq!(messages[1]["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(messages[1]["result"]["tools"].as_array().unwrap().len(), 5);
     assert!(messages[2]["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("check"));
+}
+
+#[test]
+fn workflow_controls_hold_prioritize_protect_and_resume_real_commands() {
+    let f = Fixture::new();
+    f.profile("check", "ok", false);
+    let one = f.submit("check", "one");
+    let two = f.submit("check", "two");
+    let three = f.submit("check", "three");
+    queue::control::change(&f.queue(), "hold_job", Some(&one.id)).unwrap();
+    queue::control::change(&f.queue(), "run_next", Some(&three.id)).unwrap();
+    queue::control::change(&f.queue(), "protect", None).unwrap();
+    f.tick(false);
+    assert!(!f.queue().join("events.txt").exists());
+    // Protection expiry is evaluated by the native scheduler, without an open UI.
+    queue::transaction(&f.queue(), |s| {
+        s.control.protected_until = Some(now() - 1);
+        Ok(())
+    })
+    .unwrap();
+    f.tick(false);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = queue::inspect(&f.queue()).unwrap();
+        if state
+            .jobs
+            .iter()
+            .filter(|j| j.id != one.id)
+            .all(|j| !j.stage.active())
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(80));
+        f.tick(false);
+    }
+    let state = queue::inspect(&f.queue()).unwrap();
+    assert_eq!(state.jobs[0].stage, Stage::Queued);
+    assert!(state
+        .view()
+        .jobs
+        .iter()
+        .find(|j| j.id == one.id)
+        .unwrap()
+        .hold_reason
+        .as_ref()
+        .unwrap()
+        .contains("Held"));
+    let events = fs::read_to_string(f.queue().join("events.txt")).unwrap();
+    assert_eq!(
+        events.lines().next().unwrap(),
+        format!("start {}", three.id)
+    );
+    assert!(events.contains(&format!("end {}", two.id)));
+    queue::control::change(&f.queue(), "resume_job", Some(&one.id)).unwrap();
+    f.settle();
+    assert!(queue::control::change(&f.queue(), "run_next", Some(&one.id)).is_err());
+    assert!(queue::inspect(&f.queue())
+        .unwrap()
+        .control
+        .protection()
+        .is_none());
+}
+
+#[test]
+fn claude_codex_and_meta_checkpoints_acknowledge_pause_and_respect_scopes() {
+    let f = Fixture::new();
+    f.profile("check", "ok", false);
+    f.profile("other", "ok", false);
+    for harness in ["claude", "codex", "muse"] {
+        let arguments = serde_json::json!({"profile":"check","session":harness,"task":"Synthetic task","phase":"editing","wait_seconds":0});
+        let first = queue::mcp::call(
+            &f.queue(),
+            &["check".into()],
+            harness,
+            "workflow_checkpoint",
+            &arguments,
+        )
+        .unwrap();
+        assert_eq!(first["may_proceed"], true);
+        let id = first["session_id"].as_str().unwrap().to_string();
+        queue::control::change(&f.queue(), "pause_session", Some(&id)).unwrap();
+        let job = queue::submit(
+            &f.queue(),
+            "check",
+            harness,
+            "Synthetic check",
+            harness,
+            harness,
+        )
+        .unwrap();
+        f.tick(false);
+        assert_eq!(
+            queue::inspect(&f.queue())
+                .unwrap()
+                .jobs
+                .iter()
+                .find(|j| j.id == job.id)
+                .unwrap()
+                .stage,
+            Stage::Queued
+        );
+        let directory = f.queue();
+        let thread = std::thread::spawn(move || {
+            queue::control::checkpoint(
+                &directory,
+                "check",
+                harness,
+                harness,
+                "Synthetic task",
+                "tests",
+                5,
+            )
+            .unwrap()
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if queue::inspect(&f.queue())
+                .unwrap()
+                .control
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .paused()
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        queue::control::change(&f.queue(), "resume_session", Some(&id)).unwrap();
+        assert!(thread.join().unwrap().may_proceed);
+        f.settle();
+        let mut forbidden = arguments.clone();
+        forbidden["profile"] = serde_json::json!("other");
+        assert!(queue::mcp::call(
+            &f.queue(),
+            &["check".into()],
+            harness,
+            "workflow_checkpoint",
+            &forbidden
+        )
+        .is_err());
+        let mut injection = arguments.clone();
+        injection["command"] = serde_json::json!("arbitrary command");
+        assert!(queue::mcp::call(
+            &f.queue(),
+            &["check".into()],
+            harness,
+            "workflow_checkpoint",
+            &injection
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn checkpoint_timeout_is_not_permission_and_model_plans_cannot_expand_actions() {
+    let f = Fixture::new();
+    f.profile("check", "ok", false);
+    let checkpoint = queue::control::checkpoint(
+        &f.queue(),
+        "check",
+        "test",
+        "session",
+        "Synthetic task",
+        "editing",
+        0,
+    )
+    .unwrap();
+    queue::control::change(&f.queue(), "pause_session", Some(&checkpoint.session_id)).unwrap();
+    let denied = queue::control::checkpoint(
+        &f.queue(),
+        "check",
+        "test",
+        "session",
+        "Synthetic task",
+        "editing",
+        0,
+    )
+    .unwrap();
+    assert!(!denied.may_proceed);
+    assert!(!queue::inspect(&f.queue()).unwrap().control.sessions[0].paused());
+    let state = queue::inspect(&f.queue()).unwrap();
+    for invalid in [
+        r#"{"action":"terminate","job_id":null,"reason":"Stop it."}"#,
+        r#"{"action":"run_next","job_id":"missing","reason":"Go."}"#,
+        r#"{"action":"protect","job_id":null,"reason":"Hold","command":"rm"}"#,
+    ] {
+        assert!(queue::control::Plan::parse(invalid, &state).is_err());
+    }
+    assert!(queue::control::Plan::parse(r#"{"action":"protect","job_id":null,"reason":"Hold upcoming checks while your apps are busy."}"#, &state).is_ok());
 }

@@ -169,7 +169,10 @@ async function mockDesktop(page: Page, fail = false, unavailable = false, launch
         { snapshot, detail, bootstrap: demoBootstrap, fail, unavailable }
     );
     await page.goto('/');
-    await page.getByRole('button', { name: 'All workloads' }).click();
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Workloads', exact: true })
+        .click();
     await page.getByRole('button', { name: /Example Browser/ }).click();
 }
 

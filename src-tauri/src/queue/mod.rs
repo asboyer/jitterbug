@@ -1,6 +1,7 @@
 //! One cooperative validation slot shared by every session of this OS user.
 //! The desktop publishes headroom and schedules. Clients can request only saved profiles.
 pub mod cli;
+pub mod control;
 pub mod inputs;
 pub mod manage;
 pub mod mcp;
@@ -109,6 +110,8 @@ impl Stage {
 pub struct Job {
     pub id: String,
     pub request_id: String,
+    #[serde(default)]
+    pub held: bool,
     pub task: String,
     pub harness: String,
     pub session: String,
@@ -130,6 +133,8 @@ pub struct Job {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Store {
     pub paused: bool,
+    #[serde(default)]
+    pub control: control::Controls,
     pub profiles: Vec<Profile>,
     pub jobs: Vec<Job>,
     #[serde(skip)]
@@ -139,6 +144,9 @@ pub struct Store {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobView {
     pub id: String,
+    pub held: bool,
+    pub hold_reason: Option<String>,
+    pub next: bool,
     pub task: String,
     pub harness: String,
     pub session: String,
@@ -161,6 +169,9 @@ impl From<&Job> for JobView {
     fn from(j: &Job) -> Self {
         Self {
             id: j.id.clone(),
+            held: j.held,
+            hold_reason: None,
+            next: false,
             task: j.task.clone(),
             harness: j.harness.clone(),
             session: j.session.clone(),
@@ -190,6 +201,7 @@ impl From<&Job> for JobView {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct View {
     pub paused: bool,
+    pub control: control::Controls,
     pub capacity: usize,
     pub reason: String,
     pub resources: Resources,
@@ -202,6 +214,9 @@ impl Store {
         if self.paused {
             return Some("New jobs are paused.".into());
         }
+        if self.control.protection().is_some() {
+            return Some("Protected session: upcoming checks are held.".into());
+        }
         if self.jobs.iter().any(|j| j.stage == Stage::Interrupted) {
             return Some(
                 "A worker was interrupted. Review its processes before releasing the slot.".into(),
@@ -213,6 +228,9 @@ impl Store {
         if let Some(reason) = self.resources.block_reason(memory) {
             return Some(reason);
         }
+        if let Some(reason) = self.goal_block() {
+            return Some(reason);
+        }
         if self.resources.consecutive_good < 2 {
             return Some("Waiting for two healthy resource samples.".into());
         }
@@ -220,19 +238,32 @@ impl Store {
     }
     pub fn view(&self) -> View {
         let memory = self
-            .jobs
-            .iter()
-            .find(|j| j.stage == Stage::Queued)
-            .map_or(0, |j| j.profile.memory_bytes);
+            .next_index()
+            .map_or(0, |i| self.jobs[i].profile.memory_bytes);
         View {
             paused: self.paused,
+            control: self.control.clone(),
             capacity: 1,
             reason: self
                 .reason(memory)
                 .unwrap_or_else(|| "Ready for the next validation.".into()),
             resources: self.resources.clone(),
             profiles: self.profiles.iter().map(|p| p.name.clone()).collect(),
-            jobs: self.jobs.iter().rev().map(JobView::from).collect(),
+            jobs: self
+                .jobs
+                .iter()
+                .rev()
+                .map(|j| {
+                    let mut view = JobView::from(j);
+                    if j.stage == Stage::Queued {
+                        view.hold_reason = self
+                            .job_hold(j)
+                            .or_else(|| self.reason(j.profile.memory_bytes));
+                        view.next = self.next_index().is_some_and(|i| self.jobs[i].id == j.id);
+                    }
+                    view
+                })
+                .collect(),
         }
     }
 }
@@ -416,6 +447,7 @@ pub fn submit(
         let job = Job {
             id: format!("validation-{}-{unique:x}", std::process::id()),
             request_id: request_id.into(),
+            held: false,
             task: task.into(),
             harness: harness.into(),
             session: session.into(),
@@ -452,6 +484,9 @@ pub fn cancel(directory: &Path, id: &str) -> Result<(), String> {
         job.stage = Stage::Cancelled;
         job.ended_at = Some(now());
         job.message = "Cancelled before launch.".into();
+        if s.control.next_job.as_deref() == Some(id) {
+            s.control.next_job = None;
+        }
         Ok(())
     })
 }
@@ -481,9 +516,23 @@ pub fn acknowledge(directory: &Path, id: &str) -> Result<(), String> {
 
 pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<(), String> {
     transaction(directory, |s| {
+        if s.control
+            .protected_until
+            .is_some_and(|until| until <= now())
+        {
+            s.control.protected_until = None;
+            s.control
+                .record("Protection expired. Checks resume when there is room.");
+        }
         let new_sample = s.resources.captured_at != snapshot.captured_at;
         s.resources = Resources::from_snapshot(snapshot, &s.resources);
         storage::write(&directory.join("headroom.json"), &s.resources)?;
+        let eligible = !s.paused
+            && s.control.protection().is_none()
+            && s.jobs
+                .iter()
+                .any(|j| j.stage == Stage::Queued && s.job_hold(j).is_none());
+        s.control.observe_pressure(&s.resources, eligible);
         for job in &mut s.jobs {
             if matches!(job.stage, Stage::Starting | Stage::Running) {
                 if !job.worker.as_ref().is_some_and(Identity::alive) {
@@ -511,7 +560,20 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
                     "Expired after one hour in the queue; submit again when ready.".into();
             }
         }
-        let Some(index) = s.jobs.iter().position(|j| j.stage == Stage::Queued) else {
+        let block = if s.jobs.iter().any(|j| j.stage == Stage::Queued) {
+            s.reason(0)
+        } else {
+            None
+        };
+        if block != s.control.last_block {
+            if let Some(ref reason) = block {
+                s.control.record(reason.clone());
+            } else if s.control.last_block.is_some() {
+                s.control.record("Checks are eligible again.");
+            }
+            s.control.last_block = block;
+        }
+        let Some(index) = s.next_index() else {
             return Ok(());
         };
         if let Some(reason) = s.reason(s.jobs[index].profile.memory_bytes) {
@@ -548,6 +610,10 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
                 job.stage = Stage::Starting;
                 job.worker = identity(process.id());
                 job.message = "Checking source inputs and current headroom.".into();
+                if s.control.next_job.as_deref() == Some(job.id.as_str()) {
+                    s.control.next_job = None;
+                }
+                s.control.record("Starting the next eligible check.");
                 // Reap owned children without blocking the collector. A detached worker can
                 // finish if the desktop closes; no new jobs start without fresh telemetry.
                 std::thread::spawn(move || {

@@ -120,7 +120,7 @@
         </div>
     {:else}<p class="empty">Collecting a fresh sample…</p>{/if}
     <footer>
-        <button onclick={() => open()}>Open Jitterbug <span aria-hidden="true">↗</span></button
+        <button onclick={() => open('hub')}>Open Jitterbug <span aria-hidden="true">↗</span></button
         ><small>{desktop ? 'Click a workload to investigate' : 'Synthetic preview'}</small>
     </footer>
 </div>

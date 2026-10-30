@@ -272,7 +272,11 @@ Provider references: [Meta Chat Completions](https://dev.meta.ai/docs/protocols/
 
 ### Interface regression checks
 
-The main **Activity** view focuses on computer health and current resource users.
+The opening **Workflows** hub brings approved checks, cooperative checkpoint sessions,
+and observed agent tasks together. Hold a check, prioritize the next one, protect
+foreground work for 20 minutes, or request an AI scheduling plan. See the
+[controls and checkpoint protocol](docs/validation-queue.md#workflow-hub).
+The **Activity** view focuses on computer health and current resource users.
 Use the sidebar for the full **Workloads** list, **Agent tasks**, **Validation queue**,
 and the **Inbox** of proposed optimizations and incident history. Open a task to see
 its request, suggestions, resource measurements, and session evidence. Disclosures

@@ -122,11 +122,50 @@ async fn control_validation_queue(action: String, job_id: Option<String>) -> Res
             "release" => {
                 queue::acknowledge(&directory, job_id.as_deref().ok_or("Missing job ID.")?)
             }
-            _ => Err("Unknown queue action.".into()),
+            _ => queue::control::change(&directory, &action, job_id.as_deref()),
         }
     })
     .await
     .map_err(|_| "Queue service unavailable.")?
+}
+
+#[tauri::command]
+async fn plan_workflow_queue(state: State<'_, AppState>) -> Result<queue::control::Plan, String> {
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    if snapshot.source != "live"
+        || !snapshot.sample_ready
+        || snapshot.captured_at > types::now().saturating_add(2)
+        || snapshot.captured_at.saturating_add(15) < types::now()
+    {
+        return Err("Fresh telemetry is required to plan work.".into());
+    }
+    let queue = tauri::async_runtime::spawn_blocking(|| queue::inspect(&queue::directory()?))
+        .await
+        .map_err(|_| "Queue unavailable.")??;
+    if !queue
+        .jobs
+        .iter()
+        .any(|job| job.stage == queue::Stage::Queued)
+    {
+        return Err("No upcoming checks need a plan.".into());
+    }
+    state
+        .engine
+        .workflow_plan(&settings, &snapshot, &queue)
+        .await
 }
 
 #[tauri::command]
@@ -547,6 +586,7 @@ pub fn run() {
                 .name("jitterbug-collector".into())
                 .spawn(move || {
                     let mut collector = collector::Collector::default();
+                    let mut last_workflow_notice = types::now();
                     loop {
                         let sample = collector.sample();
                         if let (Ok(directory), Ok(executable)) =
@@ -554,7 +594,26 @@ pub fn run() {
                         {
                             // Queue failure never stops resource monitoring. Clients fail closed
                             // when this heartbeat is absent; the UI reports unreadable state.
-                            let _ = queue::tick(&directory, &sample, &executable);
+                            if queue::tick(&directory, &sample, &executable).is_ok() {
+                                if let Ok(queue) = queue::inspect(&directory) {
+                                    if queue.control.notice_at > last_workflow_notice {
+                                        last_workflow_notice = queue.control.notice_at;
+                                        if runtime.notifications_allowed() {
+                                            let _ = handle.emit(
+                                                "workflow-attention",
+                                                queue.control.notice_at,
+                                            );
+                                            if let Some(window) = handle.get_webview_window("main")
+                                            {
+                                                let _ = window.show();
+                                                let _ = window.request_user_attention(Some(
+                                                    tauri::UserAttentionType::Informational,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         if let Ok(Some(id)) = runtime.observe(&sample) {
                             let task = runtime.clone();
@@ -594,6 +653,7 @@ pub fn run() {
             run_managed_workload,
             revoke_managed_workload,
             get_validation_queue,
+            plan_workflow_queue,
             control_validation_queue,
             get_snapshot,
             search_workloads,

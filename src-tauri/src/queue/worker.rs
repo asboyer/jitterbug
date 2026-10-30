@@ -46,7 +46,16 @@ pub fn run(directory: &Path, id: &str) -> Result<(), String> {
         original.profile.search_path.as_deref(),
     );
     let allowed = transaction(directory, |s| {
-        let reason = s.resources.block_reason(original.profile.memory_bytes);
+        let reason = s
+            .resources
+            .block_reason(original.profile.memory_bytes)
+            .or_else(|| s.goal_block())
+            .or_else(|| {
+                s.jobs
+                    .iter()
+                    .find(|j| j.id == id)
+                    .and_then(|j| s.job_hold(j))
+            });
         let approved = s.profiles.contains(&original.profile);
         let job = s
             .jobs
