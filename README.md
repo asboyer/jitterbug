@@ -129,7 +129,7 @@ A workload's detail page can split an app into the things you can actually act o
   background job is paused alone, so the prompt stays usable. Only your own commands can be
   paused; apps (a frozen window cannot redraw), jobs you already suspended, and anything
   containing Jitterbug itself are refused. This was exercised
-  with a real Claude Code session paused for 20 seconds in the middle of a tool call. It used
+  with a real coding-agent CLI session paused for 20 seconds in the middle of a tool call. It used
   no CPU while paused, then finished its task.
 - **Incidents offer the smallest fix:** when an app stays busy or memory runs short, the
   out-of-app popup offers the most specific action before quitting anything:

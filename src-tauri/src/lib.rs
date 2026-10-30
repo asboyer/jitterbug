@@ -568,8 +568,12 @@ async fn approve_stop(state: State<'_, AppState>, id: u64) -> Result<(), String>
 }
 
 #[tauri::command]
-fn resume_case(state: State<'_, AppState>, id: u64) -> Result<String, String> {
-    state.inner().resume(id)
+async fn resume_case(state: State<'_, AppState>, id: u64) -> Result<String, String> {
+    // Resuming scans the process table; keep it off the main thread.
+    let runtime = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.resume(id))
+        .await
+        .map_err(|_| "Resume unavailable.")?
 }
 
 /// Pause or resume one command session from the inside view. Pausing rechecks ownership.

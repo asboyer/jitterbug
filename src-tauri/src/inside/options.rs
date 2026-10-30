@@ -7,8 +7,11 @@ use crate::{
     types::*,
 };
 
-/// A unit must carry a real share of the workload before it is worth offering.
+/// A session is worth pausing when it carries this share of its app's use...
 const SHARE: f32 = 0.3;
+/// ...or a real load on its own, so one of several similar sessions still qualifies.
+const SESSION_MEMORY: u64 = 1 << 30;
+const SESSION_CORES: f32 = 50.0;
 /// A tab is offered only above this much memory, or a quarter of one core.
 const TAB_MEMORY: u64 = 200 << 20;
 
@@ -44,7 +47,14 @@ pub fn option(snapshot: &Snapshot, workload_id: &str, memory: bool) -> Option<Pr
             .into_iter()
             .filter(|u| u.actions.iter().any(|a| a == "pause"))
             .max_by(|a, b| weight(a, memory).total_cmp(&weight(b, memory)))
-            .filter(|u| weight(u, memory) >= total * SHARE as f64 && total > 0.0)
+            .filter(|u| {
+                let large = if memory {
+                    u.memory_bytes >= SESSION_MEMORY
+                } else {
+                    u.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= SESSION_CORES
+                };
+                large || (total > 0.0 && weight(u, memory) >= total * SHARE as f64)
+            })
             .and_then(|u| pause(snapshot, u)),
         // A project or command workload: pause the agent or terminal session that owns its
         // heaviest process, when an app launched it.
@@ -225,6 +235,30 @@ mod tests {
         assert_eq!(unit.process_count, 2);
         assert!(option.rationale.contains("Nothing is closed"));
         assert!(!option.impact.unwrap().whole_app);
+    }
+
+    #[test]
+    fn one_of_five_similar_agent_sessions_is_still_offered_for_pausing() {
+        let mut s = editor(20);
+        s.processes.truncate(3);
+        // Five sessions of 1.1–1.5 GiB: none carries 30% of the editor, the largest is offered.
+        for n in 0..5u32 {
+            let shell = 100 + n * 10;
+            s.processes.push(p(shell, Some(2), "zsh", "/bin/zsh", 1));
+            let mut agent = p(
+                shell + 1,
+                Some(shell),
+                "claude",
+                "/u/.local/bin/claude",
+                1100 + n as u64 * 100,
+            );
+            agent.working_directory = Some(format!("/w/task-{n}").into());
+            s.processes.push(agent);
+        }
+        s.workloads[0].memory_bytes = 7 << 30;
+        let option = option(&s, "code", true).unwrap();
+        assert_eq!(option.action, "pause");
+        assert_eq!(option.unit.unwrap().title, "claude · task-4");
     }
 
     #[test]
