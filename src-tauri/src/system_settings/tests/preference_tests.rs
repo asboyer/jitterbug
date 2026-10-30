@@ -83,20 +83,18 @@ fn wishlist_entries_are_manual_and_never_selectable() {
         "display_mode",
         "system_sleep",
         "display_sleep",
-    ] {
-        let item = inventory.iter().find(|v| v.id == id).unwrap();
-        assert_eq!(item.status, CapabilityStatus::Unavailable);
-        assert!(!item.included);
-        assert!(item.detail.contains("executor"));
-    }
-    for id in [
         "low_power",
         "high_power",
         "login_items",
         "background_items",
         "time_machine",
-        "pointer_acceleration",
-        "icloud_optimize",
+    ] {
+        let item = inventory.iter().find(|v| v.id == id).unwrap();
+        assert_eq!(item.status, CapabilityStatus::Unavailable, "{id}");
+        assert!(!item.included);
+        assert!(item.detail.contains("executor") || item.detail.contains("adapter"));
+    }
+    for id in [
         "microphone_privacy",
         "spotlight_exclusions",
         "developer_access",
@@ -491,21 +489,12 @@ fn validation_rejects_wrong_types_unbounded_numbers_and_unknown_keys() {
 fn inventory_has_unique_ids_and_never_offers_a_fake_privileged_grant() {
     let inventory = capabilities::coverage(&broad_state().values);
     let ids: std::collections::BTreeSet<_> = inventory.iter().map(|item| &item.id).collect();
-    assert_eq!(inventory.len(), 2 + Preference::ALL.len() + 18);
+    assert_eq!(inventory.len(), 2 + Preference::ALL.len() + 14);
     assert_eq!(ids.len(), inventory.len());
-    assert_eq!(
-        inventory
-            .iter()
-            .filter(|item| item.status == CapabilityStatus::Supported)
-            .count(),
-        2 + Preference::ALL.len()
-    );
-    for id in [
-        "display_sleep",
-        "system_sleep",
-        "brightness",
-        "stage_manager",
-    ] {
+    assert!(inventory
+        .iter()
+        .any(|item| item.id == "output_volume" && item.status == CapabilityStatus::Supported));
+    for id in ["display_sleep", "system_sleep", "brightness"] {
         let item = inventory.iter().find(|item| item.id == id).unwrap();
         assert_eq!(item.status, CapabilityStatus::Unavailable);
         assert!(settings_url(item.pane.as_ref().unwrap()).is_ok());

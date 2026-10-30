@@ -89,6 +89,11 @@ fn synchronize(app: &CFString) -> Result<(), String> {
 }
 
 pub fn read(key: Preference) -> Result<PreferenceValue, String> {
+    let major =
+        sysinfo::System::os_version().and_then(|v| v.split('.').next()?.parse::<u32>().ok());
+    if !super::supported_version() || (key == Preference::MouseLinear && major == Some(13)) {
+        return Err("Preference is not validated on this OS version; mouse linear motion requires macOS 14–15.".into());
+    }
     let app = domain(key);
     let name = CFString::new(key.descriptor().1);
     synchronize(&app)?;

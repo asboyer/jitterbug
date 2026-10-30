@@ -45,23 +45,26 @@ pub(super) fn coverage(values: &SystemValues) -> Vec<Capability> {
             status: if captured { CapabilityStatus::Supported } else { CapabilityStatus::Unavailable },
             detail: if captured { "Current user, any-host preference override only. Absence is preserved, not replaced with a guessed default. No administrator or Accessibility grant needed. A successful read does not prove write permission; any write denial is reported." } else { "Not captured: incompatible OS, managed preference, denied synchronization, or unsupported native type/range. Recheck access; do not grant unrelated privacy permissions." }.into(),
             verification: "Saved preference only — live effect not verified. Application relaunch, sign-out, or a Mac restart may be required; Jitterbug never restarts Dock or SystemUIServer.".into(),
-            pane: match group { "Finder storage" => None, "Desktop & Dock" => Some("dock".into()), "Keyboard" => Some("keyboard".into()), _ if key == Preference::MouseSpeed => Some("mouse".into()), _ => Some("trackpad".into()) },
+            pane: match group { "Storage" => Some("icloud".into()), "Finder storage" => None, "Desktop & Dock" => Some("dock".into()), "Keyboard" => Some("keyboard".into()), _ if matches!(key, Preference::MouseSpeed | Preference::MouseLinear) => Some("mouse".into()), _ => Some("trackpad".into()) },
         });
+    }
+    if let Some(item) = result
+        .iter_mut()
+        .find(|v| v.id == "icloud_optimize_storage")
+    {
+        item.detail.push_str(" Only the current user's com.apple.bird optimize-storage override is captured, not the Apple Account, iCloud Drive enablement, Photos, or file residency. No eviction/download command is run. A policy change may make macOS autonomously download or evict local cloud copies later; those file effects cannot be rolled back by this baseline.");
     }
     for (id, label, group, detail, pane) in [
         ("audio_format", "Output sample rate and full stream format", "Audio hardware", "Unavailable: automatic rate/full-ASBD executor exists, but no readable supported settable output configuration was captured. Recheck device support; no microphone permission is needed. Reboot persistence is not verified.", "sound"),
         ("display_mode", "Display resolution and refresh mode", "Displays", "Unavailable: automatic full-mode executor exists, but no stable, supported display inventory was captured. Recheck displays/access. Restore requests permanent scope and verifies current modes, not reboot persistence.", "displays"),
-        ("low_power", "Low Power Mode", "Power profiles", "Manual only: hardware, macOS, and power-source dependent. Power-profile reads do not authorize writes; no native privileged authorization adapter is installed. Use Battery or Energy settings.", "battery"),
-        ("high_power", "High Power Mode", "Power profiles", "Manual only: available on selected Mac models; do not infer support from a numeric power mode alone. No privileged writer is installed. Use Battery or Energy settings.", "battery"),
-        ("login_items", "Login items", "Login & background", "Manual only: ServiceManagement controls an app's own registered helpers, not a safe reversible inventory of arbitrary user login items. No other apps' entries are captured or changed. Review General > Login Items & Extensions.", "login_items"),
-        ("background_items", "Background items", "Login & background", "Manual only: user approvals and managed background-task registrations are not replayable preferences. No background-item database is modified. Review General > Login Items & Extensions.", "login_items"),
-        ("time_machine", "Time Machine automatic backup schedule", "Backup", "Manual only: tmutil enable/disable are documented, but no trustworthy automatic-enable-state getter was validated. Running status is not scheduling state; no guessed value, backup run or deletion is offered.", "time_machine"),
-        ("pointer_acceleration", "Pointer acceleration (not tracking speed)", "Pointer", "Manual only: tracking-speed overrides captured above are not a separate acceleration toggle or per-device curve. No verified reversible acceleration adapter is implemented. Review Mouse > Advanced where available.", "mouse"),
-        ("icloud_optimize", "iCloud Optimize Mac Storage", "Storage", "Manual only: account-managed cloud storage policy is not a reliable public reversible preference API. Cloud files are never evicted, downloaded, or deleted by this baseline. Review Apple Account > iCloud.", "icloud"),
+        ("low_power", "Low Power Mode", "Power profiles", "Unavailable: automatic pmset energy-policy executor exists, but no validated Low/High Power value was captured for this source. Recheck Battery settings and external authorization.", "battery"),
+        ("high_power", "High Power Mode", "Power profiles", "Unavailable: automatic pmset energy-policy executor exists, but High Power was not reported on this hardware/source. Recheck Battery settings.", "battery"),
+        ("login_items", "Login items", "Login & background", "Unavailable: automatic System Events executor exists for user-added application Open at Login items, but none were captured. Approve Jitterbug → System Events Automation if required, then recheck. Background service approvals are separate.", "login_items"),
+        ("background_items", "Background items", "Login & background", "Unavailable: automatic Accessibility executor exists for unique enabled background switches, but the Login Items pane was not prepared. Open General > Login Items & Extensions and recheck. Duplicate/managed items are never captured.", "login_items"),
+        ("time_machine", "Time Machine automatic backup schedule", "Backup", "Unavailable: automatic AutoBackup/AutoBackupInterval executor exists, but the system schedule plist was not readable. Full Disk Access and external authorization may be required. No backup or deletion is run.", "time_machine"),
         ("microphone_privacy", "Microphone privacy grants", "Privacy", "Manual only: TCC grants cannot be captured and replayed. Discovery does not request microphone access. Grant or revoke access yourself in Privacy & Security > Microphone; Jitterbug never edits the TCC database.", "microphone"),
         ("spotlight_exclusions", "Spotlight privacy exclusions", "Search", "Manual only: no supported exact per-volume exclusion-list restore adapter is implemented. Full Disk Access is not a substitute. Review Spotlight > Search Privacy; no index rebuild or deletion is offered.", "spotlight"),
         ("developer_access", "Developer Tools access", "Privacy", "Manual only: per-app Developer Tools privacy approvals are user-controlled TCC policy, not replayable settings. Review Privacy & Security > Developer Tools. No security controls are disabled.", "developer"),
-        ("stage_manager", "Stage Manager", "Window management", "Unavailable: no supported public reversible setting API. Private WindowManager preferences are not treated as a reliable live control. Change this in Desktop & Dock.", "dock"),
         ("reduce_motion", "Reduce motion", "Accessibility display", "Unavailable for restoration: public accessibility APIs report effective behavior but provide no supported setter. Jitterbug will not request Full Disk Access or script protected universalaccess preferences. Change this in Accessibility > Display.", "accessibility_display"),
         ("reduce_transparency", "Reduce transparency", "Accessibility display", "Unavailable for restoration: no public supported setter. Granting Accessibility does not make this preference a supported setter. Change this in Accessibility > Display.", "accessibility_display"),
         ("display_sleep", "Display sleep timeout", "Power & display", "Unavailable: automatic per-source displaysleep executor exists, but no validated saved timer was captured. Recheck power-profile discovery. Execution needs external authorization, not a fake grant.", "lock_screen"),
@@ -71,6 +74,18 @@ pub(super) fn coverage(values: &SystemValues) -> Vec<Capability> {
         result.push(Capability { included: false, id: id.into(), label: label.into(), group: group.into(), status: if detail.starts_with("Manual only:") { CapabilityStatus::Manual } else { CapabilityStatus::Unavailable }, detail: detail.into(), verification: "Not captured; never restored".into(), pane: if id == "audio_format" { None } else { Some(pane.into()) } });
     }
     result.retain(|item| match item.id.as_str() {
+        "low_power" | "high_power" => !values
+            .hardware
+            .values()
+            .any(|v| matches!(v, HardwareValue::EnergyPolicy { .. })),
+        "icloud_optimize" => !values
+            .preferences
+            .contains_key(&Preference::IcloudOptimizeStorage),
+        "stage_manager" => !values.preferences.contains_key(&Preference::StageManager),
+        "pointer_acceleration" => !values.preferences.contains_key(&Preference::MouseLinear),
+        "background_items" => !values.hardware.contains_key(&140),
+        "login_items" => !values.hardware.contains_key(&130),
+        "time_machine" => !values.hardware.contains_key(&120),
         "audio_format" => !values.hardware.contains_key(&0),
         "display_mode" => !values.hardware.contains_key(&1),
         "system_sleep" => !values
@@ -84,7 +99,12 @@ pub(super) fn coverage(values: &SystemValues) -> Vec<Capability> {
         _ => true,
     });
     for (slot, value) in &values.hardware {
-        let power = matches!(value, HardwareValue::Power { .. });
+        let power = matches!(
+            value,
+            HardwareValue::Power { .. }
+                | HardwareValue::EnergyPolicy { .. }
+                | HardwareValue::TimeMachine { .. }
+        );
         result.push(Capability {
             id: format!("hardware_{slot}"), label: match value { HardwareValue::Power {source, key, ..} => format!("{source} / {key}"), _ => value.label().into() },
             group: value.group().into(), status: if power { CapabilityStatus::NeedsPermission } else { CapabilityStatus::Supported }, included: true,

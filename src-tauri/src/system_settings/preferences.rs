@@ -43,6 +43,9 @@ pub enum Preference {
     AutomaticQuote,
     DsStoreNetwork,
     DsStoreUsb,
+    MouseLinear,
+    IcloudOptimizeStorage,
+    StageManager,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -60,7 +63,7 @@ pub enum PreferenceValue {
 }
 
 impl Preference {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 22] = [
         Self::DockAutohide,
         Self::DockMagnification,
         Self::DockAnimate,
@@ -80,9 +83,30 @@ impl Preference {
         Self::AutomaticQuote,
         Self::DsStoreNetwork,
         Self::DsStoreUsb,
+        Self::MouseLinear,
+        Self::IcloudOptimizeStorage,
+        Self::StageManager,
     ];
     pub fn descriptor(self) -> (&'static str, &'static str, &'static str, &'static str) {
         match self {
+            Self::IcloudOptimizeStorage => (
+                "com.apple.bird",
+                "optimize-storage",
+                "iCloud Optimize Mac Storage override",
+                "Storage",
+            ),
+            Self::StageManager => (
+                "com.apple.WindowManager",
+                "GloballyEnabled",
+                "Stage Manager override",
+                "Desktop & Dock",
+            ),
+            Self::MouseLinear => (
+                "NSGlobalDomain",
+                "com.apple.mouse.linear",
+                "Mouse linear motion (acceleration off)",
+                "Pointer",
+            ),
             Self::AutomaticSpelling => (
                 "NSGlobalDomain",
                 "NSAutomaticSpellingCorrectionEnabled",
@@ -232,5 +256,49 @@ impl Preference {
                 self.descriptor().2
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod modern_tests {
+    use super::*;
+    #[test]
+    fn icloud_and_stage_manager_have_exact_scopes_not_cloud_file_actions() {
+        for (encoded, domain, key) in [
+            (
+                "icloud_optimize_storage",
+                "com.apple.bird",
+                "optimize-storage",
+            ),
+            (
+                "stage_manager",
+                "com.apple.WindowManager",
+                "GloballyEnabled",
+            ),
+        ] {
+            let p: Preference = serde_json::from_str(&format!("\"{encoded}\""))
+                .expect("persistent policy override");
+            assert_eq!((p.descriptor().0, p.descriptor().1), (domain, key));
+            assert!(p.validate(PreferenceValue::Boolean(false)).is_ok());
+            assert!(p.validate(PreferenceValue::Absent).is_ok());
+            assert!(p.validate(PreferenceValue::Integer(1)).is_err());
+        }
+    }
+    #[test]
+    fn modern_acceleration_is_a_distinct_boolean_not_tracking_speed() {
+        let key: Preference =
+            serde_json::from_str("\"mouse_linear\"").expect("modern acceleration adapter");
+        assert_eq!(
+            key.descriptor(),
+            (
+                "NSGlobalDomain",
+                "com.apple.mouse.linear",
+                "Mouse linear motion (acceleration off)",
+                "Pointer"
+            )
+        );
+        assert!(key.validate(PreferenceValue::Boolean(true)).is_ok());
+        assert!(key.validate(PreferenceValue::Absent).is_ok());
+        assert!(key.validate(PreferenceValue::Real(-1.0)).is_err());
     }
 }

@@ -1,10 +1,14 @@
 # System settings baseline and rollback
 
-**Implemented:** automatic macOS rollback for volume/mute, 19 saved Dock, keyboard/text, pointer
-and Finder storage preferences, supported output nominal rate/full physical stream formats, full
-display modes, and saved per-source sleep/display-sleep timers. One Rollback preview/confirmation
-executes captured targets; there are no commands to copy. Power writes assume externally provided
-OS authorization and report denial honestly. Permission UX/helper installation is a future branch.
+**Implemented:** automatic macOS rollback for volume/mute; 22 saved Dock, keyboard/text, pointer,
+Stage Manager override, iCloud optimize-storage override, and Finder storage preferences; supported
+output nominal rate/full physical stream formats; full display modes; per-source sleep/display-sleep
+timers; Low/High Power policies when `pmset` reports them; Time Machine AutoBackup/interval storage;
+user-added Open at Login applications; and prepared Login Items background switches. One Rollback
+preview/confirmation executes captured targets; there are no commands to copy. Power and Time Machine
+writes assume externally provided OS authorization and report denial honestly. Permission UX/helper
+installation is a future branch. TCC grants, Spotlight Search Privacy folders, and Developer Tools
+approvals remain user-managed: they cannot be silently replayed.
 Hardware current-value restoration does **not** prove reboot persistence.
 This is not a full-system backup, OS downgrade, performance optimization, or a claim that writing a
 preference immediately changes live behavior. Windows and other platforms remain explicitly
@@ -92,14 +96,15 @@ manual permission/management changes. There is no fake grant button.
 | Display brightness             | Unavailable; no implemented verified per-display adapter across Apple Silicon and external displays                                         |
 | Audio nominal rate/full format | Automatic supported nominal rate/full output ASBD restore; UID/stream identity, ranges and settable status revalidated; may interrupt audio |
 | Display mode/refresh           | Automatic full-mode restore using UUID/topology and exact enumeration; requests permanent scope, verifies current modes only                |
-| Low/High Power Mode            | Manual; hardware and power-source dependent, no authorized writer; undocumented numeric `powermode` values are not interpreted              |
-| Login/background items         | Manual; ServiceManagement does not provide a general reversible adapter for other applications' registrations and approvals                 |
-| Time Machine scheduling        | Manual: enable/disable commands exist, but no trustworthy captured enable-state getter validated; never infer from running status           |
-| Pointer acceleration           | Manual, explicitly distinct from captured tracking speed; no validated separate acceleration adapter                                        |
-| iCloud Optimize Mac Storage    | Manual account-managed policy; no eviction, download, or file deletion                                                                      |
-| Microphone TCC grants          | Manual Privacy & Security approval; grants cannot be replayed; no discovery prompt or TCC database writes                                   |
-| Spotlight exclusions           | Manual Search Privacy; no exact supported exclusion-list restore adapter, no indexing actions                                               |
-| Developer Tools access         | Manual per-app privacy approval, not replayable; no security-disabling controls                                                             |
+|| Low/High Power Mode            | Automatic `powermode`/`lowpowermode` restore per AC/Battery when `pmset -g custom` reports them; needs external authorization. Undocumented values are rejected. |
+|| Login items                    | Automatic System Events restore of user-added application Open at Login paths/hidden flags. Not SMAppService/background approvals. |
+|| Background items               | Automatic AXPress restore of unique enabled `background-switch-*` controls while Login Items pane is prepared. Duplicate/managed items excluded. |
+|| Time Machine scheduling        | Automatic `AutoBackup` + `AutoBackupInterval` storage restore; not backup-running status. Needs FDA/external authorization. No backup or deletion. |
+|| Pointer acceleration           | Automatic `com.apple.mouse.linear` preference restore (macOS 14–15). Distinct from tracking speed. |
+|| iCloud Optimize Mac Storage    | Automatic current-user `com.apple.bird` `optimize-storage` override. No eviction/download of files. |
+|| Microphone TCC grants          | Manual Privacy & Security approval; grants cannot be replayed; no discovery prompt or TCC database writes                                   |
+|| Spotlight exclusions           | Manual Search Privacy; no exact supported exclusion-list restore adapter, no indexing actions                                               |
+|| Developer Tools access         | Manual per-app privacy approval, not replayable; no security-disabling controls                                                             |
 
 ### Automatic hardware and power executors
 

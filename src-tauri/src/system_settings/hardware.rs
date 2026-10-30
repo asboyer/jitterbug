@@ -58,8 +58,21 @@ impl DisplayState {
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginItem {
+    pub path: String,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HardwareValue {
+    LoginItems {
+        items: Vec<LoginItem>,
+    },
+    BackgroundItems {
+        values: BTreeMap<String, bool>,
+    },
     Displays {
         displays: Vec<DisplayState>,
     },
@@ -67,6 +80,15 @@ pub enum HardwareValue {
         uid: String,
         rate: Option<f64>,
         streams: Vec<AudioStream>,
+    },
+    TimeMachine {
+        automatic: Option<bool>,
+        interval_seconds: Option<u32>,
+    },
+    EnergyPolicy {
+        source: String,
+        mode: u8,
+        high_power_supported: bool,
     },
     Power {
         source: String,
@@ -106,27 +128,39 @@ pub(super) fn execute_verified<T>(
 impl HardwareValue {
     pub fn group(&self) -> &'static str {
         match self {
+            Self::LoginItems { .. } | Self::BackgroundItems { .. } => "Login & background",
+            Self::TimeMachine { .. } => "Backup",
             Self::Displays { .. } => "Displays",
             Self::Audio { .. } => "Audio hardware",
-            Self::Power { .. } => "Power profiles",
+            Self::Power { .. } | Self::EnergyPolicy { .. } => "Power profiles",
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::BackgroundItems { .. } => "Prepared user-approved background switches",
+            Self::LoginItems { .. } => "User-added Open at Login applications",
+            Self::TimeMachine { .. } => "Time Machine automatic backup frequency",
             Self::Displays { .. } => "Display resolution and refresh modes",
             Self::Audio { .. } => "Output nominal rate and physical stream formats",
             Self::Power { .. } => "Saved power-source timer",
+            Self::EnergyPolicy { .. } => "Saved Low/High Power policy",
         }
     }
     pub fn verification(&self) -> &'static str {
         match self {
+            Self::BackgroundItems {..} => "Accessibility switch readback only; keep Login Items & Extensions open. Initial approval, duplicate identifiers, managed items and service registration are not replayed. Changing a switch can start/stop the associated background work.",
+            Self::LoginItems {..} => "System Events application paths and hidden flags; order is not promised. Only user-added application registrations, not service/background approvals. Restored applications can run at the next login; nothing is launched now.",
+            Self::TimeMachine {..} => "Exact system AutoBackup and AutoBackupInterval storage readback, including absence; daemon scheduling/live effects not verified. Needs external system authorization and Full Disk Access. No backup or deletion is run.",
             Self::Displays {..} => "Current display modes restored by full descriptor readback; reboot persistence not verified. Permanent configuration requested; macOS can fall back to login-session scope. Screens may blank or windows move.",
             Self::Audio {..} => "Live CoreAudio rate/full ASBD readback; reboot/reconnect persistence not verified. Changing formats can interrupt audio, stop playback/recording, or require audio applications to reopen their device.",
-            Self::Power {..} => "Saved pmset profile readback; effective sleep not verified. Requires externally provided authorization.",
+            Self::Power {..} | Self::EnergyPolicy {..} => "Saved pmset profile readback; effective sleep/performance not verified. Requires externally provided authorization.",
         }
     }
     pub fn description(&self) -> String {
         match self {
+            Self::BackgroundItems {values} => values.iter().map(|(k,v)|format!("{}: {v}", k.trim_start_matches("background-switch-"))).collect::<Vec<_>>().join("; "),
+            Self::LoginItems {items} => format!("{} application registration(s): {}", items.len(), items.iter().map(|v| format!("{} (hidden: {})", std::path::Path::new(&v.path).file_name().unwrap_or_default().to_string_lossy(), v.hidden)).collect::<Vec<_>>().join(", ")),
+            Self::TimeMachine {automatic, interval_seconds} => format!("Automatic override: {}; frequency override: {}", automatic.map_or("absent/inherited".into(), |v| v.to_string()), interval_seconds.map_or("absent/inherited".into(), |v| format!("{v} seconds"))),
             Self::Displays { displays } => displays
                 .iter()
                 .enumerate()
@@ -145,6 +179,7 @@ impl HardwareValue {
                 }).collect::<Vec<_>>().join("; ");
                 format!("Nominal rate: {rate}; captured physical output formats: {formats}")
             },
+            Self::EnergyPolicy {source, mode, high_power_supported} => format!("{source}: {} (high-power hardware support: {high_power_supported})", match mode {0 => "Automatic", 1 => "Low Power", 2 => "High Power", _ => "invalid"}),
             Self::Power {
                 source,
                 key,
@@ -154,6 +189,57 @@ impl HardwareValue {
     }
     pub fn validate(&self, slot: u16) -> Result<(), String> {
         match self {
+            Self::BackgroundItems { values } => {
+                if slot != 140
+                    || values.is_empty()
+                    || values.len() > 64
+                    || values.keys().any(|k| {
+                        !k.starts_with("background-switch-")
+                            || k.len() > 512
+                            || k.chars().any(char::is_control)
+                    })
+                {
+                    return Err("Invalid background switch inventory".into());
+                }
+            }
+            Self::LoginItems { items } => {
+                if slot != 130 || items.len() > 64 {
+                    return Err("Invalid login inventory bound/slot".into());
+                }
+                let mut last = None;
+                for item in items {
+                    if item.path.len() > 2048
+                        || !item.path.starts_with('/')
+                        || !item.path.ends_with(".app")
+                        || item.path.chars().any(char::is_control)
+                        || item.path.split('/').any(|v| v == "..")
+                        || last.is_some_and(|v: &String| v >= &item.path)
+                    {
+                        return Err("Invalid, duplicate or unsorted login application path".into());
+                    }
+                    last = Some(&item.path);
+                }
+            }
+            Self::TimeMachine {
+                interval_seconds, ..
+            } => {
+                if slot != 120 || interval_seconds.is_some_and(|v| v == 0 || v > i32::MAX as u32) {
+                    return Err("Invalid Time Machine interval or slot".into());
+                }
+            }
+            Self::EnergyPolicy {
+                source,
+                mode,
+                high_power_supported,
+            } => {
+                let i = ["AC Power", "Battery Power"]
+                    .iter()
+                    .position(|s| s == source)
+                    .ok_or("Unknown energy source")?;
+                if slot != 110 + i as u16 || *mode > if *high_power_supported { 2 } else { 1 } {
+                    return Err("Invalid energy policy or unsupported High Power Mode".into());
+                }
+            }
             Self::Displays { displays } => {
                 let mut ids = std::collections::BTreeSet::new();
                 if slot != 1 || displays.is_empty() || displays.len() > 31 {
@@ -229,6 +315,23 @@ impl HardwareValue {
     }
     pub fn same_identity(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::BackgroundItems { values: a }, Self::BackgroundItems { values: b }) => {
+                a.keys().eq(b.keys())
+            }
+            (Self::LoginItems { .. }, Self::LoginItems { .. }) => true,
+            (Self::TimeMachine { .. }, Self::TimeMachine { .. }) => true,
+            (
+                Self::EnergyPolicy {
+                    source: a,
+                    high_power_supported: ah,
+                    ..
+                },
+                Self::EnergyPolicy {
+                    source: b,
+                    high_power_supported: bh,
+                    ..
+                },
+            ) => a == b && ah == bh,
             (Self::Displays { displays: a }, Self::Displays { displays: b }) => {
                 a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.same_topology(b))
             }
@@ -274,6 +377,42 @@ mod tests {
             key: "sleep".into(),
             minutes,
         }
+    }
+    #[test]
+    fn login_inventory_is_bounded_and_only_replays_typed_application_registrations() {
+        let json = r#"{"kind":"login_items","items":[{"path":"/Applications/Example.app","hidden":true}]}"#;
+        let value: HardwareValue = serde_json::from_str(json).expect("typed login inventory");
+        assert!(value.validate(130).is_ok());
+        assert_eq!(value.group(), "Login & background");
+        for path in ["/bin/sh", "relative.app", "/Applications/../Other.app"] {
+            let v: HardwareValue =
+                serde_json::from_str(&json.replace("/Applications/Example.app", path)).unwrap();
+            assert!(v.validate(130).is_err());
+        }
+    }
+    #[test]
+    fn time_machine_preserves_exact_frequency_and_absent_overrides() {
+        for automatic in ["null", "false", "true"] {
+            for interval in ["null", "3600", "86400", "604800"] {
+                let json = format!(
+                    r#"{{"kind":"time_machine","automatic":{automatic},"interval_seconds":{interval}}}"#
+                );
+                let value: HardwareValue =
+                    serde_json::from_str(&json).expect("exact Time Machine schedule target");
+                assert!(value.validate(120).is_ok());
+                assert_eq!(value.group(), "Backup");
+                assert_eq!(
+                    serde_json::from_str::<HardwareValue>(&serde_json::to_string(&value).unwrap())
+                        .unwrap(),
+                    value
+                );
+            }
+        }
+        let invalid: HardwareValue = serde_json::from_str(
+            r#"{"kind":"time_machine","automatic":true,"interval_seconds":0}"#,
+        )
+        .unwrap();
+        assert!(invalid.validate(120).is_err());
     }
     #[test]
     fn descriptions_label_unknown_refresh_and_omit_hardware_identity() {

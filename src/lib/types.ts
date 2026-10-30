@@ -104,7 +104,16 @@ export type SystemHardwareValue =
               };
           }[];
       }
-    | { kind: 'power'; source: string; key: 'sleep' | 'displaysleep'; minutes: number };
+    | { kind: 'power'; source: string; key: 'sleep' | 'displaysleep'; minutes: number }
+    | {
+          kind: 'energy_policy';
+          source: string;
+          mode: number;
+          high_power_supported: boolean;
+      }
+    | { kind: 'time_machine'; automatic: boolean | null; interval_seconds: number | null }
+    | { kind: 'login_items'; items: { path: string; hidden: boolean }[] }
+    | { kind: 'background_items'; values: Record<string, boolean> };
 
 export interface SystemSettingValues {
     output_volume: number | null;

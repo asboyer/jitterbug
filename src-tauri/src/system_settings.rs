@@ -2,10 +2,18 @@ mod capabilities;
 mod hardware;
 pub use hardware::HardwareValue;
 #[cfg(target_os = "macos")]
+mod background_items;
+#[cfg(target_os = "macos")]
 mod displays;
+#[cfg(target_os = "macos")]
+mod login_items;
 #[cfg(target_os = "macos")]
 mod power;
 mod preferences;
+#[cfg(target_os = "macos")]
+mod spotlight;
+#[cfg(target_os = "macos")]
+mod time_machine;
 pub use capabilities::{settings_url, Capability, CapabilityStatus};
 pub use preferences::{Preference, PreferenceValue};
 use serde::{Deserialize, Serialize};
@@ -306,7 +314,7 @@ impl Controller {
     pub fn capture_selected(&self, groups: Option<&[String]>) -> Result<SnapshotView, String> {
         if let Some(groups) = groups {
             if groups.is_empty()
-                || groups.len() > 8
+                || groups.len() > 11
                 || groups.iter().any(|group| {
                     ![
                         "Audio",
@@ -317,6 +325,9 @@ impl Controller {
                         "Power profiles",
                         "Displays",
                         "Audio hardware",
+                        "Storage",
+                        "Backup",
+                        "Login & background",
                     ]
                     .contains(&group.as_str())
                 })
@@ -1591,6 +1602,15 @@ mod core_audio {
 #[cfg(target_os = "macos")]
 fn collect_hardware() -> BTreeMap<u16, HardwareValue> {
     let mut values = power::collect().unwrap_or_default();
+    if let Ok(value) = time_machine::read() {
+        values.insert(120, value);
+    }
+    if let Ok(value) = login_items::read() {
+        values.insert(130, value);
+    }
+    if let Ok(value) = background_items::read() {
+        values.insert(140, value);
+    }
     if let Ok(value) = core_audio::formats::collect() {
         values.insert(0, value);
     }
@@ -1606,9 +1626,12 @@ impl NativeSettings for MacOsNativeSettings {
         values.validate()?;
         for target in values.hardware.values() {
             match target {
+                HardwareValue::BackgroundItems { .. } => background_items::preflight(target)?,
+                HardwareValue::LoginItems { .. } => login_items::preflight(target)?,
+                HardwareValue::TimeMachine { .. } => time_machine::preflight()?,
                 HardwareValue::Audio { .. } => core_audio::formats::preflight(target)?,
                 HardwareValue::Displays { .. } => displays::preflight(target)?,
-                HardwareValue::Power { .. } => (), // Shape/identity checked; authorization is tested only by the confirmed executor.
+                HardwareValue::Power { .. } | HardwareValue::EnergyPolicy { .. } => (), // Shape/identity checked; authorization is tested only by the confirmed executor.
             }
         }
         Ok(())
@@ -1616,6 +1639,10 @@ impl NativeSettings for MacOsNativeSettings {
     fn coverage(&self, values: &SystemValues) -> Vec<Capability> {
         let mut items = capabilities::coverage(values);
         power::annotate(&mut items);
+        time_machine::annotate(&mut items);
+        login_items::annotate(&mut items);
+        background_items::annotate(&mut items);
+        spotlight::annotate(&mut items);
         displays::annotate(&mut items);
         core_audio::formats::annotate(&mut items);
         for (index, key) in Preference::ALL.into_iter().enumerate() {
@@ -1677,9 +1704,16 @@ impl NativeSettings for MacOsNativeSettings {
                         .get(&slot)
                         .ok_or("Hardware target unavailable")?;
                     match target {
+                        HardwareValue::BackgroundItems { .. } => {
+                            background_items::write(before, target)
+                        }
+                        HardwareValue::LoginItems { .. } => login_items::write(before, target),
+                        HardwareValue::TimeMachine { .. } => time_machine::write(before, target),
                         HardwareValue::Audio { .. } => core_audio::formats::write(before, target),
                         HardwareValue::Displays { .. } => displays::write(before, target),
-                        HardwareValue::Power { .. } => power::write(slot, before, target),
+                        HardwareValue::Power { .. } | HardwareValue::EnergyPolicy { .. } => {
+                            power::write(slot, before, target)
+                        }
                     }
                 },
             );
@@ -2553,7 +2587,12 @@ mod tests {
                     assert!(item.included);
                     assert_eq!(
                         item.status,
-                        if matches!(value, HardwareValue::Power { .. }) {
+                        if matches!(
+                            value,
+                            HardwareValue::Power { .. }
+                                | HardwareValue::EnergyPolicy { .. }
+                                | HardwareValue::TimeMachine { .. }
+                        ) {
                             CapabilityStatus::NeedsPermission
                         } else {
                             CapabilityStatus::Supported

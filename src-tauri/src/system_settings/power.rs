@@ -20,8 +20,8 @@ fn parse_custom(text: &str) -> Result<Profiles, String> {
                 .unwrap();
             let mut fields = line.split_whitespace();
             let key = fields.next().unwrap();
-            // No interpretation of undocumented powermode numbers or other settings.
-            if !["sleep", "displaysleep"].contains(&key) {
+            // Apple OSS pmset explicitly defines powermode 0=automatic, 1=low, 2=high.
+            if !["sleep", "displaysleep", "powermode", "lowpowermode"].contains(&key) {
                 continue;
             }
             let value = fields
@@ -29,7 +29,11 @@ fn parse_custom(text: &str) -> Result<Profiles, String> {
                 .ok_or("Missing power timer.")?
                 .parse::<u32>()
                 .map_err(|_| "Invalid power timer.")?;
-            if fields.next().is_some() || profile.insert(key.into(), value).is_some() {
+            if (key == "powermode" && (value > 2 || profile.contains_key("lowpowermode")))
+                || (key == "lowpowermode" && (value > 1 || profile.contains_key("powermode")))
+                || fields.next().is_some()
+                || profile.insert(key.into(), value).is_some()
+            {
                 return Err("Ambiguous power timer.".into());
             }
         }
@@ -121,7 +125,10 @@ pub(super) fn annotate(items: &mut [super::Capability]) {
 }
 
 pub(super) fn collect() -> Result<BTreeMap<u16, super::HardwareValue>, String> {
-    let profiles = read_custom()?;
+    collect_profiles(read_custom()?)
+}
+
+fn collect_profiles(profiles: Profiles) -> Result<BTreeMap<u16, super::HardwareValue>, String> {
     let mut values = BTreeMap::new();
     for (i, source) in ["AC Power", "Battery Power", "UPS Power"]
         .iter()
@@ -134,6 +141,24 @@ pub(super) fn collect() -> Result<BTreeMap<u16, super::HardwareValue>, String> {
                     source: source.to_string(),
                     key: key.to_string(),
                     minutes: *minutes,
+                };
+                value.validate(slot)?;
+                values.insert(slot, value);
+            }
+        }
+    }
+    for (i, source) in ["AC Power", "Battery Power"].iter().enumerate() {
+        if let Some(profile) = profiles.get(*source) {
+            if let Some((mode, high)) = profile
+                .get("powermode")
+                .map(|v| (*v, true))
+                .or_else(|| profile.get("lowpowermode").map(|v| (*v, false)))
+            {
+                let slot = 110 + i as u16;
+                let value = super::HardwareValue::EnergyPolicy {
+                    source: source.to_string(),
+                    mode: mode as u8,
+                    high_power_supported: high,
                 };
                 value.validate(slot)?;
                 values.insert(slot, value);
@@ -154,21 +179,34 @@ fn write_with(
     if !expected.same_identity(target) || read()? != *expected {
         return Err("Power source or saved timer changed before write.".into());
     }
-    let super::HardwareValue::Power {
-        source,
-        key,
-        minutes,
-    } = target
-    else {
-        return Err("Wrong power target type".into());
+    let (source, key, value) = match target {
+        super::HardwareValue::Power {
+            source,
+            key,
+            minutes,
+        } => (source.as_str(), key.as_str(), *minutes),
+        super::HardwareValue::EnergyPolicy {
+            source,
+            mode,
+            high_power_supported,
+        } => (
+            source.as_str(),
+            if *high_power_supported {
+                "powermode"
+            } else {
+                "lowpowermode"
+            },
+            u32::from(*mode),
+        ),
+        _ => return Err("Wrong power target type".into()),
     };
-    let flag = match source.as_str() {
+    let flag = match source {
         "AC Power" => "-c",
         "Battery Power" => "-b",
         "UPS Power" => "-u",
         _ => return Err("Unknown power source".into()),
     };
-    run([flag.into(), key.clone(), minutes.to_string()])
+    run([flag.into(), key.into(), value.to_string()])
 }
 
 pub(super) fn write(
@@ -223,6 +261,58 @@ pub(super) fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restores_energy_policy_as_one_coupled_source_target() {
+        let before: super::super::HardwareValue = serde_json::from_str(
+            r#"{"kind":"energy_policy","source":"AC Power","mode":2,"high_power_supported":true}"#,
+        )
+        .expect("typed energy policy");
+        let target: super::super::HardwareValue = serde_json::from_str(
+            r#"{"kind":"energy_policy","source":"AC Power","mode":0,"high_power_supported":true}"#,
+        )
+        .unwrap();
+        assert!(before.validate(110).is_ok());
+        write_with(
+            110,
+            &before,
+            &target,
+            || Ok(before.clone()),
+            |args| {
+                assert_eq!(args, ["-c", "powermode", "0"]);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let low_only: super::super::HardwareValue = serde_json::from_str(r#"{"kind":"energy_policy","source":"Battery Power","mode":1,"high_power_supported":false}"#).unwrap();
+        write_with(
+            111,
+            &low_only,
+            &low_only,
+            || Ok(low_only.clone()),
+            |args| {
+                assert_eq!(args, ["-b", "lowpowermode", "1"]);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let invalid: super::super::HardwareValue = serde_json::from_str(r#"{"kind":"energy_policy","source":"Battery Power","mode":2,"high_power_supported":false}"#).unwrap();
+        assert!(invalid.validate(111).is_err());
+        assert!(!low_only.same_identity(&before));
+    }
+    #[test]
+    fn captures_exact_energy_policy_without_guessing_missing_or_ambiguous_modes() {
+        let profiles =
+            parse_custom("Battery Power:\n lowpowermode 1\nAC Power:\n powermode 2\n").unwrap();
+        assert_eq!(profiles["Battery Power"].get("lowpowermode"), Some(&1));
+        assert_eq!(profiles["AC Power"].get("powermode"), Some(&2));
+        for text in [
+            "AC Power:\n powermode 3",
+            "Battery Power:\n lowpowermode 2",
+            "AC Power:\n lowpowermode 1\n powermode 2",
+        ] {
+            assert!(parse_custom(text).is_err());
+        }
+    }
     #[test]
     fn writer_is_allowlisted_rechecks_and_propagates_authorization_failure() {
         use super::super::HardwareValue;
@@ -280,7 +370,7 @@ mod tests {
         assert_eq!(result["AC Power"]["sleep"], 0);
         assert!(!result["AC Power"].contains_key("displaysleep"));
         assert_eq!(result["UPS Power"]["displaysleep"], 5);
-        assert!(!result["AC Power"].contains_key("powermode"));
+        assert_eq!(result["AC Power"]["powermode"], 2);
     }
     #[test]
     fn rejects_ambiguous_or_malformed_profiles() {
