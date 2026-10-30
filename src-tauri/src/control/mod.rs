@@ -14,8 +14,10 @@ pub mod server;
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// Requests and responses are single JSON lines no larger than this.
+/// Requests are single JSON lines no larger than this.
 pub const MAX_LINE: usize = 64 * 1024;
+/// Answers are single JSON lines no larger than this (a browser can list 100 tabs).
+pub const MAX_REPLY: usize = 1024 * 1024;
 
 pub fn socket_path() -> Result<PathBuf, String> {
     if let Some(value) = std::env::var_os("JITTERBUG_CONTROL_SOCKET") {
@@ -40,6 +42,11 @@ pub fn request(method: &str, params: &Value) -> Result<Value, String> {
         "Jitterbug is not running, or agent control is unavailable. Start the Jitterbug app."
             .to_string()
     })?;
+    // With a socket path in a shared folder, another user could be listening there instead.
+    let me = unsafe { libc::geteuid() };
+    if server::peer(&stream).is_none_or(|(uid, _)| uid != me) {
+        return Err("The control socket is not served by Jitterbug running as you.".into());
+    }
     // A browser may wait up to a minute for the person to allow a tab connection.
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(90)))
@@ -50,7 +57,7 @@ pub fn request(method: &str, params: &Value) -> Result<Value, String> {
     }
     writeln!(stream, "{line}").map_err(|_| "Jitterbug closed the connection.")?;
     let mut reply = String::new();
-    BufReader::new(std::io::Read::take(stream, MAX_LINE as u64 + 1))
+    BufReader::new(std::io::Read::take(stream, MAX_REPLY as u64 + 1))
         .read_line(&mut reply)
         .map_err(|_| "Jitterbug did not answer in time.")?;
     let value: Value =

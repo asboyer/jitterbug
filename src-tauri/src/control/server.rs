@@ -9,15 +9,21 @@ use std::{
         net::{UnixListener, UnixStream},
     },
     path::Path,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 /// Answers one request from the caller with the given process ID.
 pub type Handler = Arc<dyn Fn(u32, &str, &Value) -> Result<Value, String> + Send + Sync>;
 
-/// The connecting process's user and process IDs, as reported by the kernel.
-fn peer(stream: &UnixStream) -> Option<(u32, u32)> {
+/// Requests answered at once; more connections are closed unanswered.
+const CONCURRENT: usize = 16;
+
+/// The other end's user and process IDs, as reported by the kernel.
+pub(super) fn peer(stream: &UnixStream) -> Option<(u32, u32)> {
     let fd = stream.as_raw_fd();
     #[cfg(target_os = "macos")]
     {
@@ -38,7 +44,7 @@ fn peer(stream: &UnixStream) -> Option<(u32, u32)> {
         };
         (read == 0 && pid > 0).then_some((uid, pid as u32))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -52,6 +58,12 @@ fn peer(stream: &UnixStream) -> Option<(u32, u32)> {
             )
         };
         (read == 0 && cred.pid > 0).then_some((cred.uid, cred.pid as u32))
+    }
+    // Without a kernel-reported caller, every connection is refused.
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+    {
+        let _ = fd;
+        None
     }
 }
 
@@ -76,11 +88,22 @@ pub fn serve(path: &Path, handler: Handler) -> Result<(), String> {
     std::thread::Builder::new()
         .name("jitterbug-control".into())
         .spawn(move || {
+            let active = Arc::new(AtomicUsize::new(0));
             for stream in listener.incoming().flatten() {
-                let handler = handler.clone();
-                let _ = std::thread::Builder::new()
+                if active.fetch_add(1, Ordering::SeqCst) >= CONCURRENT {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+                let (handler, done) = (handler.clone(), active.clone());
+                let spawned = std::thread::Builder::new()
                     .name("jitterbug-control-request".into())
-                    .spawn(move || answer(stream, &handler));
+                    .spawn(move || {
+                        answer(stream, &handler);
+                        done.fetch_sub(1, Ordering::SeqCst);
+                    });
+                if spawned.is_err() {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                }
             }
         })
         .map_err(|_| "Cannot start agent control.")?;
@@ -93,6 +116,7 @@ fn answer(mut stream: UnixStream, handler: &Handler) {
         return;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let mut line = String::new();
     let Ok(clone) = stream.try_clone() else {
         return;
@@ -125,6 +149,7 @@ mod tests {
         let path = dir.join("control.sock");
         let handler: Handler = Arc::new(|pid, method, params| match method {
             "echo" => Ok(json!({ "pid": pid, "params": params })),
+            "big" => Ok(json!("x".repeat(super::super::MAX_LINE * 3))),
             _ => Err("Unknown method.".into()),
         });
         serve(&path, handler.clone()).unwrap();
@@ -135,6 +160,9 @@ mod tests {
         // The caller's PID comes from the kernel, not from the request.
         assert_eq!(reply["pid"], std::process::id());
         assert_eq!(reply["params"]["x"], 1);
+        // Answers may be larger than requests, such as a browser with 100 tabs.
+        let big = super::super::request("big", &json!({})).unwrap();
+        assert_eq!(big.as_str().unwrap().len(), super::super::MAX_LINE * 3);
         assert_eq!(
             super::super::request("nope", &json!({})).unwrap_err(),
             "Unknown method."
