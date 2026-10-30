@@ -1,8 +1,8 @@
 <script lang="ts">
-    import { untrack } from 'svelte';
+    import { onMount, untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage } from '../lib/format';
-    import type { Bootstrap } from '../lib/types';
+    import type { Bootstrap, JitterTally } from '../lib/types';
     let {
         bootstrap,
         desktop,
@@ -12,6 +12,29 @@
     let busy = $state(false);
     let status = $state('');
     let error = $state('');
+    let tally: JitterTally | null = $state(null);
+    const shortcut = navigator.userAgent.includes('Mac') ? '⌘⇧J' : 'Ctrl+Shift+J';
+    async function loadTally() {
+        if (!desktop) return;
+        try {
+            tally = await invoke<JitterTally>('get_jitter_tally');
+        } catch (cause) {
+            error = errorMessage(cause);
+        }
+    }
+    onMount(() => {
+        void loadTally();
+    });
+    async function clearTally() {
+        if (!desktop) return;
+        try {
+            await invoke('clear_jitter_tally');
+            await loadTally();
+            status = 'Snapshot history cleared.';
+        } catch (cause) {
+            error = errorMessage(cause);
+        }
+    }
     async function save() {
         if (!desktop) {
             status = 'Preview only. No automation policy was changed.';
@@ -22,6 +45,7 @@
         try {
             await invoke('save_automation_policy', { policy });
             await onrefresh();
+            await loadTally();
             status =
                 'Automation policy saved. Permissions are rechecked immediately before every action.';
         } catch (cause) {
@@ -50,6 +74,14 @@
         ><input type="checkbox" bind:checked={policy.model_analysis} /> Ask the intelligent model automatically
         after a sustained incident</label
     >
+    <label class="toggle"
+        ><input type="checkbox" bind:checked={policy.action_popups} /> Show action popups over other apps</label
+    >
+    <p class="muted">
+        When a suggestion needs your approval and Jitterbug is in the background, a small popup
+        appears at the top right of your screen without taking focus. It shows the same suggestion
+        as the Inbox; nothing is applied until you choose an action.
+    </p>
     <p class="muted">
         Investigations may use your cloud provider. Process changes need your permission.
     </p>
@@ -160,6 +192,58 @@
         Lower priority helps competing work; it is not a CPU cap or a memory fix. Restoring priority
         can require OS privileges, so Jitterbug does not promise automatic rollback.
     </p>
+    <h3>Jitter Snapshot</h3>
+    <p>
+        Press <kbd>{shortcut}</kbd>, choose <strong>Jitter Snapshot</strong> in the menu-bar menu, or
+        use the quick view when something feels slow. Jitterbug shows what changed around that moment
+        and what you can try. Suggestions always wait for your approval.
+    </p>
+    <label class="toggle"
+        ><input
+            type="checkbox"
+            bind:checked={policy.auto_snapshots}
+            disabled={policy.jitter_mode !== 'auto'}
+        /> Take snapshots automatically</label
+    >
+    <p class="muted">
+        Off: snapshots happen only when you ask. On: automatic alerts also capture the surrounding
+        seconds, and short hitches are reported. Needs look-back sampling.
+    </p>
+    <fieldset class="jitter-mode">
+        <legend>Sampling</legend>
+        <label class="toggle"
+            ><input type="radio" bind:group={policy.jitter_mode} value="auto" /> Look back: sample once
+            per second in memory so a snapshot includes the 60 seconds before you press</label
+        >
+        <label class="toggle"
+            ><input type="radio" bind:group={policy.jitter_mode} value="snapshot_only" /> Only after I
+            press: no background sampling; record the 15 seconds after you press</label
+        >
+    </fieldset>
+    <p class="muted">
+        Look back keeps the last 120 one-second samples in memory only and costs well under 1% of
+        one core. Only after I press has no background cost but cannot see what happened before.
+        {#if tally}Sampler is {tally.sampling ? 'running' : 'stopped'}.{/if}
+    </p>
+    <h3>Snapshot history</h3>
+    <p class="muted">
+        Workload names and counts only, stored privately on this computer. When the same workload
+        comes up in three of your last six snapshots, its review offers the lower-priority
+        permission.
+    </p>
+    {#each tally?.entries.slice(0, 8) ?? [] as entry}
+        <div class="local-model">
+            <span>{entry.label}</span><span class="muted"
+                >{entry.count} {entry.count === 1 ? 'snapshot' : 'snapshots'}</span
+            >
+        </div>
+    {/each}
+    {#if !tally?.entries.length}<p class="muted">
+            No snapshots have implicated a workload yet.
+        </p>{/if}
+    <button disabled={!desktop || !tally?.entries.length} onclick={clearTally}
+        >Clear snapshot history</button
+    >
     {#if bootstrap.automation_snoozed_until > Date.now() / 1000}<p>
             Paused until {new Date(bootstrap.automation_snoozed_until * 1000).toLocaleTimeString()}
             <button disabled={!desktop} onclick={resume}>Resume now</button>
@@ -179,5 +263,17 @@
     }
     .policy-details[open] > summary {
         margin-bottom: 12px;
+    }
+    .jitter-mode {
+        border: 0;
+        padding: 0;
+        margin: 0 0 8px;
+        display: grid;
+        gap: 6px;
+    }
+    .jitter-mode legend {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 4px;
     }
 </style>

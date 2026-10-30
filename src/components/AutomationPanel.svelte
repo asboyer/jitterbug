@@ -8,13 +8,14 @@
         incidentStageLabels,
         incidentTitle,
     } from '../lib/incidents';
-    import type { AutomationCase } from '../lib/types';
+    import type { AutomationCase, ProcessRecord } from '../lib/types';
     import Icon from './Icon.svelte';
     import InfoTip from './InfoTip.svelte';
     import OptimizationReview from './OptimizationReview.svelte';
     import ActionResult from './ActionResult.svelte';
     import Investigation from './Investigation.svelte';
     import InsightCard from './InsightCard.svelte';
+    import JitterReport from './JitterReport.svelte';
 
     let {
         incident,
@@ -24,6 +25,7 @@
         onclose,
         onrefresh,
         onask,
+        onaction,
     }: {
         incident: AutomationCase;
         cases: AutomationCase[];
@@ -32,6 +34,7 @@
         onclose: () => void;
         onrefresh: () => Promise<void>;
         onask: (incident: AutomationCase) => void;
+        onaction?: (process: ProcessRecord, action: string) => void;
     } = $props();
     let busy = $state(false);
     let review: { key: string; incident: AutomationCase } | null = $state(null);
@@ -44,6 +47,10 @@
     let error = $state('');
     let reviewButton: HTMLButtonElement | undefined = $state();
     let panelTitle: HTMLHeadingElement;
+    function openReview() {
+        error = '';
+        review = { key: proposalKey, incident: structuredClone($state.snapshot(incident)) };
+    }
     function closeReview() {
         review = null;
         void tick().then(() => {
@@ -76,7 +83,13 @@
     <div class="section-title incident-heading">
         <div>
             <p class="eyebrow">
-                {incident.source === 'live' ? 'RESOURCE ASSISTANT · LIVE' : 'SYNTHETIC EXAMPLE'}
+                {incident.source !== 'live'
+                    ? 'SYNTHETIC EXAMPLE'
+                    : incident.origin === 'snapshot'
+                      ? 'JITTER SNAPSHOT · LIVE'
+                      : incident.origin === 'spike'
+                        ? 'SHORT HITCH · LIVE'
+                        : 'RESOURCE ASSISTANT · LIVE'}
             </p>
             <h2 bind:this={panelTitle} tabindex="-1">{incidentTitle(incident)}</h2>
         </div>
@@ -114,10 +127,26 @@
     </div>
     <div class="conversation automatic-conversation">
         {#key incident.id}
-            {#if incident.diagnosis?.insight && !incident.proposal}
+            {#if incident.jitter}
+                <JitterReport
+                    report={incident.jitter}
+                    {incident}
+                    canAct={canMutate}
+                    onreview={openReview}
+                    onstop={onaction ? (process) => onaction(process, 'terminate') : undefined}
+                />
+                {#if incident.verification}
+                    <section class="incident-summary outcome" aria-label="Snapshot action result">
+                        <h3>Result</h3>
+                        <p>{incident.verification.summary}</p>
+                    </section>
+                {/if}
+            {:else if incident.diagnosis?.insight && !incident.proposal}
                 <InsightCard reply={incident.diagnosis} />
-            {:else}<p class="observation">{incidentObservation(incident)}</p>{/if}
-            {#if incident.proposal}
+            {:else}
+                <p class="observation">{incidentObservation(incident)}</p>
+            {/if}
+            {#if incident.proposal && !incident.jitter}
                 <section class="proposal-card" data-tour="proposal">
                     <div class="tip-heading">
                         <Icon name="bulb" size={20} />
@@ -147,18 +176,12 @@
                             class="primary review-button"
                             bind:this={reviewButton}
                             disabled={busy}
-                            onclick={() => {
-                                error = '';
-                                review = {
-                                    key: proposalKey,
-                                    incident: structuredClone($state.snapshot(incident)),
-                                };
-                            }}>Review change</button
+                            onclick={openReview}>Review change</button
                         >
                     {/if}
                 </section>
             {/if}
-            {#if (!incident.diagnosis?.insight || incident.report) && !['awaiting_approval', 'detected', 'investigating', 'applying', 'verifying'].includes(incident.stage)}
+            {#if !incident.jitter && (!incident.diagnosis?.insight || incident.report) && !['awaiting_approval', 'detected', 'investigating', 'applying', 'verifying'].includes(incident.stage)}
                 <section class="incident-summary outcome" aria-label="Investigation outcome">
                     <h3>{incident.verification ? 'Result' : 'Outcome'}</h3>
                     <p>{incidentOutcome(incident)}</p>

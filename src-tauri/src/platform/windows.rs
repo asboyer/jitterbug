@@ -11,3 +11,19 @@ pub fn readings() -> PlatformReadings {
         memory: None,
     }
 }
+
+pub fn frontmost() -> Option<(u32, Option<String>)> {
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+    let mut pid = 0u32;
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.0.is_null() {
+            return None;
+        }
+        GetWindowThreadProcessId(window, Some(&mut pid as *mut u32));
+    }
+    // The name comes from the collected inventory, not from the window title.
+    (pid != 0).then_some((pid, None))
+}

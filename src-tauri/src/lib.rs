@@ -3,17 +3,22 @@ pub mod applications;
 pub mod attribution;
 pub mod automation;
 pub mod budget;
+mod capture;
 pub mod collector;
 mod desktop;
 pub mod details;
 pub mod diagnostics;
+mod floating;
 pub mod harness;
+pub mod jitter;
 pub mod origins;
 pub mod platform;
+mod popup;
 pub mod pressure;
 pub mod probe;
 pub mod profiles;
 pub mod providers;
+pub mod pulse;
 pub mod queue;
 pub mod research;
 pub mod settings;
@@ -504,20 +509,38 @@ async fn process_action(
 
 #[tauri::command]
 fn save_automation_policy(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
+    jitter: State<'_, capture::Jitter>,
     policy: automation::Policy,
 ) -> Result<(), String> {
-    state.save_policy(policy)
+    let mode = policy.jitter_mode;
+    state.save_policy(policy)?;
+    jitter.pulse.set_mode(mode);
+    popup::refresh(&app);
+    Ok(())
 }
 
 #[tauri::command]
-fn snooze_automation(state: State<'_, AppState>, minutes: u64) -> Result<(), String> {
-    state.snooze(minutes)
+fn snooze_automation(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    minutes: u64,
+) -> Result<(), String> {
+    state.snooze(minutes)?;
+    popup::refresh(&app);
+    Ok(())
 }
 
 #[tauri::command]
 fn dismiss_automation_case(state: State<'_, AppState>, id: u64) -> Result<(), String> {
     state.dismiss(id)
+}
+
+/// Stops only the process the incident offered, after the same identity and policy rechecks.
+#[tauri::command]
+async fn approve_stop(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state.inner().stop(id).await
 }
 
 #[tauri::command]
@@ -545,7 +568,19 @@ fn publish_automation_case(
 ) -> Result<(), String> {
     app.emit(event, case)
         .map_err(|_| "Could not deliver the automatic-assistance case.")?;
-    if case.stage == automation::Stage::Detected {
+    popup::refresh(app);
+    // With popups on, the popup is the cue; raising the main window would pull the user away.
+    let popups = app
+        .try_state::<AppState>()
+        .and_then(|state| {
+            state
+                .settings
+                .lock()
+                .ok()
+                .map(|s| s.automation.action_popups)
+        })
+        .unwrap_or(false);
+    if case.stage == automation::Stage::Detected && !popups {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
             if !window.is_focused().unwrap_or(false) {
@@ -568,10 +603,14 @@ pub fn load_development_env() {
 pub fn run() {
     load_development_env();
     tauri::Builder::default()
+        .plugin(capture::plugin())
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
             let settings = storage::read::<settings::Settings>(&directory.join("settings.json"))?;
             settings.validate()?;
+            let jitter = capture::Service::new(directory.clone(), settings.automation.jitter_mode);
+            app.manage(jitter.clone());
+            app.manage(popup::Popups::default());
             let events = app.handle().clone();
             let runtime = supervisor::Runtime::new(
                 directory,
@@ -581,6 +620,7 @@ pub fn run() {
                 }),
             );
             app.manage(runtime.clone());
+            capture::install(app, runtime.clone(), jitter.clone());
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("jitterbug-collector".into())
@@ -615,11 +655,10 @@ pub fn run() {
                                 }
                             }
                         }
+                        // The one-second pulse watches the busiest PIDs of each full sample.
+                        jitter.pulse.watch(&sample);
                         if let Ok(Some(id)) = runtime.observe(&sample) {
-                            let task = runtime.clone();
-                            tauri::async_runtime::spawn(async move {
-                                task.run(id).await;
-                            });
+                            capture::automatic(&handle, id);
                         }
                         desktop::publish(&handle, &sample);
                         std::thread::sleep(Duration::from_secs(5));
@@ -630,6 +669,10 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Focused(focused) = event {
+                // In-app prompts take over while the main window is in front.
+                if window.label() == "main" && *focused {
+                    popup::refresh(window.app_handle());
+                }
                 if window.label() == "menubar" && !focused {
                     let _ = window.hide();
                 } else if *focused {
@@ -676,7 +719,15 @@ pub fn run() {
             save_automation_policy,
             snooze_automation,
             dismiss_automation_case,
-            approve_optimization
+            approve_optimization,
+            approve_stop,
+            capture::report_jitter,
+            capture::get_jitter_tally,
+            capture::clear_jitter_tally,
+            popup::get_action_popup,
+            popup::close_action_popup,
+            popup::open_action_case,
+            popup::preview_action_popup
         ])
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")

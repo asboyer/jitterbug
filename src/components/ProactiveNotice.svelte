@@ -1,6 +1,6 @@
 <script lang="ts">
     import Icon from './Icon.svelte';
-    import { incidentOutcome } from '../lib/incidents';
+    import { incidentOutcome, noticeTitle } from '../lib/incidents';
     import { currentTip } from '../lib/task-view';
     import type { AutomationCase, AgentWorkflow } from '../lib/types';
     let {
@@ -18,33 +18,17 @@
     } = $props();
     const checking = $derived(['detected', 'investigating'].includes(incident.stage));
     const overlap = $derived(workflow && currentTip(workflow)?.id.startsWith('overlapping-'));
-    const subject = $derived(incident.trigger.target?.label ?? 'an app');
-    const title = $derived.by(() => {
-        switch (incident.trigger.kind) {
-            case 'app_unresponsive':
-                return `Hey, ${subject} has stopped responding.`;
-            case 'system_cpu':
-                return 'Hey, your computer has stayed busy.';
-            case 'memory_pressure':
-                return 'Hey, your computer is short on memory.';
-            case 'thermal_pressure':
-                return 'Hey, your computer is running warm.';
-            case 'memory_growth':
-                return `Hey, ${subject}’s memory use has grown.`;
-            case 'cpu_anomaly':
-                return `Hey, ${subject} is busier than usual.`;
-            default:
-                return `Hey, ${subject} has stayed busy.`;
-        }
-    });
+    const title = $derived(noticeTitle(incident));
     const body = $derived(
-        checking
-            ? 'I’m checking recent activity and looking for a useful next step.'
-            : overlap && incident.stage === 'awaiting_approval'
-              ? 'Your coding sessions have overlapping checks. A shared queue could help future runs take turns.'
-              : incident.stage === 'awaiting_approval'
-                ? 'I found a priority change you can review to give other work more room.'
-                : (incident.diagnosis?.insight?.next_step ?? incidentOutcome(incident))
+        checking && incident.jitter
+            ? `Captured, analyzing… ${incident.jitter.happened}`
+            : checking
+              ? 'I’m checking recent activity and looking for a useful next step.'
+              : overlap && incident.stage === 'awaiting_approval'
+                ? 'Your coding sessions have overlapping checks. A shared queue could help future runs take turns.'
+                : incident.stage === 'awaiting_approval'
+                  ? 'I found a priority change you can review to give other work more room.'
+                  : (incident.diagnosis?.insight?.next_step ?? incidentOutcome(incident))
     );
 </script>
 

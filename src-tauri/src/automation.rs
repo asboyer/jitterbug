@@ -28,6 +28,13 @@ pub struct Policy {
     pub cooldown_seconds: u64,
     pub max_investigations_per_hour: usize,
     pub rules: Vec<Rule>,
+    /// Jitter Snapshot sampling: always-on pulse, or recording only after a press.
+    pub jitter_mode: crate::pulse::Mode,
+    /// Out-of-app prompts for cases that need the user. Older settings files default to on.
+    pub action_popups: bool,
+    /// Attach a snapshot to automatic incidents and open short-hitch cases. Off by default:
+    /// snapshots are taken on demand unless the user turns this on.
+    pub auto_snapshots: bool,
 }
 
 impl Default for Policy {
@@ -43,6 +50,9 @@ impl Default for Policy {
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,
             rules: vec![],
+            jitter_mode: crate::pulse::Mode::Auto,
+            action_popups: true,
+            auto_snapshots: false,
         }
     }
 }
@@ -100,6 +110,20 @@ pub enum Kind {
     CpuAnomaly,
     MemoryGrowth,
     AppUnresponsive,
+    /// The user pressed Jitter Snapshot.
+    UserReported,
+    /// Auto-mode pulse detector saw a sustained short hitch.
+    ShortSpike,
+}
+
+/// Where a case came from. Snapshot and spike cases always wait for explicit approval.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    #[default]
+    Automatic,
+    Snapshot,
+    Spike,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -148,6 +172,71 @@ pub struct Proposal {
     pub process: ProcessRecord,
     pub action: String,
     pub rationale: String,
+    #[serde(default)]
+    pub impact: Option<Impact>,
+}
+
+/// The workload around a proposal, measured when it was made, so "now" and "after" can be
+/// compared. CPU is a share of total machine capacity; summed memory may double-count.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Impact {
+    pub label: String,
+    pub workload_cpu_percent: f32,
+    pub workload_memory_bytes: u64,
+    pub process_count: usize,
+    /// Stopping this process quits the whole app (its main executable), not one helper.
+    pub whole_app: bool,
+}
+
+fn whole_app(process: &ProcessRecord) -> bool {
+    process
+        .executable
+        .as_ref()
+        .and_then(|exe| exe.parent())
+        .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+}
+
+pub fn impact(s: &Snapshot, process: &ProcessRecord) -> Option<Impact> {
+    let workload = s.workloads.iter().find(|w| w.id == process.workload_id)?;
+    Some(Impact {
+        label: workload.label.clone(),
+        workload_cpu_percent: workload.cpu_percent,
+        workload_memory_bytes: workload.memory_bytes,
+        process_count: workload.process_count,
+        whole_app: whole_app(process),
+    })
+}
+
+/// A stop the user may approve: an app's main executable (quits the app) or a supported
+/// development process. App helpers such as browser tabs are never offered, and a stop is
+/// never applied automatically or remembered as a permission.
+pub fn stop_option(s: &Snapshot, workload_id: &str) -> Option<Proposal> {
+    let candidates = s
+        .processes
+        .iter()
+        .filter(|p| p.workload_id == workload_id && p.actions.iter().any(|a| a == "terminate"));
+    let process = candidates
+        .max_by(|a, b| {
+            (whole_app(a), a.cpu_percent)
+                .partial_cmp(&(whole_app(b), b.cpu_percent))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?
+        .clone();
+    let impact = impact(s, &process)?;
+    let rationale = if impact.whole_app {
+        format!("Quit {}. Every {} window and tab closes, including any call or unsaved work in progress.", impact.label, impact.label)
+    } else {
+        format!(
+            "Stop {} in {}. Whatever it is running, such as a dev server, build, or script, ends.",
+            process.name, impact.label
+        )
+    };
+    Some(Proposal {
+        impact: Some(impact),
+        process,
+        action: "terminate".into(),
+        rationale,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,9 +262,16 @@ pub struct Case {
     pub evidence: Option<Investigation>,
     pub diagnosis: Option<Reply>,
     pub proposal: Option<Proposal>,
+    /// A stop the user can choose instead, shown with what it would free and what it closes.
+    #[serde(default)]
+    pub alternative: Option<Proposal>,
     pub report: Option<ActionReport>,
     pub verification: Option<Verification>,
     pub automatic: bool,
+    #[serde(default)]
+    pub origin: Origin,
+    #[serde(default)]
+    pub jitter: Option<crate::jitter::Report>,
 }
 
 impl Case {
@@ -194,15 +290,23 @@ impl Case {
             evidence,
             diagnosis: None,
             proposal: None,
+            alternative: None,
             report: None,
             verification: None,
             automatic: false,
+            origin: Origin::Automatic,
+            jitter: None,
         };
         case.transition(
             Stage::Detected,
             "A sustained threshold or unusual workload change was detected.",
         );
         case
+    }
+    /// Record an event without changing the stage, such as a merged trigger.
+    pub fn note(&mut self, message: &str) {
+        let stage = self.stage.clone();
+        self.transition(stage, message);
     }
     pub fn transition(&mut self, stage: Stage, message: &str) {
         self.stage = stage.clone();
@@ -400,6 +504,34 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
 }
 
 impl Monitor {
+    /// Admit an automatic short-spike case under the same pause, global gap, hourly cap, and
+    /// per-reason cooldown as sustained incidents. Manual snapshots never pass through here.
+    pub fn admit(&mut self, key: &str, at: u64, policy: &Policy, busy: bool) -> bool {
+        while self
+            .recent
+            .front()
+            .is_some_and(|t| at.saturating_sub(*t) >= 3600)
+        {
+            self.recent.pop_front();
+        }
+        let track = self.tracks.entry(key.into()).or_default();
+        if !policy.enabled
+            || busy
+            || self.snoozed_until > at
+            || self.recent.len() >= policy.max_investigations_per_hour
+            || self
+                .last_dispatch
+                .is_some_and(|t| at.saturating_sub(t) < 60)
+            || (track.last_fired > 0
+                && at.saturating_sub(track.last_fired) < policy.cooldown_seconds)
+        {
+            return false;
+        }
+        track.last_fired = at;
+        self.recent.push_back(at);
+        self.last_dispatch = Some(at);
+        true
+    }
     pub fn observe(&mut self, s: &Snapshot, policy: &Policy, busy: bool) -> Option<Trigger> {
         if s.captured_at <= self.last_sample {
             return None;
@@ -610,7 +742,7 @@ pub fn proposal(s: &Snapshot, trigger: &Trigger) -> Option<Proposal> {
         })
         .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))?
         .clone();
-    Some(Proposal { process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into() })
+    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into() })
 }
 
 pub fn verify(
@@ -645,6 +777,87 @@ pub fn verify(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn stoppable(s: &mut Snapshot, name: &str, exe: &str, cpu: f32, actions: &[&str]) {
+        s.processes.push(ProcessRecord {
+            pid: 1000 + s.processes.len() as u32,
+            name: name.into(),
+            executable: Some(exe.into()),
+            workload_id: "app".into(),
+            cpu_percent: cpu,
+            memory_bytes: 1 << 30,
+            actions: actions.iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn stop_quits_the_whole_app_never_a_helper() {
+        let mut s = Snapshot {
+            workloads: vec![Workload {
+                id: "app".into(),
+                label: "Browser".into(),
+                cpu_percent: 45.0,
+                memory_bytes: 3 << 30,
+                process_count: 3,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let main = "/Applications/Browser.app/Contents/MacOS/Browser";
+        let helper = "/Applications/Browser.app/Contents/Frameworks/H.app/Contents/MacOS/Helper";
+        // The busy helper may only be reprioritized; it is never offered as a stop.
+        stoppable(
+            &mut s,
+            "Browser Helper (Renderer)",
+            helper,
+            40.0,
+            &["lower_priority"],
+        );
+        assert!(stop_option(&s, "app").is_none());
+        stoppable(
+            &mut s,
+            "Browser",
+            main,
+            2.0,
+            &["lower_priority", "terminate"],
+        );
+        let stop = stop_option(&s, "app").unwrap();
+        assert_eq!(stop.process.name, "Browser");
+        assert_eq!(stop.action, "terminate");
+        let impact = stop.impact.unwrap();
+        assert!(impact.whole_app);
+        assert_eq!(
+            (impact.workload_cpu_percent, impact.process_count),
+            (45.0, 3)
+        );
+        assert!(stop
+            .rationale
+            .contains("Every Browser window and tab closes"));
+    }
+
+    #[test]
+    fn stop_names_a_development_process_and_only_it() {
+        let mut s = Snapshot {
+            workloads: vec![Workload {
+                id: "app".into(),
+                label: "my-project".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        stoppable(
+            &mut s,
+            "node",
+            "/opt/node/bin/node",
+            12.0,
+            &["lower_priority", "terminate"],
+        );
+        let stop = stop_option(&s, "app").unwrap();
+        assert!(!stop.impact.unwrap().whole_app);
+        assert!(stop.rationale.starts_with("Stop node in my-project."));
+        assert!(stop_option(&s, "other").is_none());
+    }
     pub fn sample(at: u64, cpu: f32) -> Snapshot {
         Snapshot {
             source: "live".into(),

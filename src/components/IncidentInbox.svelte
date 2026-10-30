@@ -1,5 +1,9 @@
 <script lang="ts">
     import {
+        inboxFilterLabels,
+        matchesInboxFilter,
+        snapshotBadge,
+        type InboxFilter,
         incidentObservation,
         incidentOutcome,
         incidentStageLabels,
@@ -14,13 +18,16 @@
         cases: AutomationCase[];
         onselect: (id: number) => void;
     } = $props();
+    let filter = $state<InboxFilter>('all');
+    const filters: InboxFilter[] = ['all', 'snapshot', 'manual'];
+    const shown = $derived(cases.filter((incident) => matchesInboxFilter(incident, filter)));
     const proposals = $derived(
-        cases
+        shown
             .filter((incident) => incident.stage === 'awaiting_approval')
             .sort((a, b) => b.detected_at - a.detected_at)
     );
     const recent = $derived(
-        cases
+        shown
             .filter((incident) => incident.stage !== 'awaiting_approval')
             .sort((a, b) => b.detected_at - a.detected_at)
     );
@@ -47,6 +54,20 @@
             <p>Resource alerts and proposed optimizations will appear here.</p>
         </div>
     {:else}
+        <div class="inbox-filter" role="group" aria-label="Filter by origin">
+            {#each filters as option}
+                <button
+                    class:active={filter === option}
+                    aria-pressed={filter === option}
+                    onclick={() => {
+                        filter = option;
+                    }}>{inboxFilterLabels[option]}</button
+                >
+            {/each}
+        </div>
+        {#if shown.length === 0 && filter !== 'all'}<p class="muted">
+                No {inboxFilterLabels[filter].toLowerCase()} yet.
+            </p>{/if}
         {#each groups as group (group.title)}
             {#if group.cases.length > 0}
                 <section class="inbox-group" aria-label={group.title}>
@@ -96,6 +117,9 @@
                                                 'awaiting_approval'}
                                             >{incidentStageLabels[incident.stage]}</span
                                         >
+                                        {#if snapshotBadge(incident)}<span class="tag origin-badge"
+                                                >{snapshotBadge(incident)}</span
+                                            >{/if}
                                         {#if incident.source !== 'live'}<span
                                                 >Synthetic example</span
                                             >{/if}
@@ -115,6 +139,22 @@
 </section>
 
 <style>
+    .inbox-filter {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+    .inbox-filter button {
+        font-size: 11px;
+        padding: 4px 10px;
+    }
+    .inbox-filter button.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+    }
+    .origin-badge {
+        font-size: 9px;
+    }
     .incident-inbox {
         display: grid;
         gap: 28px;
