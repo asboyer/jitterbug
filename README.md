@@ -174,6 +174,9 @@ claude mcp add jitterbug-control -- /absolute/path/to/jitterbug-run control-mcp
 | `jitterbug_close_tab`      | Ask to close one browser tab                                                   |
 | `jitterbug_request_status` | Whether a request is waiting for you, applied, or declined, with the result    |
 
+- **Off until you turn it on.** Any program running as you can reach the control socket, so
+  agent control starts disabled. Turn on **Settings → Let connected agents see what each app
+  runs** to use it.
 - **You stay in charge.** Every pause or close is a request that appears in the popup (and in
   the app) with the agent's session and its stated reason. Nothing happens until you approve.
   **Settings → Agents may pause sessions without asking** lets reversible pauses apply at

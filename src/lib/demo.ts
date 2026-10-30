@@ -205,7 +205,7 @@ export const demoBootstrap: Bootstrap = {
             jitter_mode: 'auto',
             action_popups: true,
             auto_snapshots: false,
-            agent_control: true,
+            agent_control: false,
             agent_pause_without_asking: false,
         },
     },

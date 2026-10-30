@@ -34,6 +34,7 @@ fn main() {
     let directory = std::env::temp_dir().join(format!("jitterbug-control-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("temporary directory");
     let mut settings = settings::Settings::default();
+    settings.automation.agent_control = true;
     settings.automation.agent_pause_without_asking =
         args.iter().any(|a| a == "--pause-without-asking");
     // Only agent requests in this probe: no automatic incidents or model calls.

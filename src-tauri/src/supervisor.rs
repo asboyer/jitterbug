@@ -1408,13 +1408,21 @@ mod tests {
         }
     }
 
+    /// Agent control is opt-in; these tests turn it on as the person would in Settings.
+    fn allow_agents(f: &Fixture) -> Policy {
+        let mut policy = f.runtime.policy().unwrap();
+        policy.agent_control = true;
+        f.runtime.save_policy(policy.clone()).unwrap();
+        policy
+    }
+
     #[tokio::test]
     async fn agent_requests_wait_for_approval_dedupe_and_are_bounded() {
         let f = Fixture::new();
         f.runtime.observe(&sample(now(), 1.0)).unwrap();
-        // Control off: nothing is recorded.
+        // Control is off until the person turns it on: nothing is recorded.
+        assert!(!Policy::default().agent_control);
         let mut policy = f.runtime.policy().unwrap();
-        policy.agent_control = false;
         f.runtime.save_policy(policy.clone()).unwrap();
         assert!(f
             .runtime
@@ -1464,7 +1472,7 @@ mod tests {
     async fn agent_pauses_wait_while_snoozed_and_agents_resume_only_their_own() {
         let f = Fixture::new();
         f.runtime.observe(&sample(now(), 1.0)).unwrap();
-        let mut policy = f.runtime.policy().unwrap();
+        let mut policy = allow_agents(&f);
         policy.agent_pause_without_asking = true;
         f.runtime.save_policy(policy).unwrap();
         f.runtime.snooze(15).unwrap();
@@ -1508,6 +1516,7 @@ mod tests {
             .start_time();
         let f = Fixture::new();
         f.runtime.observe(&sample(now(), 1.0)).unwrap();
+        allow_agents(&f);
         let mut option = agent_option("old");
         option.process.pid = pid;
         option.process.start_time = start;
@@ -1538,6 +1547,7 @@ mod tests {
     #[tokio::test]
     async fn real_incidents_are_never_merged_into_an_agent_request() {
         let f = Fixture::new();
+        allow_agents(&f);
         let at = now();
         for offset in [10, 5] {
             assert!(f
