@@ -63,10 +63,54 @@ export type SystemPreferenceValue =
     | { kind: 'boolean'; value: boolean }
     | { kind: 'integer' | 'real'; value: number };
 
+export interface SystemAudioFormat {
+    sample_rate: number;
+    format_id: number;
+    flags: number;
+    bytes_per_packet: number;
+    frames_per_packet: number;
+    bytes_per_frame: number;
+    channels: number;
+    bits_per_channel: number;
+    reserved: number;
+}
+
+export type SystemHardwareValue =
+    | {
+          kind: 'audio';
+          uid: string;
+          rate: number | null;
+          streams: { starting_channel: number; terminal_type: number; format: SystemAudioFormat }[];
+      }
+    | {
+          kind: 'displays';
+          displays: {
+              uuid: string;
+              x: number;
+              y: number;
+              rotation: number;
+              main: boolean;
+              active: boolean;
+              mirror: string | null;
+              mode: {
+                  id: number;
+                  width: number;
+                  height: number;
+                  pixel_width: number;
+                  pixel_height: number;
+                  refresh_hz: number;
+                  flags: number;
+                  desktop_usable: boolean;
+              };
+          }[];
+      }
+    | { kind: 'power'; source: string; key: 'sleep' | 'displaysleep'; minutes: number };
+
 export interface SystemSettingValues {
     output_volume: number | null;
     output_muted: boolean | null;
     preferences?: Record<string, SystemPreferenceValue>;
+    hardware?: Record<string, SystemHardwareValue>;
 }
 
 export interface SystemDefaultSnapshot {
@@ -107,7 +151,7 @@ export type SystemOutcomeStatus =
 export interface SystemRollbackResult {
     status: SystemRollbackStatus;
     outcomes: {
-        setting: 'output_volume' | 'output_muted' | { preference: string };
+        setting: 'output_volume' | 'output_muted' | { preference: string } | { hardware: number };
         field: string;
         before: string;
         target: string;

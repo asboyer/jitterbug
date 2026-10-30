@@ -1,19 +1,24 @@
 # System settings baseline and rollback
 
-**Implemented:** macOS audio plus current-user saved Dock, keyboard/text, pointer, and Finder storage
-preferences (21 restore entries when all controls are available). Hardware formats and power timers
-have read-only discovery, not persistent restore adapters.
+**Implemented:** automatic macOS rollback for volume/mute, 19 saved Dock, keyboard/text, pointer
+and Finder storage preferences, supported output nominal rate/full physical stream formats, full
+display modes, and saved per-source sleep/display-sleep timers. One Rollback preview/confirmation
+executes captured targets; there are no commands to copy. Power writes assume externally provided
+OS authorization and report denial honestly. Permission UX/helper installation is a future branch.
+Hardware current-value restoration does **not** prove reboot persistence.
 This is not a full-system backup, OS downgrade, performance optimization, or a claim that writing a
 preference immediately changes live behavior. Windows and other platforms remain explicitly
 unsupported; no Windows baseline adapter was implemented or cross-compiled in this change.
 
 ## Exact capture/restore scope
 
-Users can include Audio, Desktop & Dock, Keyboard, Pointer, and Finder storage independently. Every Set Default
+Users can independently include Audio, Audio hardware, Displays, Power profiles, Desktop & Dock, Keyboard, Pointer, and Finder storage. Every Set Default
 creates an immutable snapshot and keeps every earlier snapshot. Each snapshot includes a per-setting
 coverage report, including exclusions. Existing v1 audio-only snapshots and separate legacy
 provider-history files remain readable/preserved; restoring an old audio snapshot does not touch
-newly supported preferences.
+newly supported preferences. Earlier hardware/power observations stored only in excluded coverage
+reports are not promoted into writable targets; capture a new baseline to save typed hardware/power
+values. Empty additive `hardware` fields are omitted, preserving old snapshot digests and history.
 
 | Group          | Setting                            | Native property / domain and key                          | Stored type                        |
 | -------------- | ---------------------------------- | --------------------------------------------------------- | ---------------------------------- |
@@ -69,55 +74,77 @@ Coverage & access inventories each setting as supported, needs permission, read-
 Manual means there is a user-controlled settings route but no validated restore adapter; unavailable
 means discovery is missing/failed or a platform API is unsupported. Unknown values are never replaced
 with defaults. A successful read-only observation does not make an entry selectable.
-Current implemented writable adapters require no microphone, Accessibility, Full Disk Access, or
-administrator grant. **Supported means a readable valid value and implemented setter, not proof of
+Audio/display/preference adapters request no microphone, Accessibility, or Full Disk Access grant.
+Power timer writes require externally provided system authorization. **Needs permission** means an
+implemented executable adapter, not unsupported; successfully captured power targets remain selectable. **Supported means a readable valid value and implemented setter, not proof of
 write permission.** Managed preferences are rejected by `CFPreferencesAppValueIsForced`; denied
 synchronization, unsupported native types, and unvalidated OS versions are explained individually.
 No permission is requested automatically. Recheck access performs fresh discovery, including after
 manual permission/management changes. There is no fake grant button.
 
-| Additional setting             | Current behavior                                                                                                                                                             |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reduce motion                  | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceMotion`; no baseline restoration                                                                 |
-| Reduce transparency            | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; no baseline restoration                                                           |
-| Stage Manager                  | Unavailable; no reliable public reversible setting API implemented                                                                                                           |
-| Display sleep timeout          | Read-only `pmset -g custom` saved `displaysleep`, separately per reported AC/Battery/UPS source; no authorized restore                                                       |
-| System idle sleep              | Read-only `pmset -g custom` saved `sleep`, separately per reported AC/Battery/UPS source; no authorized restore                                                              |
-| Display brightness             | Unavailable; no implemented verified per-display adapter across Apple Silicon and external displays                                                                          |
-| Audio nominal rate/full format | Read-only nominal rate, supported rate ranges, full physical-stream ASBD, matching supported format ranges, and settable status; default-device UID and stream drift checked |
-| Display mode/refresh           | Read-only full CoreGraphics mode: points, pixels, refresh, mode ID, flags, desktop usability, exact supported-mode match; stable display UUID and topology drift checked     |
-| Low/High Power Mode            | Manual; hardware and power-source dependent, no authorized writer; undocumented numeric `powermode` values are not interpreted                                               |
-| Login/background items         | Manual; ServiceManagement does not provide a general reversible adapter for other applications' registrations and approvals                                                  |
-| Time Machine scheduling        | Manual; no typed authorized schedule adapter; backup execution/deletion is excluded                                                                                          |
-| Pointer acceleration           | Manual, explicitly distinct from captured tracking speed; no validated separate acceleration adapter                                                                         |
-| iCloud Optimize Mac Storage    | Manual account-managed policy; no eviction, download, or file deletion                                                                                                       |
-| Microphone TCC grants          | Manual Privacy & Security approval; grants cannot be replayed; no discovery prompt or TCC database writes                                                                    |
-| Spotlight exclusions           | Manual Search Privacy; no exact supported exclusion-list restore adapter, no indexing actions                                                                                |
-| Developer Tools access         | Manual per-app privacy approval, not replayable; no security-disabling controls                                                                                              |
+| Additional setting             | Current behavior                                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reduce motion                  | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceMotion`; no baseline restoration                                |
+| Reduce transparency            | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; no baseline restoration                          |
+| Stage Manager                  | Unavailable; no reliable public reversible setting API implemented                                                                          |
+| Display sleep timeout          | Automatic saved `displaysleep` restore per reported AC/Battery/UPS source; needs external authorization                                     |
+| System idle sleep              | Automatic saved `sleep` restore per reported AC/Battery/UPS source; needs external authorization                                            |
+| Display brightness             | Unavailable; no implemented verified per-display adapter across Apple Silicon and external displays                                         |
+| Audio nominal rate/full format | Automatic supported nominal rate/full output ASBD restore; UID/stream identity, ranges and settable status revalidated; may interrupt audio |
+| Display mode/refresh           | Automatic full-mode restore using UUID/topology and exact enumeration; requests permanent scope, verifies current modes only                |
+| Low/High Power Mode            | Manual; hardware and power-source dependent, no authorized writer; undocumented numeric `powermode` values are not interpreted              |
+| Login/background items         | Manual; ServiceManagement does not provide a general reversible adapter for other applications' registrations and approvals                 |
+| Time Machine scheduling        | Manual: enable/disable commands exist, but no trustworthy captured enable-state getter validated; never infer from running status           |
+| Pointer acceleration           | Manual, explicitly distinct from captured tracking speed; no validated separate acceleration adapter                                        |
+| iCloud Optimize Mac Storage    | Manual account-managed policy; no eviction, download, or file deletion                                                                      |
+| Microphone TCC grants          | Manual Privacy & Security approval; grants cannot be replayed; no discovery prompt or TCC database writes                                   |
+| Spotlight exclusions           | Manual Search Privacy; no exact supported exclusion-list restore adapter, no indexing actions                                               |
+| Developer Tools access         | Manual per-app privacy approval, not replayable; no security-disabling controls                                                             |
 
-### Hardware persistence gate
+### Automatic hardware and power executors
 
-The public SDK explicitly documents `CGDisplaySetDisplayMode` as **application-lifetime**, reverting
-on termination. `CGCompleteDisplayConfiguration(kCGConfigurePermanently)` can fall back to the login
-session if the UI cannot support the configuration. Neither an immediate readback nor a mode's Hz
-proves persistence. Display writes are therefore not enabled. Full modes are compared, never refresh
-alone; a reported zero refresh is shown as unknown/variable, not converted to a guessed Hz. Deprecated
-pixel-encoding APIs are not used. Full-mode observations are not HDR/color-profile/VRR-policy backups.
+**CoreAudio:** capture the current default output UID, optional settable nominal rate and the full
+ASBD of each readable, settable physical output stream. Stream identity is output direction,
+starting channel and terminal type under that exact UID; ambiguous channels fail closed. Available
+nominal-rate ranges and full ranged ASBDs must support saved values. Runtime IDs come from fresh
+inspection, never a persisted slot or re-resolving the default device at the setter. Busy audio fails
+with guidance to stop playback/recording yourself. Changes can interrupt sound or require audio apps
+to reopen the device; this impact is shown before confirmation.
 
-CoreAudio `AudioObjectIsPropertySettable` describes driver writability, not persistence across reboot
-or reconnect. No device-specific persistence contract has been validated for nominal rate or physical
-format, so their writers are also gated. The physical ASBD observation retains sample rate, format ID,
-flags, bytes/packet, frames/packet, bytes/frame, channels, bits/channel, and reserved field; supported
-rate ranges alone do not validate a full format. Per-stream errors remain explicitly unknown.
-These observations are saved only in the **excluded coverage report**, not `SystemValues` and not
-restore targets. Stable hardware identities are checked in memory, not exposed in report text.
+Rate and physical formats form a **coupled restore target** because changing rate may change stream
+ASBDs. The applying journal covers this finite sequence. A later failure leaves earlier native changes
+possibly applied; no automatic undo/replay occurs. Success requires all captured format/rate values
+to match fresh readback. Reconnect/reboot persistence is not verified. Nonsettable streams are not
+restored. No input-device mutation, output-device selection, or stopping another application's audio.
 
-The fixed `/usr/bin/pmset -g custom` probe is read-only, bounded to two seconds and 16 KiB, with no
-caller-controlled executable or arguments. Missing sources/keys remain unknown; zero means never.
-This is saved profile state, not effective sleep behavior (assertions, lid state, and hardware can
-override it). The `pmset(1)` manual requires root to modify settings and documents per-system
-persistence. No safe native authorized helper exists in this app; there is no fake grant or writable
-power adapter. Timeout cleanup reaps only the app's own probe subprocess, never user workloads.
+**CoreGraphics:** capture online displays' stable UUIDs, full modes (ID, points/pixels, refresh, flags,
+desktop usability), origins, rotation, active/main state and mirror relationships. Revalidate UUIDs
+and topology, enumerate and retain exact supported mode objects, and submit changed modes in one
+configuration transaction. Request `kCGConfigurePermanently`, not application-lifetime
+`CGDisplaySetDisplayMode`; cancel uncommitted transactions on error. Report **current modes restored;
+reboot persistence not verified**: macOS documents permanent-to-login-session fallback. Readback
+must match all captured modes and unchanged topology. Automatic layout/mirror adjustments cause a
+reported mismatch, never fabricated success. This is not an arrangement/rotation/mirroring/HDR/ICC/
+brightness/VRR-policy restore. Screens may blank and windows move. Zero refresh stays unknown/variable.
+
+**Power:** fixed `/usr/bin/pmset -g custom` discovery is bounded to two seconds/16 KiB. Capture only
+reported `sleep` and `displaysleep`, separately for AC/Battery/UPS. Missing fields stay unknown; zero
+means never. Restore uses fixed `/usr/bin/pmset`, `-c`/`-b`/`-u`, one allowlisted key, and a validated
+decimal integer (0 through signed 32-bit maximum), via `Command::args`, never a shell. Each source/key
+has its own journal outcome. Recheck the exact source/key/value before execution and read saved
+profiles afterward. Exit failure/timeout stops further writes with an authorization/hardware-policy
+error. No sudo, password, helper installation or interactive input. Do not run the GUI as root.
+Externally granted execution privilege is an integration assumption, not something this branch grants
+or bypasses. The manual documents per-system persistence; timers do not prove effective sleep.
+
+**Other requested controls researched:** installed `tmutil(8)` documents `enable`/`disable` (root +
+Full Disk Access), but not a trustworthy automatic-enable-state getter. Backup-running status is not
+scheduling state; absent/private preferences are not guessed as enabled/disabled. No Time Machine
+restore target is captured. The installed `pmset(1)` lacks a validated per-source Low/High Power policy
+value contract; opaque `powermode` numbers are not interpreted. Apple's
+[ProcessInfo.isLowPowerModeEnabled](https://developer.apple.com/documentation/foundation/processinfo/islowpowermodeenabled)
+is explicitly get-only, reporting effective state rather than a reversible per-source policy. These
+stay manual rather than inventing an API. No backups, security grants or daemons are manipulated.
 
 ### Excluded one-time actions
 
@@ -126,7 +153,7 @@ process termination, temporary renice, session keep-awake assertions, index rebu
 or security-disabling commands. Those are not persistent settings that this history could restore.
 No generalized command runner or automatic optimization values were added.
 
-Power settings are not presented as grantable just because an administrator password could exist.
+Power timers with captured values are executable but need externally provided system authorization.
 Jitterbug does not use `sudo`, ask for passwords, install a persistent privileged helper, or use a
 custom authorization dialog. The public IOKit graphics SDK includes `IODisplayGetFloatParameter` /
 `IODisplaySetFloatParameter`, but that does not establish support on every display; no private
@@ -155,14 +182,18 @@ selection, process termination, or arbitrary setting writes are included.
 - CoreGraphics SDK `CGDirectDisplay.h` documents the application lifetime of `CGDisplaySetDisplayMode`;
   `CGDisplayConfiguration.h` documents the permanent-to-session fallback. Read-only discovery uses
   `CGDisplayCreateUUIDFromDisplayID`, `CGDisplayCopyDisplayMode`, `CGDisplayCopyAllDisplayModes`, and
-  nondeprecated full-mode accessors. No display setter is linked by the new adapter.
+  nondeprecated full-mode accessors. The executor uses `CGBeginDisplayConfiguration`, `CGConfigureDisplayWithDisplayMode`,
+  `CGCompleteDisplayConfiguration(..., kCGConfigurePermanently)`, and cancellation on pre-commit error.
 - CoreAudio SDK `AudioHardwareBase.h` defines `kAudioDevicePropertyNominalSampleRate`,
   `kAudioDevicePropertyAvailableNominalSampleRates`, `kAudioDevicePropertyStreams`,
   `kAudioStreamPropertyPhysicalFormat`, and `kAudioStreamPropertyAvailablePhysicalFormats`.
-  The new format observer links only read/size/settable queries, not a format setter.
+  The executor uses `AudioObjectSetPropertyData` for nominal rate and physical ASBD after
+  UID/stream identity, support, settable and busy checks.
 - `pmset(1)` sections SETTING, GETTING, and FILES document root authorization, `-g custom`, per-source
   timers, and per-system preference persistence. No private power plist is written.
-- `geteuid(2)` and `gethostuuid(3)` supply compatibility identity. Only locally keyed hashes are saved.
+- `geteuid(2)` and `gethostuuid(3)` supply compatibility identity. User/machine/default-device compatibility uses locally keyed hashes. New private hardware payloads
+  additionally store exact audio UID/stream descriptors and display UUID/topology for rebinding;
+  those identities are not rendered in coverage or test logs.
 
 Reference documentation and observed key semantics:
 
@@ -194,9 +225,11 @@ and selected-category baselines leave other preferences unchanged. Audio unavail
 prevent independent preference capture; its compatibility sentinel prevents later silent rebinding.
 
 There is no atomic compare-and-set across macOS preference/audio APIs. An external change during the
-last native call cannot be ruled out. Restore operations have finite setting lists, no command execution,
-no unbounded retries, and immediate readback; native synchronous APIs do not provide a cancellable
-per-call deadline. The identity query has a five-second timeout.
+last native call cannot be ruled out. Restore operations have finite typed setting lists and no arbitrary command execution or write retries.
+Hardware readback polls at most 40 times with 50 ms waits; nominal-rate convergence has its own
+two-second polling budget before physical formats. Synchronous native APIs have no cancellable
+per-call deadline. Each fixed pmset writer has a three-second process deadline and null standard
+input/output/error; cleanup kills/reaps only its owned child. The identity query has a five-second timeout.
 
 Intent and each outcome are durable before further writes. A denial, error, mismatch, or drift stops
 remaining writes. Results explicitly show verified, failed, and not-attempted entries. A failed write
@@ -211,33 +244,24 @@ reports and optimizer incidents are not baseline snapshots and never replace the
 
 ## Verification record and limits
 
-The read-only native probe on macOS 15 discovered all 21 allowlisted capture/restore entries, read-only
-audio-format/display-mode/power-timer and accessibility observations, plus explicit manual/unavailable
-coverage. It exercised capture to
-isolated temporary app storage and no-op preview, then removed that test storage. Identities and actual
-values were not printed or committed. This verifies discovery, type checks, serialization, capability
-reporting, and no-change preview, **not native writes**.
+Tests use injected adapters/setters and isolated temporary history/journals, never real host writes.
+Controller tests cover automatic power/audio/display targets, selected scopes, legacy snapshots,
+drift/identity mismatch, unsupported-target preflight, durable applying boundaries, partial failures,
+readback errors, serialization, interrupted recovery, and bounded storage. The native executor is
+exercised with inspected-handle binding, delayed readback, timeout, removal, and busy/denied setters.
+Power tests cover allowlisted source/key arguments, injection rejection, zero, missing values and
+authorization errors. UI tests use mocked IPC.
 
-Injected tests cover every preference in both present/absent directions, exact native scalar conversion,
-wrong types/ranges, category selection, old audio files, repeated history, denied access and subsequent
-recheck, stale permissions/previews, OS changes, readback mismatch, partial apply, external drift,
-journaling, and the shared action lock. Browser UI tests use mocked IPC, not real OS mutations.
-
-The following remain **unexercised on the host**, intentionally, because no consent was given to change
-real settings:
-
-- CoreAudio volume/mute setters.
-- CFPreferences setters, deletion, persistence after a setter, and actual consumers applying changes.
-- Real managed-policy/permission denials and privilege grants (injected, not granted on the host).
-- System Settings pane navigation (allowlist and IPC are tested, not real UI navigation).
-- Windows compilation/runtime support.
-
-Run the opt-in read-only probe with:
+The opt-in read-only native probe validates discovered rate ranges/full ASBD support, enumerated
+display modes, saved profile timers, capture to temporary storage, capability reporting and no-change
+preview. It prints no hardware identities or values and invokes no native setter:
 
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml --lib real_macos_discovery_is_read_only -- --ignored --nocapture
 ```
 
-No test invokes the native setting setters. Normal unit tests use in-memory adapters; native scalar
-conversion tests allocate CoreFoundation objects without persisting preferences. Baseline verification
-confirms captured/storage values only within its stated scope, never a performance improvement.
+Intentionally untested on this host: CoreAudio writes (volume/mute/rate/physical formats), CoreGraphics
+configuration commit/fallback, pmset writes/real privilege grants, and CFPreferences writes/deletions.
+Also unverified: reboot/reconnect persistence, audible output, post-change display usability, effective
+sleep, actual busy/permission errors, and performance gains. Windows remains unsupported. No test
+changes actual user OS settings or launches the GUI as root.

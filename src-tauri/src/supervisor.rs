@@ -1462,6 +1462,7 @@ mod tests {
                     },
                     values: crate::system_settings::SystemValues {
                         preferences: Default::default(),
+                        hardware: Default::default(),
                         output_volume: Some(0.5),
                         output_muted: Some(false),
                     },

@@ -1,4 +1,4 @@
-//! Read-only power-profile discovery. No privileged writer or arbitrary-command interface.
+//! Fixed allowlisted power-profile capture/restore; authorization must be provided externally.
 use std::collections::BTreeMap;
 
 type Profiles = BTreeMap<String, BTreeMap<String, u32>>;
@@ -109,44 +109,169 @@ fn read_custom() -> Result<Profiles, String> {
 }
 
 pub(super) fn annotate(items: &mut [super::Capability]) {
-    let profiles = read_custom();
-    for (id, key) in [("system_sleep", "sleep"), ("display_sleep", "displaysleep")] {
-        let Some(item) = items.iter_mut().find(|v| v.id == id) else {
-            continue;
-        };
-        item.included = false;
-        match &profiles {
-            Ok(profiles) => {
-                let values: Vec<_> = profiles
-                    .iter()
-                    .map(|(source, values)| {
-                        format!(
-                            "{source}: {}",
-                            values.get(key).map_or_else(
-                                || "unknown/not reported".into(),
-                                |v| format!("{v} min (0 = never)")
-                            )
-                        )
-                    })
-                    .collect();
-                item.status = super::CapabilityStatus::ReadOnly;
-                item.detail = format!("Read-only saved power-source timers: {}. Not a prediction of effective sleep: assertions, hardware, and policy can override timers. Restore requires root; no native authorized helper is installed. Change manually in System Settings. Never included in rollback.", values.join("; "));
-                item.verification =
-                    "pmset -g custom observation only; not a restorable baseline value".into();
-            }
-            Err(error) => {
-                item.status = super::CapabilityStatus::Unavailable;
-                item.detail = format!(
-                    "Unknown: {error} No privileged write adapter; use System Settings manually."
-                );
+    if let Err(error) = collect() {
+        for item in items
+            .iter_mut()
+            .filter(|v| ["system_sleep", "display_sleep"].contains(&v.id.as_str()))
+        {
+            item.status = super::CapabilityStatus::Unavailable;
+            item.detail = format!("Power profile capture unavailable: {error}. The allowlisted automatic timer executor requires a successfully captured value and external authorization.");
+        }
+    }
+}
+
+pub(super) fn collect() -> Result<BTreeMap<u16, super::HardwareValue>, String> {
+    let profiles = read_custom()?;
+    let mut values = BTreeMap::new();
+    for (i, source) in ["AC Power", "Battery Power", "UPS Power"]
+        .iter()
+        .enumerate()
+    {
+        for (j, key) in ["sleep", "displaysleep"].iter().enumerate() {
+            if let Some(minutes) = profiles.get(*source).and_then(|v| v.get(*key)) {
+                let slot = 100 + i as u16 * 2 + j as u16;
+                let value = super::HardwareValue::Power {
+                    source: source.to_string(),
+                    key: key.to_string(),
+                    minutes: *minutes,
+                };
+                value.validate(slot)?;
+                values.insert(slot, value);
             }
         }
     }
+    Ok(values)
+}
+
+fn write_with(
+    slot: u16,
+    expected: &super::HardwareValue,
+    target: &super::HardwareValue,
+    read: impl FnOnce() -> Result<super::HardwareValue, String>,
+    run: impl FnOnce([String; 3]) -> Result<(), String>,
+) -> Result<(), String> {
+    target.validate(slot)?;
+    if !expected.same_identity(target) || read()? != *expected {
+        return Err("Power source or saved timer changed before write.".into());
+    }
+    let super::HardwareValue::Power {
+        source,
+        key,
+        minutes,
+    } = target
+    else {
+        return Err("Wrong power target type".into());
+    };
+    let flag = match source.as_str() {
+        "AC Power" => "-c",
+        "Battery Power" => "-b",
+        "UPS Power" => "-u",
+        _ => return Err("Unknown power source".into()),
+    };
+    run([flag.into(), key.clone(), minutes.to_string()])
+}
+
+pub(super) fn write(
+    slot: u16,
+    expected: &super::HardwareValue,
+    target: &super::HardwareValue,
+) -> Result<(), String> {
+    write_with(
+        slot,
+        expected,
+        target,
+        || {
+            collect()?
+                .remove(&slot)
+                .ok_or("Power timer is unavailable".into())
+        },
+        |args| {
+            use std::{
+                process::{Command, Stdio},
+                time::{Duration, Instant},
+            };
+            // Closed typed arguments, fixed executable, no shell, prompt, privilege escalation, or helper installation.
+            let mut child = Command::new("/usr/bin/pmset")
+                .args(args)
+                .env_clear()
+                .env("LC_ALL", "C")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("Cannot start power timer executor: {e}"))?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(status)) => return Err(format!("pmset rejected the saved timer (exit {status}). External authorization is required to modify system power profiles, or hardware/policy rejected it. Arrange authorization outside Jitterbug and re-preview. No grant was requested; do not run the GUI as root.")),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                result => {
+                    let _ = child.kill(); let _ = child.wait();
+                    return Err(format!("Power timer executor timed out or failed ({result:?}); state may have changed. Recheck before retrying."));
+                }
+            }
+            }
+        },
+    )?;
+    if collect()?.get(&slot) != Some(target) {
+        return Err("Saved power timer readback mismatch".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn writer_is_allowlisted_rechecks_and_propagates_authorization_failure() {
+        use super::super::HardwareValue;
+        let old = HardwareValue::Power {
+            source: "Battery Power".into(),
+            key: "displaysleep".into(),
+            minutes: 5,
+        };
+        let target = HardwareValue::Power {
+            source: "Battery Power".into(),
+            key: "displaysleep".into(),
+            minutes: 0,
+        };
+        let mut called = false;
+        let error = write_with(
+            103,
+            &old,
+            &target,
+            || Ok(old.clone()),
+            |args| {
+                called = true;
+                assert_eq!(args, ["-b", "displaysleep", "0"]);
+                Err("External authorization required".into())
+            },
+        )
+        .unwrap_err();
+        assert!(called && error.contains("authorization"));
+        assert!(write_with(
+            103,
+            &old,
+            &target,
+            || Ok(target.clone()),
+            |_| panic!("stale")
+        )
+        .is_err());
+        let invalid = HardwareValue::Power {
+            source: "Battery Power".into(),
+            key: "sleep; touch /tmp/x".into(),
+            minutes: 0,
+        };
+        assert!(write_with(
+            103,
+            &old,
+            &invalid,
+            || Ok(old.clone()),
+            |_| panic!("injection")
+        )
+        .is_err());
+    }
     #[test]
     fn separates_power_sources_preserves_zero_and_never_guesses_missing_values() {
         let result = parse_custom("Battery Power:\n sleep 3\n displaysleep 0\nAC Power:\n sleep 0\n powermode 2\nUPS Power:\n displaysleep 5\n").unwrap();

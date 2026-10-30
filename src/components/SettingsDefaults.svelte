@@ -12,7 +12,16 @@
     } from '../lib/types';
 
     const PAGE_SIZE = 20;
-    const captureGroups = ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer', 'Finder storage'];
+    const captureGroups = [
+        'Audio',
+        'Audio hardware',
+        'Displays',
+        'Power profiles',
+        'Desktop & Dock',
+        'Keyboard',
+        'Pointer',
+        'Finder storage',
+    ];
     let selectedGroups = $state([...captureGroups]);
 
     let { desktop }: { desktop: boolean } = $props();
@@ -348,7 +357,7 @@
         <div>
             <h2>System settings baseline</h2>
             <p class="muted">
-                Capture audio and saved macOS desktop, keyboard/text, pointer, and Finder storage
+                Capture supported audio formats, display modes, power timers, and saved macOS
                 preferences.
             </p>
         </div>
@@ -371,8 +380,10 @@
                 CoreAudio reports those controls as supported. Also captures allowlisted Dock
                 behavior, keyboard repeat and accent-menu settings, natural scrolling, and
                 mouse/trackpad tracking speed (not acceleration), text correction/substitutions, and
-                Finder .DS_Store creation preferences on macOS 13–15. Inspect coverage below; this
-                is not every OS setting.
+                Finder .DS_Store creation preferences on macOS 13–15. Supported output nominal
+                rates/full physical stream formats, full display modes, and per-source
+                sleep/display-sleep timers also have automatic executors. Inspect coverage below;
+                this is not every OS setting.
             </p>
         </div>
         <div>
@@ -403,12 +414,13 @@
     <details class="capability-details">
         <summary>Coverage &amp; access</summary>
         <p>
-            No permission is requested automatically. Supported means the adapter can read a valid
-            value; write access is rechecked during rollback. No password handling, sudo, or
-            persistent privileged helper. Hardware observations are not restorable baseline values:
-            sample rate/full audio formats and full display modes remain read-only until persistence
-            is validated. Sleep timers are read-only per power source; restoration requires native
-            privileged authorization that is not installed. Manual entries cannot be selected.
+            Rollback automatically executes captured supported targets after preview and
+            confirmation. Hardware setters revalidate exact devices and supported formats. Power
+            timer executors require externally provided authorization; “needs permission” is
+            executable, not an unsupported adapter. Denials are reported honestly. No password
+            handling, sudo, helper installation, or automatic permission request. Manual/unavailable
+            entries are not restored. Hardware readback verifies current values, not persistence
+            after reboot or reconnect.
         </p>
         <button disabled={!desktop || busy || checkingAccess} onclick={recheckAccess}
             >{checkingAccess ? 'Checking access…' : 'Recheck access'}</button
@@ -502,7 +514,12 @@
                     Jitterbug will recheck compatibility and current values before confirmation and
                     before each native write. Any mismatch stops the remaining writes. Saved
                     preference verification does not prove a live effect. No Dock or system process
-                    is restarted.
+                    is restarted. Confirmation automatically runs the selected supported changes;
+                    there are no commands to copy. Audio format changes can interrupt playback or
+                    recording and may require reopening audio applications. Displays may blank or
+                    windows move; current modes are verified, but reboot persistence is not
+                    verified. Power timers require externally provided authorization and can change
+                    future sleep behavior.
                 </p>
                 {#if preview.coverage?.length}
                     <details>

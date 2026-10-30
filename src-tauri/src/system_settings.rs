@@ -1,4 +1,6 @@
 mod capabilities;
+mod hardware;
+pub use hardware::HardwareValue;
 #[cfg(target_os = "macos")]
 mod displays;
 #[cfg(target_os = "macos")]
@@ -39,16 +41,25 @@ pub struct SystemValues {
     pub output_muted: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub preferences: BTreeMap<Preference, PreferenceValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hardware: BTreeMap<u16, HardwareValue>,
 }
 
 impl SystemValues {
     fn validate(&self) -> Result<(), String> {
+        if self.hardware.len() > 64 {
+            return Err("Hardware inventory exceeds safe bound".into());
+        }
+        for (slot, value) in &self.hardware {
+            value.validate(*slot)?;
+        }
         for (key, value) in &self.preferences {
             key.validate(*value)?;
         }
         if self.output_volume.is_none()
             && self.output_muted.is_none()
             && self.preferences.is_empty()
+            && self.hardware.is_empty()
         {
             return Err(
                 "No supported settable controls or selected preferences are available; recheck coverage and category selection.".into(),
@@ -85,17 +96,22 @@ pub enum Setting {
     OutputVolume,
     OutputMuted,
     Preference(Preference),
+    Hardware(u16),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SettingValue {
     Volume(f32),
     Muted(bool),
     Preference(PreferenceValue),
+    Hardware(HardwareValue),
 }
 
 pub trait NativeSettings: Send + Sync {
+    fn validate_target(&self, values: &SystemValues) -> Result<(), String> {
+        values.validate()
+    }
     fn read(&self) -> Result<NativeState, String>;
     fn coverage(&self, values: &SystemValues) -> Vec<Capability> {
         capabilities::coverage(values)
@@ -271,6 +287,7 @@ impl Controller {
                     output_volume: None,
                     output_muted: None,
                     preferences: BTreeMap::new(),
+                    hardware: BTreeMap::new(),
                 });
                 for item in &mut items {
                     item.status = CapabilityStatus::Unavailable;
@@ -289,7 +306,7 @@ impl Controller {
     pub fn capture_selected(&self, groups: Option<&[String]>) -> Result<SnapshotView, String> {
         if let Some(groups) = groups {
             if groups.is_empty()
-                || groups.len() > 5
+                || groups.len() > 8
                 || groups.iter().any(|group| {
                     ![
                         "Audio",
@@ -297,11 +314,14 @@ impl Controller {
                         "Keyboard",
                         "Pointer",
                         "Finder storage",
+                        "Power profiles",
+                        "Displays",
+                        "Audio hardware",
                     ]
                     .contains(&group.as_str())
                 })
             {
-                return Err("Choose at least one supported category: Audio, Desktop & Dock, Keyboard, Pointer, or Finder storage.".into());
+                return Err("Choose at least one supported category: Audio, Audio hardware, Displays, Power profiles, Desktop & Dock, Keyboard, Pointer, or Finder storage.".into());
             }
         }
         let _guard = self
@@ -320,8 +340,12 @@ impl Controller {
                 .values
                 .preferences
                 .retain(|key, _| selected(key.descriptor().3));
+            native
+                .values
+                .hardware
+                .retain(|_, value| selected(value.group()));
             for item in &mut coverage {
-                if item.status == CapabilityStatus::Supported && !selected(&item.group) {
+                if item.included && !selected(&item.group) {
                     item.included = false;
                     item.detail = format!("Not selected for this capture. {}", item.detail);
                 }
@@ -453,12 +477,16 @@ impl Controller {
             &current.values,
             &target.values,
         )?;
+        self.native.validate_target(&target.values)?;
         let changes = changes(&current.values, &target.values);
         let mut coverage = self.native.coverage(&current.values);
         for item in &mut coverage {
             item.included = match item.id.as_str() {
                 "output_volume" => target.values.output_volume.is_some(),
                 "output_muted" => target.values.output_muted.is_some(),
+                _ if item.id.starts_with("hardware_") => item.id[9..]
+                    .parse::<u16>()
+                    .is_ok_and(|slot| target.values.hardware.contains_key(&slot)),
                 _ => target
                     .values
                     .preferences
@@ -532,6 +560,7 @@ impl Controller {
             &current.values,
             &target.values,
         )?;
+        self.native.validate_target(&target.values)?;
         let plan = planned_settings(&current.values, &target.values);
         if plan.is_empty() {
             return Ok(RollbackResult {
@@ -562,8 +591,8 @@ impl Controller {
                 .map(|planned| SettingOutcome {
                     setting: planned.setting,
                     field: planned.field.to_owned(),
-                    before: display_value(planned.before),
-                    target: display_value(planned.target),
+                    before: display_value(planned.before.clone()),
+                    target: display_value(planned.target.clone()),
                     status: OutcomeStatus::Pending,
                     error: None,
                 })
@@ -596,13 +625,16 @@ impl Controller {
             journal.status = JournalStatus::Applying;
             journal.outcomes[index].status = OutcomeStatus::Applying;
             atomic_replace(&journal_path, &encode(&journal)?)?;
-            if let Err(error) = self.native.write(&fresh, planned.setting, planned.target) {
+            if let Err(error) = self
+                .native
+                .write(&fresh, planned.setting, planned.target.clone())
+            {
                 journal.outcomes[index].status = OutcomeStatus::WriteFailed;
                 journal.outcomes[index].error = Some(error);
                 let actual = self.native.read().ok().map(|state| state.values);
                 return self.finish_partial(journal_path, journal, actual);
             }
-            set_value(&mut expected, planned.setting, planned.target);
+            set_value(&mut expected, planned.setting, planned.target.clone());
             let readback = match self.native.read() {
                 Ok(readback) => readback,
                 Err(error) => {
@@ -667,7 +699,7 @@ impl Controller {
             outcomes: journal.outcomes,
             current: Some(final_state.values),
             journal_id: Some(journal_id),
-            message: "Requested values verified: audio by live CoreAudio readback; preferences by saved CFPreferences readback only. Sign out or restart affected applications yourself to apply cached preferences. No processes were restarted; live preference effects and performance are not verified.".into(),
+            message: "Requested values verified by native readback. Current audio configuration and display modes restored where selected; reboot/reconnect persistence not verified. For display changes, permanent scope is requested but macOS can fall back to login-session scope. Power verification covers saved per-source timers, not effective sleep. Preferences verify saved storage only; applications may require relaunch or sign-out. No processes restarted; performance not verified.".into(),
         })
     }
 
@@ -827,7 +859,7 @@ impl Controller {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PlannedSetting {
     setting: Setting,
     field: &'static str,
@@ -892,6 +924,18 @@ fn planned_settings(before: &SystemValues, target: &SystemValues) -> Vec<Planned
             }
         }
     }
+    for (slot, target) in &target.hardware {
+        if let Some(before) = before.hardware.get(slot) {
+            if before != target {
+                result.push(PlannedSetting {
+                    setting: Setting::Hardware(*slot),
+                    field: target.label(),
+                    before: SettingValue::Hardware(before.clone()),
+                    target: SettingValue::Hardware(target.clone()),
+                });
+            }
+        }
+    }
     result
 }
 
@@ -900,24 +944,33 @@ fn changes(before: &SystemValues, target: &SystemValues) -> Vec<FieldChange> {
         .into_iter()
         .map(|planned| FieldChange {
             group: match planned.setting {
+                Setting::Hardware(_) => match &planned.target {
+                    SettingValue::Hardware(v) => v.group(),
+                    _ => unreachable!(),
+                },
                 Setting::Preference(key) => key.descriptor().3,
                 _ => "Audio",
             }
             .into(),
             verification: match planned.setting {
+                Setting::Hardware(_) => match &planned.target {
+                    SettingValue::Hardware(v) => v.verification(),
+                    _ => unreachable!(),
+                },
                 Setting::Preference(_) => "Saved preference only; live effect not verified",
                 _ => "Live CoreAudio readback",
             }
             .into(),
             field: planned.field.into(),
-            before: display_value(planned.before),
-            after: display_value(planned.target),
+            before: display_value(planned.before.clone()),
+            after: display_value(planned.target.clone()),
         })
         .collect()
 }
 
 fn display_value(value: SettingValue) -> String {
     match value {
+        SettingValue::Hardware(value) => value.description(),
         SettingValue::Volume(value) => format!("{:.1}%", value * 100.0),
         SettingValue::Muted(true) => "Muted".into(),
         SettingValue::Muted(false) => "Unmuted".into(),
@@ -932,6 +985,9 @@ fn display_value(value: SettingValue) -> String {
 
 fn set_value(values: &mut SystemValues, setting: Setting, value: SettingValue) {
     match (setting, value) {
+        (Setting::Hardware(slot), SettingValue::Hardware(value)) => {
+            values.hardware.insert(slot, value);
+        }
         (Setting::OutputVolume, SettingValue::Volume(value)) => {
             values.output_volume = Some(value);
         }
@@ -951,7 +1007,10 @@ fn values_equal(left: &SystemValues, right: &SystemValues) -> bool {
         (None, None) => true,
         _ => false,
     };
-    volume_equal && left.output_muted == right.output_muted && left.preferences == right.preferences
+    volume_equal
+        && left.output_muted == right.output_muted
+        && left.preferences == right.preferences
+        && left.hardware == right.hardware
 }
 
 fn ensure_compatible(
@@ -965,6 +1024,15 @@ fn ensure_compatible(
             "This baseline belongs to a different OS, user, machine, or default output device."
                 .into(),
         );
+    }
+    for (slot, target) in &target_values.hardware {
+        if !current_values
+            .hardware
+            .get(slot)
+            .is_some_and(|live| live.same_identity(target))
+        {
+            return Err("Hardware or power source identity/topology changed or control unavailable; capture/review again.".into());
+        }
     }
     for key in target_values.preferences.keys() {
         if !current_values.preferences.contains_key(key) {
@@ -1024,7 +1092,13 @@ fn summary(values: &SystemValues) -> String {
             values.preferences.len()
         )
     });
-    [volume, muted, preferences]
+    let hardware = (!values.hardware.is_empty()).then(|| {
+        format!(
+            "{} hardware/power targets (reboot persistence not verified)",
+            values.hardware.len()
+        )
+    });
+    [volume, muted, preferences, hardware]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -1068,7 +1142,14 @@ fn reserve_snapshot_path(directory: &Path, timestamp: u64) -> Result<(String, Pa
 }
 
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
-    serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode system settings data.".into())
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode system settings data.")?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(
+            "System settings data exceeds the bounded storage size; no further writes made.".into(),
+        );
+    }
+    Ok(bytes)
 }
 
 fn create_private_directory(path: &Path) -> Result<(), String> {
@@ -1423,6 +1504,7 @@ mod core_audio {
                         output_volume: None,
                         output_muted: None,
                         preferences: preferences::collect(),
+                        hardware: collect_hardware(),
                     },
                 };
                 state.values.validate()?;
@@ -1463,6 +1545,7 @@ mod core_audio {
                 output_volume,
                 output_muted,
                 preferences: preferences::collect(),
+                hardware: collect_hardware(),
             },
         };
         state.values.validate()?;
@@ -1506,7 +1589,30 @@ mod core_audio {
 }
 
 #[cfg(target_os = "macos")]
+fn collect_hardware() -> BTreeMap<u16, HardwareValue> {
+    let mut values = power::collect().unwrap_or_default();
+    if let Ok(value) = core_audio::formats::collect() {
+        values.insert(0, value);
+    }
+    if let Ok(value) = displays::collect() {
+        values.insert(1, value);
+    }
+    values
+}
+
+#[cfg(target_os = "macos")]
 impl NativeSettings for MacOsNativeSettings {
+    fn validate_target(&self, values: &SystemValues) -> Result<(), String> {
+        values.validate()?;
+        for target in values.hardware.values() {
+            match target {
+                HardwareValue::Audio { .. } => core_audio::formats::preflight(target)?,
+                HardwareValue::Displays { .. } => displays::preflight(target)?,
+                HardwareValue::Power { .. } => (), // Shape/identity checked; authorization is tested only by the confirmed executor.
+            }
+        }
+        Ok(())
+    }
     fn coverage(&self, values: &SystemValues) -> Vec<Capability> {
         let mut items = capabilities::coverage(values);
         power::annotate(&mut items);
@@ -1558,7 +1664,29 @@ impl NativeSettings for MacOsNativeSettings {
         setting: Setting,
         value: SettingValue,
     ) -> Result<(), String> {
-        if let (Setting::Preference(key), SettingValue::Preference(value)) = (setting, value) {
+        if let (Setting::Hardware(slot), SettingValue::Hardware(ref target)) =
+            (setting, value.clone())
+        {
+            return guarded_write(
+                expected,
+                || self.read().map(|state| ((), state)),
+                |_| {
+                    let before = expected
+                        .values
+                        .hardware
+                        .get(&slot)
+                        .ok_or("Hardware target unavailable")?;
+                    match target {
+                        HardwareValue::Audio { .. } => core_audio::formats::write(before, target),
+                        HardwareValue::Displays { .. } => displays::write(before, target),
+                        HardwareValue::Power { .. } => power::write(slot, before, target),
+                    }
+                },
+            );
+        }
+        if let (Setting::Preference(key), SettingValue::Preference(value)) =
+            (setting, value.clone())
+        {
             guarded_write(
                 expected,
                 || self.read().map(|state| ((), state)),
@@ -1579,6 +1707,7 @@ impl NativeSettings for MacOsNativeSettings {
 
 #[cfg(test)]
 mod tests {
+    mod hardware_tests;
     mod preference_tests;
     use super::*;
     use std::{
@@ -1630,8 +1759,121 @@ mod tests {
                 output_volume: Some(0.42),
                 output_muted: Some(false),
                 preferences: BTreeMap::new(),
+                hardware: BTreeMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn power_timer_is_an_automatic_journaled_restore_target() {
+        let mut initial = state("speakers");
+        let json = serde_json::json!({"output_volume": null, "output_muted": null,
+            "hardware": {"100": {"kind":"power", "source":"AC Power", "key":"sleep", "minutes":12}}});
+        initial.values = serde_json::from_value(json).expect("typed power capture");
+        let directory = directory("automatic-power");
+        let (controller, live, writes) = scripted(&directory, initial, None, None);
+        let baseline = controller
+            .capture_selected(Some(&["Power profiles".into()]))
+            .unwrap();
+        let changed = serde_json::json!({"output_volume": null, "output_muted": null,
+            "hardware": {"100": {"kind":"power", "source":"AC Power", "key":"sleep", "minutes":0}}});
+        live.lock().unwrap().values = serde_json::from_value(changed).unwrap();
+        let preview = controller.preview(&baseline.id).unwrap();
+        assert_eq!(preview.changes.len(), 1);
+        assert_eq!(preview.changes[0].group, "Power profiles");
+        assert!(preview.coverage.iter().any(|item| item.id == "hardware_100"
+            && item.included
+            && item.status == CapabilityStatus::NeedsPermission));
+        let result = controller.confirm(&preview.token).unwrap();
+        assert_eq!(result.status, RollbackStatus::Verified);
+        assert_eq!(writes.lock().unwrap().len(), 1);
+        assert_eq!(result.current, baseline.values);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn audio_configuration_is_captured_and_restored_as_a_coupled_target() {
+        let json = serde_json::json!({"output_volume": null, "output_muted": null,
+            "hardware": {"0": {"kind":"audio", "uid":"test-device", "rate":48000.0, "streams":[]}}});
+        let mut initial = state("speakers");
+        initial.values = serde_json::from_value(json).expect("typed audio format capture");
+        let directory = directory("automatic-format");
+        let (controller, live, writes) = scripted(&directory, initial.clone(), None, None);
+        let baseline = controller
+            .capture_selected(Some(&["Audio hardware".into()]))
+            .unwrap();
+        let mut changed = serde_json::to_value(&initial.values).unwrap();
+        changed["hardware"]["0"]["rate"] = 44100.0.into();
+        live.lock().unwrap().values = serde_json::from_value(changed).unwrap();
+        let preview = controller.preview(&baseline.id).unwrap();
+        assert!(preview.changes[0].verification.contains("interrupt"));
+        assert_eq!(
+            controller.confirm(&preview.token).unwrap().status,
+            RollbackStatus::Verified
+        );
+        assert_eq!(writes.lock().unwrap().len(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn display_modes_restore_and_reject_topology_rebinding() {
+        let json = serde_json::json!({"output_volume":null,"output_muted":null,"hardware":{"1":{"kind":"displays","displays":[{"uuid":"test-display", "x":0.0,"y":0.0,"rotation":0.0,"main":true,"active":true,"mirror":null,"mode":{"id":1,"width":1920,"height":1080,"pixel_width":1920,"pixel_height":1080,"refresh_hz":60.0,"flags":0,"desktop_usable":true}}]}}});
+        let mut initial = state("speakers");
+        initial.values = serde_json::from_value(json).expect("typed display capture");
+        let directory = directory("automatic-display");
+        let (controller, live, _) = scripted(&directory, initial.clone(), None, None);
+        let baseline = controller
+            .capture_selected(Some(&["Displays".into()]))
+            .unwrap();
+        let mut changed = serde_json::to_value(&initial.values).unwrap();
+        changed["hardware"]["1"]["displays"][0]["mode"]["id"] = 2.into();
+        live.lock().unwrap().values = serde_json::from_value(changed.clone()).unwrap();
+        let preview = controller.preview(&baseline.id).unwrap();
+        assert!(preview.changes[0]
+            .verification
+            .contains("reboot persistence not verified"));
+        assert_eq!(
+            controller.confirm(&preview.token).unwrap().status,
+            RollbackStatus::Verified
+        );
+        changed["hardware"]["1"]["displays"][0]["uuid"] = "other-display".into();
+        live.lock().unwrap().values = serde_json::from_value(changed).unwrap();
+        assert!(controller.preview(&baseline.id).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn oversized_journal_encoding_is_rejected_before_any_write() {
+        assert!(encode(&"x".repeat(MAX_FILE_BYTES as usize)).is_err());
+    }
+
+    #[test]
+    fn adapter_preflight_rejects_unsupported_saved_targets_before_confirmation() {
+        struct RejectTarget(FakeNative);
+        impl NativeSettings for RejectTarget {
+            fn read(&self) -> Result<NativeState, String> {
+                self.0.read()
+            }
+            fn validate_target(&self, _: &SystemValues) -> Result<(), String> {
+                Err("Saved mode is no longer supported".into())
+            }
+            fn write(&self, _: &NativeState, _: Setting, _: SettingValue) -> Result<(), String> {
+                panic!("unsupported target")
+            }
+        }
+        let directory = directory("unsupported-preflight");
+        let controller = Controller::new(
+            directory.clone(),
+            Arc::new(RejectTarget(FakeNative {
+                state: Arc::new(Mutex::new(state("speakers"))),
+            })),
+        );
+        let saved = controller.capture().unwrap();
+        assert!(controller
+            .preview(&saved.id)
+            .unwrap_err()
+            .contains("no longer supported"));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1885,6 +2127,9 @@ mod tests {
             }
             let mut state = self.state.lock().unwrap();
             match (setting, value) {
+                (Setting::Hardware(slot), SettingValue::Hardware(value)) => {
+                    state.values.hardware.insert(slot, value);
+                }
                 (Setting::OutputVolume, SettingValue::Volume(value)) => {
                     state.values.output_volume = Some(value);
                 }
@@ -2284,36 +2529,37 @@ mod tests {
                 );
                 discovered.values.validate().unwrap();
                 let inventory = native_adapter().coverage(&discovered.values);
-                assert_eq!(inventory.len(), 2 + Preference::ALL.len() + 18);
-                assert_eq!(
-                    inventory
-                        .iter()
-                        .filter(|item| item.status == CapabilityStatus::Supported)
-                        .count(),
-                    Preference::ALL.len() + 2,
-                    "all 21 captured controls must be supported"
-                );
-                for id in [
-                    "audio_format",
-                    "display_mode",
-                    "system_sleep",
-                    "display_sleep",
-                ] {
-                    let item = inventory.iter().find(|item| item.id == id).unwrap();
-                    assert_eq!(item.status, CapabilityStatus::ReadOnly, "{id}");
-                    assert!(!item.included, "{id}");
-                }
-                let audio_format = inventory
-                    .iter()
-                    .find(|item| item.id == "audio_format")
-                    .unwrap();
-                assert!(audio_format.detail.contains("ASBD"));
                 assert!(
-                    !audio_format.detail.split("; ").any(|detail| {
-                        detail.starts_with("Output stream ") && detail.contains(": unknown:")
-                    }),
-                    "every output stream must have a known physical ASBD"
+                    discovered.values.hardware.contains_key(&0),
+                    "settable audio rate/formats must be captured on probe hardware"
                 );
+                assert!(
+                    discovered.values.hardware.contains_key(&1),
+                    "enumerated display modes must be captured on probe hardware"
+                );
+                assert!(
+                    discovered
+                        .values
+                        .hardware
+                        .values()
+                        .any(|v| matches!(v, HardwareValue::Power { .. })),
+                    "reported power timers must be captured"
+                );
+                for (slot, value) in &discovered.values.hardware {
+                    let item = inventory
+                        .iter()
+                        .find(|item| item.id == format!("hardware_{slot}"))
+                        .unwrap();
+                    assert!(item.included);
+                    assert_eq!(
+                        item.status,
+                        if matches!(value, HardwareValue::Power { .. }) {
+                            CapabilityStatus::NeedsPermission
+                        } else {
+                            CapabilityStatus::Supported
+                        }
+                    );
+                }
                 for item in &inventory {
                     println!(
                         "{}: {:?}; included={}",

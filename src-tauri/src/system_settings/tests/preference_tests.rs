@@ -81,6 +81,15 @@ fn wishlist_entries_are_manual_and_never_selectable() {
     for id in [
         "audio_format",
         "display_mode",
+        "system_sleep",
+        "display_sleep",
+    ] {
+        let item = inventory.iter().find(|v| v.id == id).unwrap();
+        assert_eq!(item.status, CapabilityStatus::Unavailable);
+        assert!(!item.included);
+        assert!(item.detail.contains("executor"));
+    }
+    for id in [
         "low_power",
         "high_power",
         "login_items",
@@ -95,11 +104,7 @@ fn wishlist_entries_are_manual_and_never_selectable() {
         let item = inventory.iter().find(|v| v.id == id).expect(id);
         assert!(!item.included);
         assert_eq!(serde_json::to_value(item.status).unwrap(), "manual");
-        if id == "audio_format" {
-            assert_eq!(item.pane, None);
-        } else {
-            assert!(settings_url(item.pane.as_deref().unwrap()).is_ok());
-        }
+        assert!(settings_url(item.pane.as_deref().unwrap()).is_ok());
     }
 }
 

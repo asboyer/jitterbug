@@ -1,15 +1,16 @@
-//! Read-only full-mode inventory. Never offers a transient display write as persistent rollback.
-#[derive(Clone, Debug, PartialEq)]
-struct Mode {
-    id: i32,
-    width: usize,
-    height: usize,
-    pixel_width: usize,
-    pixel_height: usize,
-    refresh_hz: f64,
-    flags: u32,
-    desktop_usable: bool,
+//! Exact CoreGraphics mode restore; requests permanent scope without claiming reboot verification.
+use super::{
+    hardware::{self, DisplayMode as Mode, DisplayState},
+    HardwareValue,
+};
+#[repr(C)]
+struct Rect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 }
+type ConfigRef = *mut c_void;
 fn validate_mode(mode: &Mode) -> Result<(), String> {
     if mode.width == 0
         || mode.height == 0
@@ -31,6 +32,20 @@ use std::{ffi::c_void, ptr};
 type ModeRef = *const c_void;
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
+    fn CGBeginDisplayConfiguration(config: *mut ConfigRef) -> i32;
+    fn CGConfigureDisplayWithDisplayMode(
+        config: ConfigRef,
+        display: u32,
+        mode: ModeRef,
+        options: CFTypeRef,
+    ) -> i32;
+    fn CGCompleteDisplayConfiguration(config: ConfigRef, option: u32) -> i32;
+    fn CGCancelDisplayConfiguration(config: ConfigRef) -> i32;
+    fn CGDisplayBounds(display: u32) -> Rect;
+    fn CGDisplayRotation(display: u32) -> f64;
+    fn CGDisplayIsMain(display: u32) -> u32;
+    fn CGDisplayIsActive(display: u32) -> u32;
+    fn CGDisplayMirrorsDisplay(display: u32) -> u32;
     fn CGGetOnlineDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> CFTypeRef;
     fn CGDisplayCopyDisplayMode(display: u32) -> ModeRef;
@@ -105,63 +120,187 @@ fn current(id: u32) -> Result<Mode, String> {
     let owned = unsafe { CFType::wrap_under_create_rule(raw) };
     decode(owned.as_CFTypeRef())
 }
-fn observe() -> Result<String, String> {
-    let ids = online()?;
-    let mut identities = std::collections::BTreeSet::new();
-    let mut result = Vec::new();
-    for (index, id) in ids.iter().enumerate() {
-        let uuid = identity(*id)?;
-        if !identities.insert(uuid.clone()) {
-            return Err("Ambiguous display identity.".into());
-        }
-        let mode = current(*id)?;
-        let raw = unsafe { CGDisplayCopyAllDisplayModes(*id, ptr::null()) };
-        if raw.is_null() {
-            return Err("Supported display modes unavailable.".into());
-        }
-        let array = unsafe { CFType::wrap_under_create_rule(raw) };
-        let count = unsafe { CFArrayGetCount(array.as_CFTypeRef()) };
-        if !(1..=4096).contains(&count) {
-            return Err("Invalid supported mode count.".into());
-        }
-        let mut supported = false;
-        for i in 0..count {
-            let candidate = decode(unsafe { CFArrayGetValueAtIndex(array.as_CFTypeRef(), i) })?;
-            supported |= candidate == mode;
-        }
-        if identity(*id)? != uuid || current(*id)? != mode {
-            return Err("Display identity or full mode changed during discovery.".into());
-        }
-        // Identity is checked but never exposed or written into coverage details.
-        let rate = if mode.refresh_hz == 0.0 {
-            "unknown/variable refresh (API reports 0)".into()
-        } else {
-            format!("{} Hz", mode.refresh_hz)
+pub(in crate::system_settings) fn annotate(items: &mut [crate::system_settings::Capability]) {
+    if let Some(item) = items.iter_mut().find(|v| v.id == "display_mode") {
+        item.status = crate::system_settings::CapabilityStatus::Unavailable;
+        item.detail = match collect() {
+            Err(error) => format!("Automatic executor cannot capture this configuration: {error}. Recheck hardware support and access; no guessed values are saved."),
+            Ok(_) => "Hardware changed during discovery. Recheck before capture.".into(),
         };
-        result.push(format!("Display {}: {}×{} points, {}×{} pixels, {rate}, mode ID {}, flags {:#x}, desktop usable {}, exact mode in {} supported modes: {}; stable UUID checked", index + 1, mode.width, mode.height, mode.pixel_width, mode.pixel_height, mode.id, mode.flags, mode.desktop_usable, count, supported));
+        item.verification =
+            "Not captured; automatic executor requires readable supported native descriptors"
+                .into();
+    }
+}
+
+fn supported_mode(id: u32, target: &Mode) -> Result<CFType, String> {
+    // SAFETY: copied array owns mode refs until we retain the exact matching descriptor.
+    let raw = unsafe { CGDisplayCopyAllDisplayModes(id, ptr::null()) };
+    if raw.is_null() {
+        return Err("Display mode enumeration unavailable".into());
+    }
+    let array = unsafe { CFType::wrap_under_create_rule(raw) };
+    let count = unsafe { CFArrayGetCount(array.as_CFTypeRef()) };
+    if !(1..=4096).contains(&count) {
+        return Err("Invalid supported mode count".into());
+    }
+    for i in 0..count {
+        let raw = unsafe { CFArrayGetValueAtIndex(array.as_CFTypeRef(), i) };
+        if decode(raw)? == *target {
+            return Ok(unsafe { CFType::wrap_under_get_rule(raw) });
+        }
+    }
+    Err("Saved full display mode is no longer enumerated as supported; no guessed refresh/resolution substitution".into())
+}
+fn inspect() -> Result<(Vec<u32>, HardwareValue), String> {
+    let ids = online()?;
+    let mut pairs = Vec::new();
+    for id in &ids {
+        let uuid = identity(*id)?;
+        let mode = current(*id)?;
+        supported_mode(*id, &mode)?;
+        // SAFETY: public read-only display queries; IDs revalidated below.
+        let bounds = unsafe { CGDisplayBounds(*id) };
+        let mirror = unsafe { CGDisplayMirrorsDisplay(*id) };
+        let state = DisplayState {
+            uuid: uuid.clone(),
+            mode,
+            x: bounds.x,
+            y: bounds.y,
+            rotation: unsafe { CGDisplayRotation(*id) },
+            main: unsafe { CGDisplayIsMain(*id) } != 0,
+            active: unsafe { CGDisplayIsActive(*id) } != 0,
+            mirror: if mirror == 0 {
+                None
+            } else {
+                Some(identity(mirror)?)
+            },
+        };
+        if identity(*id)? != uuid || current(*id)? != state.mode {
+            return Err("Display identity/mode changed during inspection".into());
+        }
+        pairs.push((*id, state));
     }
     if online()? != ids {
-        return Err("Display inventory changed during discovery.".into());
+        return Err("Display topology changed during inspection".into());
     }
-    Ok(result.join("; "))
-}
-pub(super) fn annotate(items: &mut [super::Capability]) {
-    let Some(item) = items.iter_mut().find(|v| v.id == "display_mode") else {
-        return;
+    pairs.sort_by(|a, b| a.1.uuid.cmp(&b.1.uuid));
+    let handles = pairs.iter().map(|p| p.0).collect();
+    let value = HardwareValue::Displays {
+        displays: pairs.into_iter().map(|p| p.1).collect(),
     };
-    match observe() {
-        Ok(detail) => {
-            item.status = super::CapabilityStatus::ReadOnly;
-            item.detail = format!("Live observation only: {detail}. {}", item.detail);
-            item.verification =
-                "Full CoreGraphics mode observation; persistent restore gated, never included"
-                    .into();
-        }
-        Err(error) => {
-            item.status = super::CapabilityStatus::Unavailable;
-            item.detail = format!("Unknown: {error} {}", item.detail);
+    value.validate(1)?;
+    Ok((handles, value))
+}
+pub(super) fn collect() -> Result<HardwareValue, String> {
+    inspect().map(|(_, v)| v)
+}
+struct Configuration(ConfigRef);
+impl Drop for Configuration {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CGCancelDisplayConfiguration(self.0);
+            }
         }
     }
+}
+fn cg_status(status: i32, operation: &str) -> Result<(), String> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("CoreGraphics could not {operation} (CGError {status}). Configuration may be unsupported, access denied, or another application may own a full-screen display. Recheck and re-preview; no security grant was requested."))
+    }
+}
+pub(super) fn preflight(target: &HardwareValue) -> Result<(), String> {
+    target.validate(1)?;
+    let (ids, live) = inspect()?;
+    if !live.same_identity(target) {
+        return Err("Saved display UUIDs/topology unavailable".into());
+    }
+    let HardwareValue::Displays { displays } = target else {
+        return Err("Wrong display target type".into());
+    };
+    for (id, display) in ids.iter().zip(displays) {
+        supported_mode(*id, &display.mode)?;
+    }
+    Ok(())
+}
+pub(super) fn write(expected: &HardwareValue, target: &HardwareValue) -> Result<(), String> {
+    target.validate(1)?;
+    hardware::execute_verified(
+        expected,
+        target,
+        || {
+            let (ids, live) = inspect()?;
+            if !live.same_identity(target) {
+                return Err("Saved display UUIDs/topology no longer match".into());
+            }
+            let HardwareValue::Displays { displays } = target else {
+                return Err("Wrong display target type".into());
+            };
+            let modes = ids
+                .iter()
+                .zip(displays)
+                .map(|(id, state)| supported_mode(*id, &state.mode))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(((ids, modes), live))
+        },
+        |(ids, modes)| {
+            // Re-read after mode enumeration and before opening a native configuration.
+            let (fresh_ids, fresh) = inspect()?;
+            if fresh_ids != ids || fresh != *expected {
+                return Err("Display identity/topology/mode changed before configuration".into());
+            }
+            let HardwareValue::Displays { displays: before } = expected else {
+                unreachable!()
+            };
+            let HardwareValue::Displays { displays: after } = target else {
+                unreachable!()
+            };
+            let mut raw = ptr::null_mut();
+            cg_status(
+                unsafe { CGBeginDisplayConfiguration(&mut raw) },
+                "begin display configuration",
+            )?;
+            if raw.is_null() {
+                return Err("CoreGraphics returned no configuration".into());
+            }
+            let mut config = Configuration(raw);
+            for (((id, mode), old), new) in ids.iter().zip(&modes).zip(before).zip(after) {
+                if identity(*id)? != new.uuid {
+                    return Err("Display replaced before mode configuration".into());
+                }
+                if old.mode != new.mode {
+                    cg_status(
+                        unsafe {
+                            CGConfigureDisplayWithDisplayMode(
+                                config.0,
+                                *id,
+                                mode.as_CFTypeRef(),
+                                ptr::null(),
+                            )
+                        },
+                        "configure saved display mode",
+                    )?;
+                }
+            }
+            let (fresh_ids, fresh) = inspect()?;
+            if fresh_ids != ids || fresh != *expected {
+                return Err("Display changed before commit; configuration canceled".into());
+            }
+            // SDK: completion consumes config even on failure. 2 = kCGConfigurePermanently;
+            // macOS may fall back to login-session scope, so readback never proves reboot persistence.
+            let raw = std::mem::replace(&mut config.0, ptr::null_mut());
+            cg_status(
+                unsafe { CGCompleteDisplayConfiguration(raw, 2) },
+                "commit permanent-request display configuration",
+            )
+        },
+        collect,
+        || std::thread::sleep(std::time::Duration::from_millis(50)),
+        40,
+    )
 }
 
 #[cfg(test)]

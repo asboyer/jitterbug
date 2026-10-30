@@ -68,6 +68,17 @@ async function mockDesktop(page: Page) {
                                     pane: 'dock',
                                 },
                                 {
+                                    id: 'hardware_100',
+                                    label: 'AC Power / sleep',
+                                    group: 'Power profiles',
+                                    status: 'needs_permission',
+                                    included: true,
+                                    detail: 'Automatic rollback executor implemented. Requires externally provided authorization.',
+                                    verification:
+                                        'Saved pmset profile readback; effective sleep not verified.',
+                                    pane: null,
+                                },
+                                {
                                     id: 'system_sleep',
                                     label: 'System idle sleep',
                                     group: 'Power & display',
@@ -182,7 +193,7 @@ test('persistent-only scope distinguishes hardware observations from restorable 
         defaults.getByRole('checkbox', { name: /sample rate|display mode|sleep|microphone/i })
     ).toHaveCount(0);
     await expect(defaults).toContainText(
-        'Hardware observations are not restorable baseline values'
+        'Supported output nominal rates/full physical stream formats'
     );
     await expect(defaults).toContainText('all one-time');
     const calls = await page
@@ -193,6 +204,39 @@ test('persistent-only scope distinguishes hardware observations from restorable 
             /confirm_system_restore|open_system_settings_pane/.test(c.command)
         )
     ).toHaveLength(0);
+});
+
+test('automatic hardware executors are selectable and disclose interruption and authorization', async ({
+    page,
+}) => {
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    for (const group of ['Audio hardware', 'Displays', 'Power profiles']) {
+        await expect(defaults.getByRole('checkbox', { name: group, exact: true })).toBeChecked();
+    }
+    await defaults.getByText('Coverage & access', { exact: true }).click();
+    await expect(defaults).toContainText('externally provided authorization');
+    await expect(defaults).toContainText('needs permission');
+    await expect(defaults).toContainText('Automatic rollback executor implemented');
+    await expect(
+        defaults.getByRole('button', { name: 'Open settings for AC Power / sleep' })
+    ).toHaveCount(0);
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: /Rollback current system baseline/ }).click();
+    await expect(dialog).toContainText('interrupt playback or recording');
+    await expect(dialog).toContainText('reboot persistence is not verified');
+    await dialog.getByRole('button', { name: 'Roll back system settings' }).click();
+    const calls = await page
+        .locator('html')
+        .evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
+    expect(
+        calls.filter((call: { command: string }) => call.command === 'confirm_system_restore')
+    ).toEqual([
+        { command: 'confirm_system_restore', args: { token: 'one-use-preview', confirmed: true } },
+    ]);
 });
 
 test('capabilities explain authorization limits and open settings only on request', async ({
@@ -231,7 +275,16 @@ test('capture selection is explicit and saved preference previews disclose verif
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
-    for (const group of ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer', 'Finder storage']) {
+    for (const group of [
+        'Audio',
+        'Audio hardware',
+        'Displays',
+        'Power profiles',
+        'Desktop & Dock',
+        'Keyboard',
+        'Pointer',
+        'Finder storage',
+    ]) {
         await defaults.getByRole('checkbox', { name: group, exact: true }).uncheck();
     }
     await expect(defaults.getByRole('button', { name: 'Set Default' })).toBeDisabled();
