@@ -202,7 +202,7 @@ pub fn handle(
         }
         "resume_session" => {
             let (pid, start) = parse_session(text("unit_id")?)?;
-            Ok(json!({ "message": crate::pause::resume(pid, start)? }))
+            Ok(json!({ "message": runtime.agent_resume(pid, start)? }))
         }
         "close_tab" => {
             let snapshot = snapshot(runtime)?;

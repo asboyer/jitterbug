@@ -170,14 +170,16 @@ claude mcp add jitterbug-control -- /absolute/path/to/jitterbug-run control-mcp
 | `jitterbug_overview`       | Machine pressure, the busiest apps, and the command sessions inside each one   |
 | `jitterbug_inspect_app`    | One app's sessions, or a browser's tabs measured over one second               |
 | `jitterbug_pause_session`  | Ask to pause a session and everything it started (reversible; 15-minute limit) |
-| `jitterbug_resume_session` | Resume a paused session                                                        |
+| `jitterbug_resume_session` | Resume a session that an agent's request paused                                |
 | `jitterbug_close_tab`      | Ask to close one browser tab                                                   |
 | `jitterbug_request_status` | Whether a request is waiting for you, applied, or declined, with the result    |
 
 - **You stay in charge.** Every pause or close is a request that appears in the popup (and in
   the app) with the agent's session and its stated reason. Nothing happens until you approve.
   **Settings → Agents may pause sessions without asking** lets reversible pauses apply at
-  once. Closing a tab always asks. Turning off agent control refuses every request.
+  once, except while you have paused actions from the popup. Closing a tab always asks. Agents
+  can resume only what an agent's request paused, never a session you paused. Turning off
+  agent control refuses every request.
 - **An agent can never pause itself.** Its caller's process ID comes from the kernel, not
   from the request, and its own session is marked `is_your_session`.
 - **Bounded:** one open request per target and at most six agent requests an hour, so a

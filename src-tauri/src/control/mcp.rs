@@ -27,7 +27,7 @@ pub fn tools() -> Value {
         tool("jitterbug_overview", "Machine pressure, the busiest apps, and the command sessions inside terminals, editors, and agent apps, with what each uses. Read-only.", json!({}), &[], true),
         tool("jitterbug_inspect_app", "Everything running inside one app: its command sessions, or for a browser its tabs measured over one second (the first call may ask the person to allow the browser connection). Read-only.", json!({"workload_id": {"type": "string"}}), &["workload_id"], true),
         tool("jitterbug_pause_session", "Ask to pause one command session and everything it started. Nothing is closed and no work is lost; it uses no CPU until resumed (automatically after 15 minutes). Usually waits for the person's approval.", json!({"unit_id": unit.clone(), "reason": reason.clone()}), &["unit_id", "reason"], false),
-        tool("jitterbug_resume_session", "Resume a paused session immediately.", json!({"unit_id": unit.clone()}), &["unit_id"], false),
+        tool("jitterbug_resume_session", "Resume a session that an agent's pause request paused. Sessions the person paused stay paused.", json!({"unit_id": unit.clone()}), &["unit_id"], false),
         tool("jitterbug_close_tab", "Ask the person to close one browser tab. Whatever runs in it ends, such as a call or unsaved input. Always waits for approval.", json!({"unit_id": unit, "reason": reason}), &["unit_id", "reason"], false),
         tool("jitterbug_request_status", "Whether a pause or close request is still waiting for the person, applied, or declined, with the measured result.", json!({"request_id": {"type": "integer"}}), &["request_id"], true),
     ]})

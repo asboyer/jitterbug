@@ -1130,12 +1130,15 @@ impl Runtime {
             cpu_floor_percent: None,
             memory_floor_bytes: None,
         };
-        let automatic = option.action == "pause" && policy.agent_pause_without_asking;
         let case = {
             let mut book = self
                 .book
                 .lock()
                 .map_err(|_| "Incident state unavailable.")?;
+            // While the person has paused actions, even a reversible pause waits for them.
+            let automatic = option.action == "pause"
+                && policy.agent_pause_without_asking
+                && book.monitor.snoozed_until <= now();
             // One open request per target, and a bounded rate, so a looping agent cannot
             // crowd real incidents out of the bounded history.
             if let Some(open) = book.cases.iter().find(|c| {
@@ -1175,13 +1178,34 @@ impl Runtime {
             );
             book.cases.push_front(case.clone());
             book.cases.truncate(12);
-            case
+            (case, automatic)
         };
+        let (case, automatic) = case;
         (self.publish)(case.clone());
         if automatic {
-            self.stop(case.id).await?;
+            // A failure is recorded on the request, or it stays waiting for approval.
+            let _ = self.stop(case.id).await;
         }
         self.case(case.id)
+    }
+
+    /// Resume a session for an agent: only one an agent's request paused, never one the
+    /// person paused or an incident offered.
+    pub fn agent_resume(&self, pid: u32, start_time: u64) -> Result<String, String> {
+        let requested = self.cases()?.iter().any(|c| {
+            c.origin == Origin::Agent
+                && c.proposal.as_ref().is_some_and(|p| {
+                    p.action == "pause"
+                        && p.process.pid == pid
+                        && p.process.start_time == start_time
+                })
+        });
+        if !requested {
+            return Err(
+                "Only sessions paused at an agent's request can be resumed by an agent. Ask the person to resume this one in Jitterbug.".into(),
+            );
+        }
+        crate::pause::resume(pid, start_time)
     }
 
     /// Current state of one incident, for an agent following its request.
@@ -1427,6 +1451,35 @@ mod tests {
             .unwrap_err();
         assert!(limited.contains("Too many"));
     }
+    #[tokio::test]
+    async fn agent_pauses_wait_while_snoozed_and_agents_resume_only_their_own() {
+        let f = Fixture::new();
+        f.runtime.observe(&sample(now(), 1.0)).unwrap();
+        let mut policy = f.runtime.policy().unwrap();
+        policy.agent_pause_without_asking = true;
+        f.runtime.save_policy(policy).unwrap();
+        f.runtime.snooze(15).unwrap();
+        let case = f
+            .runtime
+            .agent_request(agent_option("a"), None, "An agent", "busy")
+            .await
+            .unwrap();
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert!(case.proposal.is_none());
+        let process = agent_option("a").process;
+        let refused = f
+            .runtime
+            .agent_resume(process.pid, process.start_time)
+            .unwrap_err();
+        assert!(refused.contains("Ask the person"));
+        f.runtime
+            .update(case.id, |c| c.proposal = c.alternative.clone())
+            .unwrap();
+        // Allowed now; nothing is actually paused in this test.
+        let answer = f.runtime.agent_resume(process.pid, process.start_time);
+        assert!(answer.unwrap_err().contains("not paused by Jitterbug"));
+    }
+
     #[tokio::test]
     async fn real_incidents_are_never_merged_into_an_agent_request() {
         let f = Fixture::new();
