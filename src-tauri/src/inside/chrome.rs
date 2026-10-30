@@ -32,6 +32,8 @@ const WINDOW: Duration = Duration::from_secs(1);
 /// Counter granularity: one tab's reading must fall inside its process's bracket.
 const EPSILON: f64 = 0.000_2;
 const TAB_LIMIT: usize = 100;
+/// A tab's address as shown and rechecked: long addresses are cut to this many characters.
+const DETAIL_LIMIT: usize = 400;
 
 /// Kept open: a browser that asks before allowing a debugging client asks once per connection.
 static CONNECTIONS: Mutex<Vec<Cdp>> = Mutex::new(Vec::new());
@@ -190,8 +192,16 @@ pub fn connected() -> bool {
         .is_empty()
 }
 
-/// Run `f` on every reachable browser, reusing open connections.
-fn with_browsers<T>(mut f: impl FnMut(&mut Cdp) -> Result<T, String>) -> (Vec<T>, Vec<String>) {
+fn detail(url: &str) -> String {
+    url.chars().take(DETAIL_LIMIT).collect()
+}
+
+/// Run `f` on every reachable browser, reusing open connections. Without `connect`, only
+/// connections that are already open are used, so the browser never asks to allow one.
+fn with_browsers<T>(
+    connect: bool,
+    mut f: impl FnMut(&mut Cdp) -> Result<T, String>,
+) -> (Vec<T>, Vec<String>) {
     let mut open = CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
     let wanted = endpoints();
     open.retain(|c| wanted.contains(&c.endpoint));
@@ -199,6 +209,7 @@ fn with_browsers<T>(mut f: impl FnMut(&mut Cdp) -> Result<T, String>) -> (Vec<T>
     for endpoint in wanted {
         let index = match open.iter().position(|c| c.endpoint == endpoint) {
             Some(i) => i,
+            None if !connect => continue,
             None => match Cdp::open(&endpoint) {
                 Ok(c) => {
                     open.push(c);
@@ -407,6 +418,25 @@ fn split(weights: &[f64]) -> Vec<f64> {
 }
 
 pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord]) -> Inside {
+    measure_tabs(snapshot, workload_id, members, true)
+}
+
+/// Like `inspect`, but only through a connection the person already allowed: for background
+/// incidents, which must never make the browser ask.
+pub fn inspect_connected(
+    snapshot: &Snapshot,
+    workload_id: &str,
+    members: &[&ProcessRecord],
+) -> Inside {
+    measure_tabs(snapshot, workload_id, members, false)
+}
+
+fn measure_tabs(
+    snapshot: &Snapshot,
+    workload_id: &str,
+    members: &[&ProcessRecord],
+    connect: bool,
+) -> Inside {
     if endpoints().is_empty() {
         let mut inside = Inside::status(
             workload_id,
@@ -422,7 +452,7 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
         ];
         return inside;
     }
-    let (measured, errors) = with_browsers(measure);
+    let (measured, errors) = with_browsers(connect, measure);
     if measured.is_empty() {
         let mut inside = Inside::status(
             workload_id,
@@ -517,7 +547,7 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
                     } else {
                         tab.title.clone()
                     },
-                    detail: tab.url.chars().take(400).collect(),
+                    detail: detail(&tab.url),
                     host: host(&tab.url),
                     cpu_percent: (cpu * cpu_split[i]) as f32,
                     memory_bytes: match process {
@@ -618,7 +648,7 @@ pub fn act(target_id: &str, expected_url: &str, action: &str) -> Result<String, 
     if !matches!(action, "close_tab" | "focus_tab") {
         return Err("Unsupported tab action.".into());
     }
-    let (results, errors) = with_browsers(|cdp| {
+    let (results, errors) = with_browsers(true, |cdp| {
         let targets = cdp.call("Target.getTargets", json!({}), None)?;
         let Some(target) = targets
             .get("targetInfos")
@@ -630,7 +660,14 @@ pub fn act(target_id: &str, expected_url: &str, action: &str) -> Result<String, 
         else {
             return Ok(None);
         };
-        if target.get("url").and_then(Value::as_str) != Some(expected_url) {
+        // The address was shortened for display; compare it the same way.
+        if target
+            .get("url")
+            .and_then(Value::as_str)
+            .map(detail)
+            .as_deref()
+            != Some(expected_url)
+        {
             return Err("This tab navigated since you looked. Refresh the tab list first.".into());
         }
         let method = if action == "close_tab" {
@@ -690,5 +727,23 @@ mod tests {
     #[test]
     fn only_loopback_endpoints_are_opened() {
         assert!(Cdp::open("ws://example.com:9222/devtools/browser/x").is_err());
+    }
+
+    #[test]
+    fn long_addresses_are_rechecked_as_shown() {
+        let url = format!("https://meet.google.com/abc?{}", "x".repeat(500));
+        assert_eq!(detail(&url).chars().count(), DETAIL_LIMIT);
+        assert_eq!(detail(&detail(&url)), detail(&url));
+    }
+
+    #[test]
+    fn background_reads_never_open_a_connection() {
+        let mut calls = 0;
+        let _ = with_browsers(false, |_| {
+            calls += 1;
+            Ok(())
+        });
+        assert_eq!(calls, 0);
+        assert!(!connected());
     }
 }

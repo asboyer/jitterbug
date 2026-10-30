@@ -104,7 +104,7 @@ fn tab(
     if !chrome::connected() {
         return None;
     }
-    let view = chrome::inspect(snapshot, &workload.id, members);
+    let view = chrome::inspect_connected(snapshot, &workload.id, members);
     let unit = view
         .units
         .into_iter()
