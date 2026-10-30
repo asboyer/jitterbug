@@ -47,12 +47,30 @@ export interface SettingsRestorePreview {
     changes: { field: string; before: string; after: string }[];
 }
 
+export interface SystemCapability {
+    included?: boolean;
+    id: string;
+    label: string;
+    group: string;
+    status: 'supported' | 'needs_permission' | 'read_only' | 'unavailable';
+    detail: string;
+    verification: string;
+    pane: string | null;
+}
+
+export type SystemPreferenceValue =
+    | { kind: 'absent' }
+    | { kind: 'boolean'; value: boolean }
+    | { kind: 'integer' | 'real'; value: number };
+
 export interface SystemSettingValues {
     output_volume: number | null;
     output_muted: boolean | null;
+    preferences?: Record<string, SystemPreferenceValue>;
 }
 
 export interface SystemDefaultSnapshot {
+    coverage?: SystemCapability[];
     id: string;
     current: boolean;
     created_at_ms: number | null;
@@ -69,10 +87,17 @@ export interface SystemDefaultHistory {
 }
 
 export interface SystemRestorePreview {
+    coverage?: SystemCapability[];
     token: string;
     expires_at_ms: number;
     target: SystemDefaultSnapshot;
-    changes: { field: string; before: string; after: string }[];
+    changes: {
+        field: string;
+        before: string;
+        after: string;
+        group?: string;
+        verification?: string;
+    }[];
 }
 
 export type SystemRollbackStatus = 'no_changes' | 'verified' | 'partial_failure';
@@ -82,7 +107,7 @@ export type SystemOutcomeStatus =
 export interface SystemRollbackResult {
     status: SystemRollbackStatus;
     outcomes: {
-        setting: 'output_volume' | 'output_muted';
+        setting: 'output_volume' | 'output_muted' | { preference: string };
         field: string;
         before: string;
         target: string;

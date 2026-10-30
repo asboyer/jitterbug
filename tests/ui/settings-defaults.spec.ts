@@ -1,7 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 import { demoBootstrap, demoSnapshot } from '../../src/lib/demo';
 
-const baselineValues = { output_volume: 0.42, output_muted: false };
+const baselineValues = {
+    output_volume: 0.42,
+    output_muted: false,
+    preferences: { dock_autohide: { kind: 'absent' }, key_repeat: { kind: 'integer', value: 6 } },
+};
 
 async function mockDesktop(page: Page) {
     const snapshot = demoSnapshot();
@@ -26,6 +30,18 @@ async function mockDesktop(page: Page) {
                 values,
                 compatible: true,
                 error: values ? null : 'This system baseline is corrupt.',
+                coverage: [
+                    {
+                        id: 'dock_autohide',
+                        label: 'Dock auto-hide',
+                        group: 'Desktop & Dock',
+                        status: 'supported',
+                        included: true,
+                        detail: 'Current user override only.',
+                        verification: 'Saved preference only — live effect not verified.',
+                        pane: 'dock',
+                    },
+                ],
             });
             Object.defineProperty(window, 'isTauri', { value: true });
             Object.defineProperty(window, '__TAURI_INTERNALS__', {
@@ -39,6 +55,29 @@ async function mockDesktop(page: Page) {
                         if (command === 'get_workload_icon') return null;
                         calls.push({ command, args });
                         document.documentElement.dataset.settingsCalls = JSON.stringify(calls);
+                        if (command === 'get_system_capabilities')
+                            return [
+                                {
+                                    id: 'dock_autohide',
+                                    label: 'Dock auto-hide',
+                                    group: 'Desktop & Dock',
+                                    status: 'supported',
+                                    detail: 'Current user override only.',
+                                    verification:
+                                        'Saved preference only — live effect not verified.',
+                                    pane: 'dock',
+                                },
+                                {
+                                    id: 'system_sleep',
+                                    label: 'System idle sleep',
+                                    group: 'Power & display',
+                                    status: 'unavailable',
+                                    detail: 'Native privileged authorization is not implemented. No password prompt or helper.',
+                                    verification: 'Not captured; never restored',
+                                    pane: 'battery',
+                                },
+                            ];
+                        if (command === 'open_system_settings_pane') return;
                         if (command === 'get_system_default_history') {
                             historyCalls += 1;
                             if (historyCalls === 1)
@@ -73,6 +112,14 @@ async function mockDesktop(page: Page) {
                                 changes: [
                                     { field: 'Output volume', before: '80.0%', after: '42.0%' },
                                     { field: 'Output mute', before: 'Muted', after: 'Unmuted' },
+                                    {
+                                        field: 'Dock auto-hide',
+                                        group: 'Desktop & Dock',
+                                        before: 'Boolean: true',
+                                        after: 'Absent (no override in this scope)',
+                                        verification:
+                                            'Saved preference only; live effect not verified',
+                                    },
                                 ],
                             };
                         if (command === 'cancel_system_restore') return;
@@ -121,6 +168,65 @@ async function mockDesktop(page: Page) {
     );
 }
 
+test('capabilities explain authorization limits and open settings only on request', async ({
+    page,
+}) => {
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    await defaults.getByText('Coverage & access', { exact: true }).click();
+    await expect(defaults).toContainText('Native privileged authorization is not implemented');
+    await expect(defaults).toContainText('Saved preference only');
+    await expect(defaults.getByRole('button', { name: /grant|authorize/i })).toHaveCount(0);
+    const calls = async () =>
+        page.locator('html').evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
+    expect(
+        (await calls()).filter(
+            (c: { command: string }) => c.command === 'open_system_settings_pane'
+        )
+    ).toHaveLength(0);
+    await defaults.getByRole('button', { name: 'Open settings for System idle sleep' }).click();
+    expect(await calls()).toContainEqual({
+        command: 'open_system_settings_pane',
+        args: { pane: 'battery' },
+    });
+    await defaults.getByRole('button', { name: 'Recheck access' }).click();
+    expect(
+        (await calls()).filter((c: { command: string }) => c.command === 'get_system_capabilities')
+    ).toHaveLength(2);
+});
+
+test('capture selection is explicit and saved preference previews disclose verification scope', async ({
+    page,
+}) => {
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    for (const group of ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer']) {
+        await defaults.getByRole('checkbox', { name: group, exact: true }).uncheck();
+    }
+    await expect(defaults.getByRole('button', { name: 'Set Default' })).toBeDisabled();
+    await defaults.getByRole('checkbox', { name: 'Keyboard', exact: true }).check();
+    await defaults.getByRole('button', { name: 'Set Default' }).click();
+    const calls = await page
+        .locator('html')
+        .evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
+    expect(calls).toContainEqual({ command: 'set_system_default', args: { groups: ['Keyboard'] } });
+    await defaults.getByText('Current capture coverage report', { exact: true }).click();
+    await expect(defaults).toContainText('Included in this baseline');
+    await defaults.getByRole('button', { name: 'View past defaults' }).click();
+    const history = page.getByRole('dialog');
+    await history.getByRole('button', { name: /Rollback current system baseline/ }).click();
+    await expect(
+        history.getByRole('heading', { name: 'Desktop & Dock', exact: true })
+    ).toBeVisible();
+    await expect(history).toContainText('Absent (no override in this scope)');
+    await expect(history).toContainText('Saved preference only; live effect not verified');
+    await expect(history).toContainText('No Dock or system process is restarted');
+});
+
 test('system baseline has explicit native scope and exact confirmed rollback', async ({ page }) => {
     await mockDesktop(page);
     await page.goto('/');
@@ -132,7 +238,7 @@ test('system baseline has explicit native scope and exact confirmed rollback', a
     await expect(defaults).not.toContainText('provider and model choices for all three tiers');
 
     await defaults.getByRole('button', { name: 'Set Default' }).click();
-    await expect(defaults).toContainText('Actual system audio settings captured');
+    await expect(defaults).toContainText('Actual system settings captured');
     await defaults.getByRole('button', { name: 'View past defaults' }).click();
     const history = page.getByRole('dialog', { name: 'System baseline history' });
     await history.getByRole('button', { name: 'Load older defaults' }).click();

@@ -465,8 +465,39 @@ async fn confirm_settings_restore(
 }
 
 #[tauri::command]
-fn set_system_default(state: State<'_, AppState>) -> Result<system_settings::SnapshotView, String> {
-    state.set_system_default()
+fn get_system_capabilities(state: State<'_, AppState>) -> Vec<system_settings::Capability> {
+    state.system_capabilities()
+}
+
+#[tauri::command]
+fn open_system_settings_pane(pane: String) -> Result<(), String> {
+    let url = system_settings::settings_url(&pane)?;
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSURL};
+        let url = NSURL::URLWithString(&NSString::from_str(url)).ok_or("Invalid settings URL.")?;
+        if objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&url) {
+            Ok(())
+        } else {
+            Err(
+                "macOS could not open this System Settings pane. Open System Settings manually."
+                    .into(),
+            )
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err("System Settings destinations are supported on macOS only.".into())
+    }
+}
+
+#[tauri::command]
+fn set_system_default(
+    state: State<'_, AppState>,
+    groups: Option<Vec<String>>,
+) -> Result<system_settings::SnapshotView, String> {
+    state.set_system_default_selected(groups.as_deref())
 }
 
 #[tauri::command]
@@ -803,6 +834,8 @@ pub fn run() {
             preview_settings_restore,
             cancel_settings_restore,
             confirm_settings_restore,
+            get_system_capabilities,
+            open_system_settings_pane,
             set_system_default,
             get_system_default_history,
             inspect_system_default,

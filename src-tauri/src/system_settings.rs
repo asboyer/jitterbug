@@ -1,7 +1,11 @@
+mod capabilities;
+mod preferences;
+pub use capabilities::{settings_url, Capability, CapabilityStatus};
+pub use preferences::{Preference, PreferenceValue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -29,13 +33,21 @@ static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct SystemValues {
     pub output_volume: Option<f32>,
     pub output_muted: Option<bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preferences: BTreeMap<Preference, PreferenceValue>,
 }
 
 impl SystemValues {
     fn validate(&self) -> Result<(), String> {
-        if self.output_volume.is_none() && self.output_muted.is_none() {
+        for (key, value) in &self.preferences {
+            key.validate(*value)?;
+        }
+        if self.output_volume.is_none()
+            && self.output_muted.is_none()
+            && self.preferences.is_empty()
+        {
             return Err(
-                "The default audio output device has no supported settable controls.".into(),
+                "No supported settable controls or selected preferences are available; recheck coverage and category selection.".into(),
             );
         }
         if self
@@ -68,6 +80,7 @@ pub struct NativeState {
 pub enum Setting {
     OutputVolume,
     OutputMuted,
+    Preference(Preference),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -75,10 +88,14 @@ pub enum Setting {
 pub enum SettingValue {
     Volume(f32),
     Muted(bool),
+    Preference(PreferenceValue),
 }
 
 pub trait NativeSettings: Send + Sync {
     fn read(&self) -> Result<NativeState, String>;
+    fn coverage(&self, values: &SystemValues) -> Vec<Capability> {
+        capabilities::coverage(values)
+    }
     fn write(
         &self,
         expected: &NativeState,
@@ -105,6 +122,8 @@ struct SnapshotFile {
     created_at_ms: u64,
     context: CompatibilityContext,
     values: SystemValues,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    coverage: Vec<Capability>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -124,6 +143,7 @@ pub struct SnapshotView {
     pub values: Option<SystemValues>,
     pub compatible: bool,
     pub error: Option<String>,
+    pub coverage: Vec<Capability>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -135,6 +155,8 @@ pub struct HistoryPage {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FieldChange {
+    pub group: String,
+    pub verification: String,
     pub field: String,
     pub before: String,
     pub after: String,
@@ -146,6 +168,7 @@ pub struct RestorePreview {
     pub expires_at_ms: u64,
     pub target: SnapshotView,
     pub changes: Vec<FieldChange>,
+    pub coverage: Vec<Capability>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,12 +259,63 @@ impl Controller {
         }
     }
 
+    pub fn inventory(&self) -> Vec<Capability> {
+        match self.native.read() {
+            Ok(state) => self.native.coverage(&state.values),
+            Err(error) => {
+                let mut items = capabilities::coverage(&SystemValues {
+                    output_volume: None,
+                    output_muted: None,
+                    preferences: BTreeMap::new(),
+                });
+                for item in &mut items {
+                    item.status = CapabilityStatus::Unavailable;
+                    item.detail = error.clone();
+                    item.pane = None;
+                }
+                items
+            }
+        }
+    }
+
     pub fn capture(&self) -> Result<SnapshotView, String> {
+        self.capture_selected(None)
+    }
+
+    pub fn capture_selected(&self, groups: Option<&[String]>) -> Result<SnapshotView, String> {
+        if let Some(groups) = groups {
+            if groups.is_empty()
+                || groups.len() > 4
+                || groups.iter().any(|group| {
+                    !["Audio", "Desktop & Dock", "Keyboard", "Pointer"].contains(&group.as_str())
+                })
+            {
+                return Err("Choose at least one supported category: Audio, Desktop & Dock, Keyboard, or Pointer.".into());
+            }
+        }
         let _guard = self
             .persistence
             .lock()
             .map_err(|_| "System settings history is unavailable.")?;
-        let native = self.native.read()?;
+        let mut native = self.native.read()?;
+        let mut coverage = self.native.coverage(&native.values);
+        if let Some(groups) = groups {
+            let selected = |group: &str| groups.iter().any(|item| item == group);
+            if !selected("Audio") {
+                native.values.output_volume = None;
+                native.values.output_muted = None;
+            }
+            native
+                .values
+                .preferences
+                .retain(|key, _| selected(key.descriptor().3));
+            for item in &mut coverage {
+                if !selected(&item.group) {
+                    item.included = false;
+                    item.detail = format!("Not selected for this capture. {}", item.detail);
+                }
+            }
+        }
         native.values.validate()?;
         let context = self.bind(&native.identity)?;
         let current = self.current_state()?;
@@ -257,6 +331,7 @@ impl Controller {
             id: id.clone(),
             created_at_ms,
             context,
+            coverage,
             values: native.values,
         };
         atomic_create(&path, &encode(&snapshot)?)?;
@@ -368,6 +443,18 @@ impl Controller {
             &target.values,
         )?;
         let changes = changes(&current.values, &target.values);
+        let mut coverage = self.native.coverage(&current.values);
+        for item in &mut coverage {
+            item.included = match item.id.as_str() {
+                "output_volume" => target.values.output_volume.is_some(),
+                "output_muted" => target.values.output_muted.is_some(),
+                _ => target
+                    .values
+                    .preferences
+                    .keys()
+                    .any(|key| key.descriptor().2 == item.label),
+            };
+        }
         let token = secure_token()?;
         let expires_at_ms = now_ms()?
             .saturating_add(u64::try_from(self.preview_ttl.as_millis()).unwrap_or(u64::MAX));
@@ -387,6 +474,7 @@ impl Controller {
             expires_at_ms,
             target: snapshot_view(target, false, true),
             changes,
+            coverage,
         })
     }
 
@@ -554,7 +642,7 @@ impl Controller {
                 return self.finish_partial(journal_path, journal, Some(final_state.values));
             }
         };
-        if final_context != target.context || !values_equal(&final_state.values, &target.values) {
+        if final_context != target.context || !values_equal(&final_state.values, &expected) {
             if let Some(last) = journal.outcomes.last_mut() {
                 last.status = OutcomeStatus::ReadbackMismatch;
                 last.error = Some("Final native readback no longer matches the baseline.".into());
@@ -568,7 +656,7 @@ impl Controller {
             outcomes: journal.outcomes,
             current: Some(final_state.values),
             journal_id: Some(journal_id),
-            message: "Requested settings were written and verified by fresh native readback. This does not claim a performance improvement.".into(),
+            message: "Requested values verified: audio by live CoreAudio readback; preferences by saved CFPreferences readback only. Sign out or restart affected applications yourself to apply cached preferences. No processes were restarted; live preference effects and performance are not verified.".into(),
         })
     }
 
@@ -610,6 +698,7 @@ impl Controller {
                 values: None,
                 compatible: false,
                 error: Some(error),
+                coverage: Vec::new(),
             }),
         }
     }
@@ -780,6 +869,18 @@ fn planned_settings(before: &SystemValues, target: &SystemValues) -> Vec<Planned
             });
         }
     }
+    for (key, target) in &target.preferences {
+        if let Some(before) = before.preferences.get(key) {
+            if before != target {
+                result.push(PlannedSetting {
+                    setting: Setting::Preference(*key),
+                    field: key.descriptor().2,
+                    before: SettingValue::Preference(*before),
+                    target: SettingValue::Preference(*target),
+                });
+            }
+        }
+    }
     result
 }
 
@@ -787,6 +888,16 @@ fn changes(before: &SystemValues, target: &SystemValues) -> Vec<FieldChange> {
     planned_settings(before, target)
         .into_iter()
         .map(|planned| FieldChange {
+            group: match planned.setting {
+                Setting::Preference(key) => key.descriptor().3,
+                _ => "Audio",
+            }
+            .into(),
+            verification: match planned.setting {
+                Setting::Preference(_) => "Saved preference only; live effect not verified",
+                _ => "Live CoreAudio readback",
+            }
+            .into(),
             field: planned.field.into(),
             before: display_value(planned.before),
             after: display_value(planned.target),
@@ -799,6 +910,12 @@ fn display_value(value: SettingValue) -> String {
         SettingValue::Volume(value) => format!("{:.1}%", value * 100.0),
         SettingValue::Muted(true) => "Muted".into(),
         SettingValue::Muted(false) => "Unmuted".into(),
+        SettingValue::Preference(value) => match value {
+            PreferenceValue::Absent => "Absent (no override in this scope)".into(),
+            PreferenceValue::Boolean(v) => format!("Boolean: {v}"),
+            PreferenceValue::Integer(v) => format!("Integer: {v}"),
+            PreferenceValue::Real(v) => format!("Real: {v}"),
+        },
     }
 }
 
@@ -810,6 +927,9 @@ fn set_value(values: &mut SystemValues, setting: Setting, value: SettingValue) {
         (Setting::OutputMuted, SettingValue::Muted(value)) => {
             values.output_muted = Some(value);
         }
+        (Setting::Preference(key), SettingValue::Preference(value)) => {
+            values.preferences.insert(key, value);
+        }
         _ => {}
     }
 }
@@ -820,7 +940,7 @@ fn values_equal(left: &SystemValues, right: &SystemValues) -> bool {
         (None, None) => true,
         _ => false,
     };
-    volume_equal && left.output_muted == right.output_muted
+    volume_equal && left.output_muted == right.output_muted && left.preferences == right.preferences
 }
 
 fn ensure_compatible(
@@ -835,8 +955,16 @@ fn ensure_compatible(
                 .into(),
         );
     }
-    if current_values.output_volume.is_some() != target_values.output_volume.is_some()
-        || current_values.output_muted.is_some() != target_values.output_muted.is_some()
+    for key in target_values.preferences.keys() {
+        if !current_values.preferences.contains_key(key) {
+            return Err(format!(
+                "{} is unavailable; recheck access and capture a new baseline.",
+                key.descriptor().2
+            ));
+        }
+    }
+    if (target_values.output_volume.is_some() && current_values.output_volume.is_none())
+        || (target_values.output_muted.is_some() && current_values.output_muted.is_none())
     {
         return Err("The default output device's supported controls changed.".into());
     }
@@ -862,6 +990,7 @@ fn snapshot_view(snapshot: SnapshotFile, current: bool, compatible: bool) -> Sna
         created_at_ms: Some(snapshot.created_at_ms),
         summary: Some(summary(&snapshot.values)),
         values: Some(snapshot.values),
+        coverage: snapshot.coverage,
         compatible,
         error: None,
     }
@@ -878,7 +1007,13 @@ fn summary(values: &SystemValues) -> String {
             "unmuted".to_owned()
         }
     });
-    [volume, muted]
+    let preferences = (!values.preferences.is_empty()).then(|| {
+        format!(
+            "{} saved preferences (live effect not verified)",
+            values.preferences.len()
+        )
+    });
+    [volume, muted, preferences]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -1258,7 +1393,30 @@ mod core_audio {
     }
 
     pub(super) fn read() -> Result<NativeState, String> {
-        inspect_device().map(|(_, state)| state)
+        match inspect_device() {
+            Ok((_, state)) => Ok(state),
+            Err(_) => {
+                // Audio availability must not prevent independent user preference capture.
+                // The sentinel changes compatibility if an output device later becomes available.
+                let state = NativeState {
+                    identity: NativeIdentity {
+                        platform: "macos".into(),
+                        os_version: sysinfo::System::os_version()
+                            .ok_or("macOS version is unavailable.")?,
+                        user: unsafe { libc::geteuid() }.to_string(),
+                        machine: host_identity()?,
+                        device: "audio-unavailable".into(),
+                    },
+                    values: SystemValues {
+                        output_volume: None,
+                        output_muted: None,
+                        preferences: preferences::collect(),
+                    },
+                };
+                state.values.validate()?;
+                Ok(state)
+            }
+        }
     }
 
     fn inspect_device() -> Result<(AudioObjectId, NativeState), String> {
@@ -1292,6 +1450,7 @@ mod core_audio {
             values: SystemValues {
                 output_volume,
                 output_muted,
+                preferences: preferences::collect(),
             },
         };
         state.values.validate()?;
@@ -1336,6 +1495,44 @@ mod core_audio {
 
 #[cfg(target_os = "macos")]
 impl NativeSettings for MacOsNativeSettings {
+    fn coverage(&self, values: &SystemValues) -> Vec<Capability> {
+        let mut items = capabilities::coverage(values);
+        for (index, key) in Preference::ALL.into_iter().enumerate() {
+            if !values.preferences.contains_key(&key) {
+                if !preferences::supported_version() {
+                    items[index + 2].detail = "Preference adapter is limited to macOS 13–15; this OS version is unvalidated. Audio remains independently supported.".into();
+                } else if let Err(error) = preferences::macos::read(key) {
+                    items[index + 2].status = if error.starts_with("Read-only:") {
+                        CapabilityStatus::ReadOnly
+                    } else {
+                        CapabilityStatus::Unavailable
+                    };
+                    items[index + 2].detail = error;
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+            for item in &mut items {
+                let effective = match item.id.as_str() {
+                    "reduce_motion" => Some(workspace.accessibilityDisplayShouldReduceMotion()),
+                    "reduce_transparency" => {
+                        Some(workspace.accessibilityDisplayShouldReduceTransparency())
+                    }
+                    _ => None,
+                };
+                if let Some(value) = effective {
+                    item.status = CapabilityStatus::ReadOnly;
+                    item.detail = format!(
+                        "Effective value reported by NSWorkspace: {value}. {}",
+                        item.detail
+                    );
+                }
+            }
+        }
+        items
+    }
     fn read(&self) -> Result<NativeState, String> {
         core_audio::read()
     }
@@ -1346,12 +1543,28 @@ impl NativeSettings for MacOsNativeSettings {
         setting: Setting,
         value: SettingValue,
     ) -> Result<(), String> {
-        core_audio::write(expected, setting, value)
+        if let (Setting::Preference(key), SettingValue::Preference(value)) = (setting, value) {
+            guarded_write(
+                expected,
+                || self.read().map(|state| ((), state)),
+                |_| {
+                    let before = expected
+                        .values
+                        .preferences
+                        .get(&key)
+                        .ok_or("Preference is unavailable; recheck access.")?;
+                    preferences::macos::write(key, *before, value)
+                },
+            )
+        } else {
+            core_audio::write(expected, setting, value)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    mod preference_tests;
     use super::*;
     use std::{
         fs,
@@ -1401,8 +1614,111 @@ mod tests {
             values: SystemValues {
                 output_volume: Some(0.42),
                 output_muted: Some(false),
+                preferences: BTreeMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn preference_values_preserve_absence_and_native_types() {
+        let json = serde_json::json!({"output_volume":null,"output_muted":null,
+            "preferences":{"dock_autohide":{"kind":"absent"},
+            "key_repeat":{"kind":"integer","value":6},
+            "mouse_speed":{"kind":"real","value":0.5}}});
+        let values: SystemValues = serde_json::from_value(json.clone()).unwrap();
+        values.validate().unwrap();
+        assert_eq!(serde_json::to_value(values).unwrap(), json);
+    }
+
+    #[test]
+    fn selected_categories_preserve_unselected_live_values() {
+        let directory = directory("selected");
+        let mut state = state("speakers");
+        state
+            .values
+            .preferences
+            .insert(Preference::KeyRepeat, PreferenceValue::Integer(6));
+        state
+            .values
+            .preferences
+            .insert(Preference::DockAutohide, PreferenceValue::Absent);
+        let (controller, live, writes) = scripted(&directory, state, None, None);
+        let baseline = controller
+            .capture_selected(Some(&["Keyboard".into()]))
+            .unwrap();
+        assert!(baseline.values.as_ref().unwrap().output_volume.is_none());
+        assert_eq!(baseline.values.as_ref().unwrap().preferences.len(), 1);
+        live.lock()
+            .unwrap()
+            .values
+            .preferences
+            .insert(Preference::KeyRepeat, PreferenceValue::Integer(2));
+        live.lock().unwrap().values.output_volume = Some(0.9);
+        let preview = controller.preview(&baseline.id).unwrap();
+        assert_eq!(
+            controller.confirm(&preview.token).unwrap().status,
+            RollbackStatus::Verified
+        );
+        assert_eq!(
+            *writes.lock().unwrap(),
+            vec![Setting::Preference(Preference::KeyRepeat)]
+        );
+        assert_eq!(live.lock().unwrap().values.output_volume, Some(0.9));
+        assert!(controller.capture_selected(Some(&[])).is_err());
+        assert!(controller
+            .capture_selected(Some(&["Security".into()]))
+            .is_err());
+    }
+
+    #[test]
+    fn preference_preview_distinguishes_saved_verification_from_audio() {
+        let mut before = state("speakers").values;
+        before
+            .preferences
+            .insert(Preference::KeyRepeat, PreferenceValue::Integer(6));
+        let mut target = before.clone();
+        target
+            .preferences
+            .insert(Preference::KeyRepeat, PreferenceValue::Absent);
+        let change = serde_json::to_value(&changes(&before, &target)[0]).unwrap();
+        assert_eq!(change["group"], "Keyboard");
+        assert_eq!(
+            change["verification"],
+            "Saved preference only; live effect not verified"
+        );
+    }
+
+    #[test]
+    fn capture_reports_every_available_and_excluded_setting() {
+        let directory = directory("coverage");
+        let (controller, _, _) = scripted(&directory, state("speakers"), None, None);
+        let baseline = serde_json::to_value(controller.capture().unwrap()).unwrap();
+        assert!(
+            baseline.get("coverage").is_some(),
+            "capture must explain omissions individually"
+        );
+    }
+
+    #[test]
+    fn restoring_absent_preferences_removes_only_the_saved_override() {
+        let directory = directory("preference-absence");
+        let mut initial = state("speakers");
+        initial
+            .values
+            .preferences
+            .insert(Preference::DockAutohide, PreferenceValue::Absent);
+        let (controller, live, _) = scripted(&directory, initial.clone(), None, None);
+        let baseline = controller.capture().unwrap();
+        live.lock()
+            .unwrap()
+            .values
+            .preferences
+            .insert(Preference::DockAutohide, PreferenceValue::Boolean(true));
+        let preview = controller.preview(&baseline.id).unwrap();
+        assert_eq!(preview.changes.len(), 1);
+        let result = controller.confirm(&preview.token).unwrap();
+        assert_eq!(result.status, RollbackStatus::Verified);
+        assert_eq!(live.lock().unwrap().values, initial.values);
     }
 
     #[test]
@@ -1559,6 +1875,9 @@ mod tests {
                 }
                 (Setting::OutputMuted, SettingValue::Muted(value)) => {
                     state.values.output_muted = Some(value);
+                }
+                (Setting::Preference(key), SettingValue::Preference(value)) => {
+                    state.values.preferences.insert(key, value);
                 }
                 _ => panic!("setting/value mismatch"),
             }
@@ -1937,7 +2256,25 @@ mod tests {
             Ok(discovered) => {
                 println!("Read-only native discovery: supported controls found (identities and values omitted).");
                 assert_eq!(discovered.identity.platform, "macos");
+                assert!(
+                    !discovered.values.preferences.is_empty(),
+                    "native preference discovery must cover more than audio"
+                );
                 discovered.values.validate().unwrap();
+                let inventory = native_adapter().coverage(&discovered.values);
+                assert_eq!(inventory.len(), 20);
+                for item in &inventory {
+                    println!(
+                        "{}: {:?}; included={}",
+                        item.label, item.status, item.included
+                    );
+                }
+                let directory = directory("native-read-only-probe");
+                let controller = Controller::new(directory.clone(), native_adapter());
+                let saved = controller.capture().unwrap();
+                assert_eq!(saved.coverage.len(), 20);
+                assert!(controller.preview(&saved.id).unwrap().changes.is_empty());
+                fs::remove_dir_all(directory).unwrap();
             }
             Err(error) => {
                 println!("Read-only native discovery failed closed: {error}");

@@ -1176,8 +1176,35 @@ impl Runtime {
         settings_history::capture(&self.directory, &settings)
     }
 
+    pub fn system_capabilities(&self) -> Vec<system_settings::Capability> {
+        self.system_settings.inventory()
+    }
+
     pub fn set_system_default(&self) -> Result<system_settings::SnapshotView, String> {
-        self.system_settings.capture()
+        self.set_system_default_selected(None)
+    }
+
+    pub fn set_system_default_selected(
+        &self,
+        groups: Option<&[String]>,
+    ) -> Result<system_settings::SnapshotView, String> {
+        let _action = self.action.try_lock().map_err(|_| {
+            "A Jitterbug action is active. Wait for verification before capturing a baseline."
+        })?;
+        if self
+            .book
+            .lock()
+            .map_err(|_| "Incident state unavailable.")?
+            .cases
+            .iter()
+            .any(|case| case.stage.running())
+        {
+            return Err("Automatic assistance is active. Wait for it to finish before capturing a baseline.".into());
+        }
+        match groups {
+            None => self.system_settings.capture(),
+            Some(_) => self.system_settings.capture_selected(groups),
+        }
     }
 
     pub fn system_history(
@@ -1434,6 +1461,7 @@ mod tests {
                         device: "device".into(),
                     },
                     values: crate::system_settings::SystemValues {
+                        preferences: Default::default(),
                         output_volume: Some(0.5),
                         output_muted: Some(false),
                     },
@@ -1879,6 +1907,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_capture_excludes_concurrent_native_actions() {
+        let (native, writes) = fake_system_native();
+        let f = Fixture::with_system_native(native);
+        let action = f.runtime.action.lock().await;
+        assert!(f.runtime.set_system_default().is_err());
+        assert!(f
+            .runtime
+            .system_history(None, 20)
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        drop(action);
+        assert!(f.runtime.set_system_default().is_ok());
+    }
+
+    #[tokio::test]
     async fn system_rollback_uses_the_supervisor_action_lock() {
         let (native, writes) = fake_system_native();
         let f = Fixture::with_system_native(native);
@@ -1916,6 +1961,11 @@ mod tests {
             Stage::Verifying,
         ] {
             f.runtime.update(id, |case| case.stage = stage).unwrap();
+            assert!(f
+                .runtime
+                .set_system_default()
+                .unwrap_err()
+                .contains("active"));
             let preview = f.runtime.preview_system_restore(&first.id).unwrap();
             assert!(f
                 .runtime

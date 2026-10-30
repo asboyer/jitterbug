@@ -247,17 +247,30 @@ Cloud calls come from activity checks, chat requests, opening uncached process d
 
 ## System settings baseline and rollback
 
-**Set Default** in Settings captures actual values from the current macOS default audio output
-device before an optimization. The allowlist contains only supported, settable CoreAudio master
-volume and mute controls. Every capture creates a new immutable snapshot; history is cursor-paginated
-and displayed in a bounded modal. Windows and other platforms report this feature as unsupported.
+**Set Default** captures macOS audio and saved desktop/input preferences before optimization.
+Choose Audio, Desktop & Dock, Keyboard, and Pointer categories. The typed allowlist covers master
+volume/mute plus 12 saved preferences: Dock auto-hide, magnification, launch animation, minimizing
+into the application icon, recent apps, icon size; keyboard repeat interval/delay and accent menu;
+natural scrolling and mouse/trackpad speed. Preference storage support is limited to macOS 13–15.
+Each immutable capture retains prior history and includes per-setting coverage. Windows and other
+platforms remain unsupported.
+
+Coverage & access distinguishes supported, read-only, and unavailable settings and offers explicit
+System Settings links and Recheck access. Reduce motion/transparency are read-only public queries;
+Stage Manager, privileged sleep settings, and brightness are not falsely presented as restorable.
+There is no automatic permission request, password handling, sudo, or privileged helper.
+
+Audio is verified through live CoreAudio readback. Preferences are verified in saved CFPreferences
+storage only; live effects may require app relaunch, sign-out, or restart by the user. Jitterbug never
+restarts Dock/SystemUIServer. Absence of an override is preserved, not replaced with a guessed default.
+History and coverage are shown in bounded, keyboard-accessible views.
 
 Rollback starts with an exact before/after preview and explicit confirmation. Its one-use token binds
 the selected snapshot to fresh actual values and expires after five minutes. Compatibility is limited
 to the same OS version, effective user, machine, and default output device. Jitterbug rechecks actual
 state before each typed native write, records a durable intent first, verifies native readback after
 each write, and stops on external drift or partial failure. Interrupted journals are reported and
-never replayed automatically. Rollback shares the supervisor action lock with automation.
+never replayed automatically. Capture and rollback share the supervisor action lock with automation.
 
 This is not an OS upgrade/downgrade, disk backup, provider-configuration history, output-device
 switcher, or performance claim. It never changes credentials, privacy/security/network controls,
@@ -300,7 +313,7 @@ src-tauri/src/
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
   settings.rs           inference modes, model tiers, credentials, reviewed prices
   settings_history.rs   preserved legacy provider-history backend
-  system_settings.rs    native baseline history, journals, guarded CoreAudio rollback
+  system_settings.rs    native baseline history, journals, guarded audio/preference rollback
   budget.rs             locked, persistent pre-request spending reservations
   storage.rs            private local settings and ledger writes
   desktop.rs            template tray icon, native quick-view window, visibility-aware events

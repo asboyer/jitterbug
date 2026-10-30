@@ -3,6 +3,8 @@
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage } from '../lib/format';
     import type {
+        SystemCapability,
+        SystemPreferenceValue,
         SystemDefaultHistory,
         SystemDefaultSnapshot,
         SystemRestorePreview,
@@ -10,6 +12,8 @@
     } from '../lib/types';
 
     const PAGE_SIZE = 20;
+    const captureGroups = ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer'];
+    let selectedGroups = $state([...captureGroups]);
 
     let { desktop }: { desktop: boolean } = $props();
     let entries: SystemDefaultSnapshot[] = $state([]);
@@ -20,6 +24,9 @@
     let preview: SystemRestorePreview | null = $state(null);
     let result: SystemRollbackResult | null = $state(null);
     let busy = $state(false);
+    let capabilities: SystemCapability[] = $state([]);
+    let accessError = $state('');
+    let checkingAccess = $state(false);
     let status = $state('');
     let error = $state('');
     let historyOpen = $state(false);
@@ -123,10 +130,40 @@
         });
     }
 
+    async function recheckAccess() {
+        if (!desktop) return;
+        checkingAccess = true;
+        accessError = '';
+        try {
+            capabilities = await invoke<SystemCapability[]>('get_system_capabilities');
+        } catch (cause) {
+            accessError = errorMessage(cause);
+        } finally {
+            checkingAccess = false;
+        }
+    }
+
+    async function openSettings(item: SystemCapability) {
+        if (!desktop || !item.pane) return;
+        await perform(async () => {
+            await invoke('open_system_settings_pane', { pane: item.pane });
+            status =
+                'System Settings opened. Make any changes there yourself, then choose Recheck access. Opening settings does not grant access or restore anything.';
+        });
+    }
+
+    function preferenceValue(value: SystemPreferenceValue) {
+        return value.kind === 'absent'
+            ? 'Absent — no override in this scope'
+            : `${value.kind}: ${value.value}`;
+    }
+
     async function setDefault() {
         if (!desktop) return;
         await perform(async () => {
-            const saved = await invoke<SystemDefaultSnapshot>('set_system_default');
+            const saved = await invoke<SystemDefaultSnapshot>('set_system_default', {
+                groups: selectedGroups,
+            });
             currentDefault = saved;
             const previous = entries
                 .filter((entry) => entry.id !== saved.id)
@@ -138,7 +175,8 @@
             } else {
                 entries = previous;
             }
-            status = 'Actual system audio settings captured as the current baseline.';
+            status =
+                'Actual system settings captured as the current baseline. Review the per-setting coverage report; excluded settings were not saved.';
         });
     }
 
@@ -200,7 +238,10 @@
         historyTrigger?.focus();
     }
 
-    onMount(() => void loadHistory());
+    onMount(() => {
+        void loadHistory();
+        void recheckAccess();
+    });
     onDestroy(() => {
         if (desktop && preview) void invoke('cancel_system_restore', { token: preview.token });
     });
@@ -246,20 +287,74 @@
                             <dt>Output mute</dt>
                             <dd>{muted(entry.values.output_muted)}</dd>
                         </div>
+                        {#each Object.entries(entry.values.preferences ?? {}) as [key, value]}
+                            <div>
+                                <dt>
+                                    {entry.coverage?.find((item) => item.id === key)?.label ??
+                                        key.replaceAll('_', ' ')}
+                                </dt>
+                                <dd>{preferenceValue(value)}</dd>
+                            </div>
+                        {/each}
                     </dl>
+                </details>
+                <details>
+                    <summary>Capture coverage report</summary>
+                    {#if entry.coverage?.length}
+                        {@render coverageList(entry.coverage, false)}
+                    {:else}<p class="muted">
+                            Legacy audio-only baseline. No other preferences were captured.
+                        </p>{/if}
                 </details>
             {/if}
         {/if}
     </article>
 {/snippet}
 
+{#snippet coverageList(items: SystemCapability[], actions: boolean)}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div class="capability-list" role="region" aria-label="Per-setting coverage" tabindex="0">
+        {#each [...new Set(items.map((item) => item.group))] as group}
+            <section aria-label={group}>
+                <h4>{group}</h4>
+                {#each items.filter((item) => item.group === group) as item (item.id)}
+                    <article class="capability-item">
+                        <div>
+                            <strong>{item.label}</strong>
+                            <span class="capability-status">{item.status.replaceAll('_', ' ')}</span
+                            >
+                        </div>
+                        {#if !actions}<p class="muted">
+                                {item.included
+                                    ? 'Included in this baseline'
+                                    : 'Not included in this baseline'}
+                            </p>{/if}
+                        <p>{item.detail}</p>
+                        <p class="muted">{item.verification}</p>
+                        {#if actions && item.pane}<button
+                                disabled={busy || !desktop}
+                                aria-label={`Open settings for ${item.label}`}
+                                onclick={() => openSettings(item)}>Open System Settings</button
+                            >{/if}
+                    </article>
+                {/each}
+            </section>
+        {/each}
+    </div>
+{/snippet}
+
 <section class="panel settings-panel settings-defaults" aria-label="System settings baseline">
     <div class="section-title">
         <div>
             <h2>System settings baseline</h2>
-            <p class="muted">Capture actual macOS audio settings before an optimization.</p>
+            <p class="muted">
+                Capture audio and saved macOS desktop, keyboard, and pointer preferences.
+            </p>
         </div>
-        <button class="primary" disabled={!desktop || busy} onclick={setDefault}>Set Default</button
+        <button
+            class="primary"
+            disabled={!desktop || busy || selectedGroups.length === 0}
+            onclick={setDefault}>Set Default</button
         >
     </div>
     {#if !desktop}
@@ -272,7 +367,10 @@
             <h3>Included</h3>
             <p>
                 The current default output device’s settable master volume and mute values, when
-                CoreAudio reports those controls as supported.
+                CoreAudio reports those controls as supported. Also captures allowlisted Dock
+                behavior, keyboard repeat and accent-menu settings, natural scrolling, and
+                mouse/trackpad speed overrides on macOS 13–15. Inspect coverage below; this is not
+                every OS setting.
             </p>
         </div>
         <div>
@@ -285,9 +383,40 @@
     </div>
     <p class="muted">
         Each Set Default creates a new immutable local snapshot. Rollback works only on the same
-        macOS version, user, machine, and default output device, and verifies CoreAudio readback.
+        macOS version, user, machine, and default output device. Audio uses live CoreAudio readback;
+        preferences use saved-storage readback only. Live effects may require signing out or
+        relaunching affected applications yourself. Jitterbug never restarts Dock or SystemUIServer.
         Verification confirms the setting value—not a performance improvement or full-system backup.
     </p>
+    <fieldset class="capture-groups" disabled={!desktop || busy}>
+        <legend>Include in the next baseline</legend>
+        {#each captureGroups as group}
+            <label
+                ><input type="checkbox" bind:group={selectedGroups} value={group} /> {group}</label
+            >
+        {/each}
+    </fieldset>
+    <details class="capability-details">
+        <summary>Coverage &amp; access</summary>
+        <p>
+            No permission is requested automatically. Supported means the adapter can read a valid
+            value; write access is rechecked during rollback. No password handling, sudo, or
+            persistent privileged helper.
+        </p>
+        <button disabled={!desktop || busy || checkingAccess} onclick={recheckAccess}
+            >{checkingAccess ? 'Checking access…' : 'Recheck access'}</button
+        >
+        {#if accessError}<p class="error" role="alert">{accessError}</p>{/if}
+        {@render coverageList(capabilities, true)}
+    </details>
+    {#if currentDefault?.coverage?.length}
+        <details>
+            <summary>Current capture coverage report</summary>{@render coverageList(
+                currentDefault.coverage,
+                false
+            )}
+        </details>
+    {/if}
     <button
         disabled={!desktop || busy}
         onclick={() => (historyOpen = true)}
@@ -343,21 +472,37 @@
                     <strong>{timestamp(preview.target.created_at_ms)}</strong>?
                 </p>
                 {#if preview.changes.length}
-                    <dl class="restore-changes">
-                        {#each preview.changes as change}
-                            <div>
-                                <dt>{change.field}</dt>
-                                <dd>{change.before} → {change.after}</dd>
-                            </div>
-                        {/each}
-                    </dl>
+                    {#each [...new Set(preview.changes.map((change) => change.group ?? 'Audio'))] as group}
+                        <h3>{group}</h3>
+                        <dl class="restore-changes">
+                            {#each preview.changes.filter((change) => (change.group ?? 'Audio') === group) as change}
+                                <div>
+                                    <dt>{change.field}</dt>
+                                    <dd>
+                                        {change.before} → {change.after}
+                                        <p class="muted">
+                                            {change.verification ?? 'Live CoreAudio readback'}
+                                        </p>
+                                    </dd>
+                                </div>
+                            {/each}
+                        </dl>
+                    {/each}
                 {:else}
                     <p class="muted">Actual supported values already match this baseline.</p>
                 {/if}
                 <p class="muted">
                     Jitterbug will recheck compatibility and current values before confirmation and
-                    before each CoreAudio write. Any mismatch stops the remaining writes.
+                    before each native write. Any mismatch stops the remaining writes. Saved
+                    preference verification does not prove a live effect. No Dock or system process
+                    is restarted.
                 </p>
+                {#if preview.coverage?.length}
+                    <details>
+                        <summary>Current capability and permission state</summary
+                        >{@render coverageList(preview.coverage, false)}
+                    </details>
+                {/if}
                 <div class="form-actions">
                     <button class="restore-cancel" disabled={busy} onclick={cancelRestore}
                         >Cancel</button
@@ -399,7 +544,15 @@
                     {#each result.outcomes as outcome}
                         <div>
                             <dt>{outcome.field}</dt>
-                            <dd>{outcome.status.replaceAll('_', ' ')}</dd>
+                            <dd>
+                                {outcome.status === 'pending'
+                                    ? 'Not attempted — stopped after earlier failure'
+                                    : outcome.status.replaceAll('_', ' ')}{#if outcome.error}<p
+                                        class="error"
+                                    >
+                                        {outcome.error}
+                                    </p>{/if}
+                            </dd>
                         </div>
                     {/each}
                 </dl>
@@ -409,3 +562,49 @@
         </div>
     </dialog>
 {/if}
+
+<style>
+    .capture-groups {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.25rem;
+        margin: 1rem 0;
+        padding: 0.75rem;
+        border: 1px solid var(--border, #343941);
+        border-radius: 0.5rem;
+    }
+    .capture-groups label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+    .capture-groups input {
+        width: auto;
+    }
+    .capability-details {
+        margin: 1rem 0;
+    }
+    .capability-list {
+        max-height: 24rem;
+        overflow: auto;
+        overscroll-behavior: contain;
+        padding-right: 0.5rem;
+    }
+    .capability-item {
+        padding: 0.8rem 0;
+        border-bottom: 1px solid var(--border, #343941);
+    }
+    .capability-item p {
+        margin: 0.4rem 0;
+        font-size: 0.85rem;
+    }
+    .capability-status {
+        display: inline-block;
+        margin-left: 0.5rem;
+        font-size: 0.75rem;
+        padding: 0.15rem 0.4rem;
+        border: 1px solid var(--border, #343941);
+        border-radius: 0.35rem;
+        text-transform: capitalize;
+    }
+</style>
