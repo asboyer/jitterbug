@@ -7,8 +7,9 @@
 //! The shell that launched the command is therefore stopped first and continued last: it never
 //! observes the stop, and the command keeps the terminal.
 //!
-//! Pauses expire, are resumed when Jitterbug quits, and are recorded privately so a crash
-//! cannot leave work frozen: the next launch resumes anything still recorded.
+//! Pauses expire, are resumed when Jitterbug quits, and are recorded privately so the next
+//! launch resumes anything still recorded. A detached watchdog also resumes them shortly after
+//! the limit in case Jitterbug is killed and not started again.
 use crate::types::now;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,7 +17,9 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use sysinfo::{Pid, Process, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
+use sysinfo::{
+    Pid, Process, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, Signal, System, UpdateKind,
+};
 
 /// Paused work resumes by itself after this long unless resumed sooner.
 pub const LIMIT_SECONDS: u64 = 15 * 60;
@@ -24,6 +27,8 @@ const SHELLS: &[&str] = &[
     "zsh", "bash", "fish", "sh", "dash", "nu", "tcsh", "csh", "ksh",
 ];
 const TREE_LIMIT: usize = 512;
+/// The watchdog waits this much past the limit, so the in-app expiry normally runs first.
+const WATCHDOG_GRACE_SECONDS: u64 = 30;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Paused {
@@ -36,6 +41,9 @@ pub struct Paused {
     pub shell: Option<(u32, u64)>,
     pub paused_at: u64,
     pub until: u64,
+    /// The detached process that resumes this pause if Jitterbug is no longer running.
+    #[serde(default)]
+    pub watchdog: Option<(u32, u64)>,
 }
 
 struct Registry {
@@ -152,6 +160,71 @@ fn signal(pid: u32, start: u64, system: &System, signal: Signal) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the command owns its terminal (its process group is the terminal's foreground
+/// group). Only then does the launching shell react to it stopping. Unknown counts as yes.
+#[cfg(unix)]
+fn foreground(pid: u32) -> bool {
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-o", "pgid=,tpgid=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return true;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut ids = text.split_whitespace().map(str::parse::<i64>);
+    match (ids.next(), ids.next()) {
+        (Some(Ok(group)), Some(Ok(terminal))) => terminal > 0 && group == terminal,
+        _ => true,
+    }
+}
+
+/// Start a detached process that continues `record` after `seconds`, members first and the
+/// shell last, even if Jitterbug has exited by then. Returns its PID and start time.
+#[cfg(unix)]
+fn watchdog(record: &Paused, seconds: u64) -> Option<(u32, u64)> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let pids = record
+        .members
+        .iter()
+        .chain(record.shell.iter())
+        .map(|(pid, _)| pid.to_string());
+    // The outer shell exits at once; the timer runs in its own process group, ignores the
+    // terminal's hangup and interrupt, and is adopted by the system.
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("( trap '' HUP INT TERM; sleep \"$0\"; kill -CONT \"$@\" ) </dev/null >/dev/null 2>&1 & echo $!")
+        .arg(seconds.to_string())
+        .args(pids)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .output()
+        .ok()?;
+    let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+    let start = system.process(Pid::from_u32(pid))?.start_time();
+    Some((pid, start))
+}
+
+/// Stop a watchdog that is no longer needed, with its timer.
+#[cfg(unix)]
+fn cancel(watchdog: Option<(u32, u64)>, system: &System) {
+    let Some((pid, start)) = watchdog else { return };
+    if system
+        .process(Pid::from_u32(pid))
+        .is_none_or(|p| p.start_time() != start)
+    {
+        return;
+    }
+    // Its own process group holds only the watchdog and its timer; never Jitterbug's.
+    let group = unsafe { libc::getpgid(pid as i32) };
+    if group > 1 && group != unsafe { libc::getpgrp() } {
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+}
+
 /// Pause a command's tree. Returns the record, including when it resumes by itself.
 pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
     if is_paused(pid, start_time) {
@@ -165,6 +238,18 @@ pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
     if let Some(reason) = refusal(root, &system) {
         return Err(reason.into());
     }
+    // Resuming must never continue part of another pause, or a job the person suspended.
+    let held: HashSet<(u32, u64)> = registry()
+        .paused
+        .iter()
+        .flat_map(|p| p.members.iter().copied())
+        .collect();
+    if tree(&system, root).iter().any(|m| held.contains(m)) {
+        return Err("Part of this command is already paused.".into());
+    }
+    if root.status() == ProcessStatus::Stop {
+        return Err("This command is already stopped. Nothing was paused.".into());
+    }
     #[cfg(unix)]
     {
         let protected = protected(&system);
@@ -173,6 +258,7 @@ pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
             .and_then(|id| system.process(id))
             .filter(|parent| shell(parent) && crate::platform::same_user(parent))
             .filter(|parent| !protected.contains(&parent.pid().as_u32()))
+            .filter(|_| foreground(pid))
             .map(|parent| (parent.pid().as_u32(), parent.start_time()));
         if let Some((spid, sstart)) = shell {
             if !signal(spid, sstart, &system, Signal::Stop) {
@@ -198,14 +284,20 @@ pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
             }
         }
         if !members.contains(&(pid, start_time)) {
-            // Undo the shell stop: nothing of the command was paused.
+            // Undo everything stopped so far, shell last: the command itself was not paused.
+            let check = self::system();
+            for (mpid, mstart) in &members {
+                signal(*mpid, *mstart, &check, Signal::Continue);
+            }
             if let Some((spid, sstart)) = shell {
-                signal(spid, sstart, &self::system(), Signal::Continue);
+                if !held_shell(shell) {
+                    signal(spid, sstart, &check, Signal::Continue);
+                }
             }
             return Err("The operating system rejected the pause.".into());
         }
         let at = now();
-        let record = Paused {
+        let mut record = Paused {
             pid,
             start_time,
             label: label.chars().take(120).collect(),
@@ -213,7 +305,9 @@ pub fn pause(pid: u32, start_time: u64, label: &str) -> Result<Paused, String> {
             shell,
             paused_at: at,
             until: at + LIMIT_SECONDS,
+            watchdog: None,
         };
+        record.watchdog = watchdog(&record, LIMIT_SECONDS + WATCHDOG_GRACE_SECONDS);
         let mut registry = registry();
         registry.paused.push(record.clone());
         save(&registry);
@@ -235,24 +329,35 @@ fn system_tree(pid: u32, start: u64) -> Vec<(u32, u64)> {
         .unwrap_or_default()
 }
 
-fn continue_record(record: &Paused) -> usize {
+#[cfg(unix)]
+/// Whether a pause still recorded keeps this shell stopped (two commands of one pipeline).
+fn held_shell(shell: Option<(u32, u64)>) -> bool {
+    shell.is_some() && registry().paused.iter().any(|p| p.shell == shell)
+}
+
+/// Continue records already removed from the registry. Returns how many processes resumed.
+fn continue_records(records: &[Paused]) -> usize {
     #[cfg(unix)]
     {
         let system = system();
-        let resumed = record
-            .members
+        let resumed = records
             .iter()
+            .flat_map(|r| r.members.iter())
             .filter(|(pid, start)| signal(*pid, *start, &system, Signal::Continue))
             .count();
-        // The shell resumes last, after its command is running again.
-        if let Some((pid, start)) = record.shell {
-            signal(pid, start, &system, Signal::Continue);
+        // Shells resume last, after their commands are running again, and only once no other
+        // pause still holds them.
+        for record in records {
+            if let Some((pid, start)) = record.shell.filter(|_| !held_shell(record.shell)) {
+                signal(pid, start, &system, Signal::Continue);
+            }
+            cancel(record.watchdog, &system);
         }
         resumed
     }
     #[cfg(not(unix))]
     {
-        let _ = record;
+        let _ = records;
         0
     }
 }
@@ -269,7 +374,7 @@ pub fn resume(pid: u32, start_time: u64) -> Result<String, String> {
         save(&registry);
         record
     };
-    let resumed = continue_record(&record);
+    let resumed = continue_records(std::slice::from_ref(&record));
     Ok(if resumed == 0 {
         format!("{} had already exited.", record.label)
     } else {
@@ -300,12 +405,8 @@ pub fn expire() -> Vec<String> {
         }
         due
     };
-    due.iter()
-        .map(|p| {
-            continue_record(p);
-            p.label.clone()
-        })
-        .collect()
+    continue_records(&due);
+    due.into_iter().map(|p| p.label).collect()
 }
 
 /// Resume everything; called when Jitterbug quits.
@@ -316,9 +417,7 @@ pub fn resume_all() {
         save(&registry);
         all
     };
-    for p in &all {
-        continue_record(p);
-    }
+    continue_records(&all);
 }
 
 /// Load the private record and resume anything a previous run left paused.
@@ -331,9 +430,7 @@ pub fn init(directory: &Path) {
         registry.paused.clear();
         save(&registry);
     }
-    for p in &left {
-        continue_record(p);
-    }
+    continue_records(&left);
 }
 
 #[cfg(all(test, unix))]
@@ -385,5 +482,121 @@ mod tests {
         // This test process is Jitterbug's stand-in: it can never be paused.
         let me = system.process(Pid::from_u32(std::process::id())).unwrap();
         assert!(refusal(me, &system).is_some());
+    }
+
+    fn sleeper() -> (std::process::Child, u32, u64) {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        std::thread::sleep(Duration::from_millis(200));
+        let start = system().process(Pid::from_u32(pid)).unwrap().start_time();
+        (child, pid, start)
+    }
+
+    fn record(member: (u32, u64), shell: Option<(u32, u64)>) -> Paused {
+        Paused {
+            pid: member.0,
+            start_time: member.1,
+            label: "test".into(),
+            members: vec![member],
+            shell,
+            paused_at: now(),
+            until: now(),
+            watchdog: None,
+        }
+    }
+
+    #[test]
+    fn stopped_jobs_and_parts_of_a_pause_are_not_paused_again() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let pid = child.id();
+        let start = system().process(Pid::from_u32(pid)).unwrap().start_time();
+        let paused = pause(pid, start, "tree").unwrap();
+        let (cpid, cstart) = paused.members[1];
+        assert!(pause(cpid, cstart, "child")
+            .unwrap_err()
+            .contains("already paused"));
+        resume(pid, start).unwrap();
+        // A job the person suspended stays theirs: resuming it later would surprise them.
+        let (mut job, jpid, jstart) = sleeper();
+        Command::new("kill")
+            .args(["-STOP", &jpid.to_string()])
+            .status()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(pause(jpid, jstart, "job")
+            .unwrap_err()
+            .contains("already stopped"));
+        assert!(state(jpid).starts_with('T'));
+        for c in [&mut child, &mut job] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    #[test]
+    fn a_shell_shared_by_two_pauses_resumes_only_after_both() {
+        let (mut a, apid, astart) = sleeper();
+        let (mut b, bpid, bstart) = sleeper();
+        let (mut sh, spid, sstart) = sleeper();
+        for p in [apid, bpid, spid] {
+            Command::new("kill")
+                .args(["-STOP", &p.to_string()])
+                .status()
+                .unwrap();
+        }
+        let shell = Some((spid, sstart));
+        let other = record((bpid, bstart), shell);
+        registry().paused.push(other.clone());
+        continue_records(&[record((apid, astart), shell)]);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!state(apid).starts_with('T'));
+        assert!(
+            state(spid).starts_with('T'),
+            "the other pause still holds it"
+        );
+        registry().paused.retain(|p| p != &other);
+        continue_records(&[other]);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!state(bpid).starts_with('T') && !state(spid).starts_with('T'));
+        for c in [&mut a, &mut b, &mut sh] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    #[test]
+    fn a_watchdog_resumes_work_on_its_own_and_cancels_cleanly() {
+        let (mut a, apid, astart) = sleeper();
+        let (mut b, bpid, bstart) = sleeper();
+        for p in [apid, bpid] {
+            Command::new("kill")
+                .args(["-STOP", &p.to_string()])
+                .status()
+                .unwrap();
+        }
+        // Fires without Jitterbug's help, as after a crash.
+        assert!(watchdog(&record((apid, astart), None), 1).is_some());
+        // Cancelled, as when Jitterbug resumes the pause itself.
+        let mut cancelled = record((bpid, bstart), None);
+        cancelled.watchdog = watchdog(&cancelled, 1);
+        let (wpid, _) = cancelled.watchdog.unwrap();
+        cancel(cancelled.watchdog, &system());
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!state(apid).starts_with('T'));
+        assert!(state(bpid).starts_with('T'));
+        assert!(state(wpid).is_empty(), "the cancelled watchdog is gone");
+        for c in [&mut a, &mut b] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }
