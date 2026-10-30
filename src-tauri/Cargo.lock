@@ -1651,6 +1651,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "fs2",
+ "getrandom 0.3.4",
  "keyring",
  "libc",
  "objc2",

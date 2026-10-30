@@ -17,6 +17,7 @@ pub mod providers;
 pub mod queue;
 pub mod research;
 pub mod settings;
+pub mod settings_history;
 pub mod storage;
 pub mod supervisor;
 pub mod types;
@@ -403,21 +404,58 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
 }
 
 #[tauri::command]
-fn save_settings(
+fn save_settings(state: State<'_, AppState>, settings: settings::Settings) -> Result<(), String> {
+    state.save_settings(settings)
+}
+
+#[tauri::command]
+fn set_settings_default(
     state: State<'_, AppState>,
-    mut settings: settings::Settings,
-) -> Result<(), String> {
-    let _guard = state
-        .inference
-        .try_lock()
-        .map_err(|_| "Wait for the active model request before changing policy.")?;
-    let mut current = state.settings.lock().map_err(|_| "Settings unavailable.")?;
-    // Automation permissions have a separate command so an older provider form cannot overwrite them.
-    settings.automation = current.automation.clone();
-    settings.validate()?;
-    storage::write(&state.directory.join("settings.json"), &settings)?;
-    *current = settings;
-    Ok(())
+) -> Result<settings_history::SnapshotView, String> {
+    state.set_settings_default()
+}
+
+#[tauri::command]
+fn get_settings_default_history(
+    state: State<'_, AppState>,
+    cursor: Option<String>,
+    page_size: usize,
+) -> Result<settings_history::HistoryPage, String> {
+    state.settings_history(cursor.as_deref(), page_size)
+}
+
+#[tauri::command]
+fn inspect_settings_default(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<settings_history::SnapshotView, String> {
+    state.inspect_settings_default(&id)
+}
+
+#[tauri::command]
+fn preview_settings_restore(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<settings_history::RestorePreview, String> {
+    state.preview_settings_restore(&id)
+}
+
+#[tauri::command]
+fn cancel_settings_restore(state: State<'_, AppState>, token: String) -> Result<(), String> {
+    state.cancel_settings_restore(&token)
+}
+
+#[tauri::command]
+async fn confirm_settings_restore(
+    state: State<'_, AppState>,
+    token: String,
+    confirmed: bool,
+) -> Result<settings::Settings, String> {
+    if !confirmed {
+        let _ = state.cancel_settings_restore(&token);
+        return Err("Explicit restore confirmation is required.".into());
+    }
+    state.confirm_settings_restore(&token).await
 }
 
 #[tauri::command]
@@ -667,6 +705,12 @@ pub fn run() {
             desktop::hide_quick_view,
             get_bootstrap,
             save_settings,
+            set_settings_default,
+            get_settings_default_history,
+            inspect_settings_default,
+            preview_settings_restore,
+            cancel_settings_restore,
+            confirm_settings_restore,
             save_credential,
             list_local_models,
             unload_model,

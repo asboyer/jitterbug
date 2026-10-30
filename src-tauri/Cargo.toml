@@ -25,6 +25,7 @@ fs2 = "0.4"
 base64 = "0.22"
 dirs = "7"
 sha2 = "0.10"
+getrandom = "0.3"
 toml_edit = "0.25"
 
 [target.'cfg(unix)'.dependencies]

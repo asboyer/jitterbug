@@ -17,6 +17,36 @@ export interface Settings {
     automation: AutomationPolicy;
 }
 
+export interface SupportedSettings {
+    mode: Mode;
+    decision: Tier;
+    cheap: Tier;
+    intelligent: Tier;
+    decision_enabled: boolean;
+    budget_usd: number;
+}
+
+export interface SettingsDefaultSnapshot {
+    id: string;
+    current: boolean;
+    created_at_ms: number | null;
+    summary: string | null;
+    settings: SupportedSettings | null;
+    error: string | null;
+}
+
+export interface SettingsDefaultHistory {
+    entries: SettingsDefaultSnapshot[];
+    next_cursor: string | null;
+}
+
+export interface SettingsRestorePreview {
+    token: string;
+    expires_at_ms: number;
+    target: SettingsDefaultSnapshot;
+    changes: { field: string; before: string; after: string }[];
+}
+
 export interface Spending {
     reserved_usd: number;
     reported_estimate_usd: number;

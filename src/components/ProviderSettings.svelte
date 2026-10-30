@@ -1,6 +1,7 @@
 <script lang="ts">
     import notices from '../../THIRD_PARTY_NOTICES.md?raw';
     import AutomationSettings from './AutomationSettings.svelte';
+    import SettingsDefaults from './SettingsDefaults.svelte';
     import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory } from '../lib/format';
@@ -61,6 +62,11 @@
             status = 'Credential saved in your operating-system credential store.';
         });
     }
+
+    async function reconcileRestored(effective: Bootstrap['settings']) {
+        settings = $state.snapshot(effective);
+        await onrefresh();
+    }
 </script>
 
 <div class="page-heading">
@@ -69,6 +75,7 @@
         <p class="muted">Choose how Jitterbug investigates and when it can help.</p>
     </div>
 </div>
+<SettingsDefaults {desktop} onrestored={reconcileRestored} />
 <AutomationSettings {bootstrap} {desktop} {onrefresh} />
 <section class="panel settings-panel">
     <h2>Where should AI run?</h2>

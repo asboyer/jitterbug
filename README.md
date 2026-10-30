@@ -183,6 +183,36 @@ Meta and Claude use fixed official endpoints. Jev is wired for the decision tier
 
 Cloud calls come from activity checks, chat requests, opening uncached process details, explicitly requested task summaries, or enabled automatic incident investigations. They are bounded and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests. Successful calls with complete token usage settle their own reservation to the estimated charge; failures and unknown usage keep the reservation across restarts. Legacy reservations remain conservative. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
 
+## Saved settings defaults and rollback
+
+**Set Default** in Settings captures the backend's currently saved provider configuration, not
+unsaved form edits. Its scope is deliberately narrow: privacy mode, the provider and model for the
+decision/cheap/intelligent tiers, whether the optional decision model is enabled, and the cloud
+budget ceiling. Setting another default makes the new snapshot current without deleting or pruning
+any earlier snapshot. History is cursor-paginated and read one bounded page at a time; each snapshot
+is an individual versioned file so history does not become one ever-growing in-memory document.
+
+Automation policy and permissions are excluded and preserved during restore. Credentials, actual
+spent/reserved budget consumption, the spending ledger, telemetry, process priorities and other OS
+settings, validation queues, and command authorization are never captured or restored. This is not
+an OS backup. The browser preview is explicitly nonpersistent and cannot set or restore defaults.
+
+Restore starts with a field-by-field preview and requires explicit confirmation. Preview tokens are
+backend-issued, random, one-shot, limited to 32 outstanding entries, and expire after five minutes.
+Confirmation rechecks the live settings revision/content, selected snapshot content, current-default
+revision, active inference, automatic investigations, and process-action measurement. A changed or
+expired preview fails closed. Successful restore writes settings atomically, reads and validates the
+effective file, preserves current automation, and returns that read-back configuration to reconcile
+the form. The spending ledger is a separate file and is never rewritten by this flow.
+
+Snapshots and current-default metadata live under `settings-default-history` in Jitterbug's private
+OS application-data directory. Files use schema and size checks, private permissions, collision-safe
+temporary files, file synchronization, atomic publication/replacement, and directory synchronization
+where the OS supports it. Invalid future schemas fail closed. A corrupt history entry remains visible
+with its error while other valid entries remain usable. Jitterbug has no history-delete or automatic
+retention operation; removal outside Jitterbug is permanent and may leave an explicitly reported
+missing entry.
+
 ## What is a demo or future work
 
 **Explore demo** and **Simulate pressure** use synthetic fixtures. In the desktop app, pressure simulation feeds three synthetic samples through the real Rust detector and delivers its incident through the real event channel. It does not generate CPU/memory load, call models, or change processes. Exploring the demo does not pause the native monitor; a real incident switches the desktop UI back to LIVE. Browser preview is always a demo. The source badge and assistant message labels make this visible.
@@ -214,6 +244,7 @@ src-tauri/src/
   actions.rs            native process-action validation and OS priority verification
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
   settings.rs           inference modes, model tiers, credentials, reviewed prices
+  settings_history.rs   immutable defaults, paginated history, guarded rollback previews
   budget.rs             locked, persistent pre-request spending reservations
   storage.rs            private local settings and ledger writes
   desktop.rs            template tray icon, native quick-view window, visibility-aware events

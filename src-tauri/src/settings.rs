@@ -49,7 +49,7 @@ impl Mode {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tier {
     pub provider: Provider,
     pub model: String,
