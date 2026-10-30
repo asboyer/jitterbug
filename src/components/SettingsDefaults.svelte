@@ -169,7 +169,9 @@
 
     function hardwareSummary(entry: SystemDefaultSnapshot) {
         const hardware = Object.values(entry.values?.hardware ?? {});
-        return hardware.length ? ` · ${hardware.length} extra setting${hardware.length === 1 ? '' : 's'}` : '';
+        return hardware.length
+            ? ` · ${hardware.length} extra setting${hardware.length === 1 ? '' : 's'}`
+            : '';
     }
 
     async function setDefault() {
@@ -326,7 +328,8 @@
                     <article class="capability-item">
                         <div>
                             <strong>{item.label}</strong>
-                            <span class="capability-status">{item.status.replaceAll('_', ' ')}</span>
+                            <span class="capability-status">{item.status.replaceAll('_', ' ')}</span
+                            >
                         </div>
                     </article>
                 {/each}
@@ -371,18 +374,19 @@
             <legend>Categories</legend>
             {#each captureGroups as group}
                 <label
-                    ><input type="checkbox" bind:group={selectedGroups} value={group} /> {group}</label
+                    ><input type="checkbox" bind:group={selectedGroups} value={group} />
+                    {group}</label
                 >
             {/each}
         </fieldset>
     </details>
     {#if status && !historyOpen}<p
-        class="success saved-notice"
-        class:fading={noticeFading}
-        role="status"
-    >
-        {status}
-    </p>{/if}
+            class="success saved-notice"
+            class:fading={noticeFading}
+            role="status"
+        >
+            {status}
+        </p>{/if}
     {#if error && !historyOpen}<p class="error" role="alert">{error}</p>{/if}
 </section>
 
