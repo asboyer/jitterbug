@@ -456,24 +456,51 @@ fn regroup(
 pub fn suspect_id(snapshot: &Snapshot, pid: u32) -> Option<String> {
     let by_pid: HashMap<u32, &ProcessRecord> =
         snapshot.processes.iter().map(|p| (p.pid, p)).collect();
-    let p = by_pid.get(&pid)?;
-    Some(
-        command(
-            &by_pid,
-            (p.pid, p.start_time, &p.name),
-            p.parent_pid,
-            bundle(p).as_deref(),
-        )
-        .filter(|c| p.workload_id == c.app_workload || p.workload_id.starts_with("p-"))
-        .map_or_else(|| p.workload_id.clone(), |c| c.id),
+    by_pid.get(&pid).map(|p| suspect(&by_pid, p))
+}
+
+/// Live processes behind a suspect key: a command's own processes, or a workload's members
+/// that are not commands of their own.
+pub fn members<'a>(snapshot: &'a Snapshot, id: &str) -> Vec<&'a ProcessRecord> {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
+    snapshot
+        .processes
+        .iter()
+        .filter(|p| suspect(&by_pid, p) == id)
+        .collect()
+}
+
+fn suspect(by_pid: &HashMap<u32, &ProcessRecord>, p: &ProcessRecord) -> String {
+    command(
+        by_pid,
+        (p.pid, p.start_time, &p.name),
+        p.parent_pid,
+        bundle(p).as_deref(),
     )
+    .filter(|c| p.workload_id == c.app_workload || p.workload_id.starts_with("p-"))
+    .map_or_else(|| p.workload_id.clone(), |c| c.id)
 }
 
 pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
     let (regrouped, commands, apps) = regroup(capture, snapshot);
     let capture = &regrouped;
     let w = split(capture);
-    let victim = party(snapshot, capture);
+    let mut victim = party(snapshot, capture);
+    // An app started from a terminal without a bundle (a `java` window, a dev build) is itself
+    // a command; it stays the victim instead of becoming a culprit inside its terminal.
+    let own_command = capture.victim.as_ref().and_then(|v| {
+        commands.get(&v.pid).map(|c| c.id.clone()).or_else(|| {
+            capture
+                .identities
+                .iter()
+                .find(|i| i.pid == v.pid && i.workload_id.starts_with("cmd-"))
+                .map(|i| i.workload_id.clone())
+        })
+    });
+    if let (Some(v), Some(id)) = (victim.as_mut(), own_command) {
+        v.workload_id = Some(id);
+    }
     let victim_id = victim.as_ref().and_then(|v| v.workload_id.clone());
     let mut findings: Vec<Finding> = vec![];
 
@@ -717,20 +744,23 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
         "Jitterbug's own 10 ms timer woke {lag_peak:.0} ms late at {lag_at:+}s (baseline worst {lag_base:.0} ms)."
     );
 
-    // A command running inside the frontmost app (a terminal command, an agent session) is a
-    // separate suspect. When one spiked, the app's own folded-in total is that command's load.
-    let inside_victim = |f: &Finding| {
-        f.kind == FindingKind::ProcessSpike
-            && f.workload_id
-                .as_ref()
-                .and_then(|id| apps.get(id))
-                .is_some_and(|app| Some(app) == victim_id.as_ref())
-    };
-    if findings.iter().any(inside_victim) {
-        if let Some(vid) = &victim_id {
-            findings.retain(|f| f.workload_id.as_ref() != Some(vid));
-        }
-    }
+    // A command running inside an app (a terminal command, an agent session) is a separate
+    // suspect, but the collector folds its CPU into that app's five-second history. When one
+    // spiked, the app's spike from those samples is the same load; for the app in front, every
+    // finding about it is.
+    let explained: Vec<&String> = findings
+        .iter()
+        .filter(|f| f.kind == FindingKind::ProcessSpike)
+        .filter_map(|f| apps.get(f.workload_id.as_ref()?))
+        .collect();
+    findings.retain(|f| {
+        let Some(id) = f.workload_id.as_ref().filter(|id| explained.contains(id)) else {
+            return true;
+        };
+        let sampled =
+            f.kind == FindingKind::ProcessSpike && loads.iter().any(|l| &l.id == id && !l.pulse);
+        Some(id) != victim_id.as_ref() && !sampled
+    });
     // The frontmost app is the victim: its own work is not a culprit to deprioritize.
     if let Some(vid) = &victim_id {
         for f in findings.iter_mut().filter(|f| {
@@ -873,7 +903,12 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
         },
         recurrence: 0,
         offer_permission: false,
-        limits: "One-second samples of CPU per core, the 16 busiest processes from the last full sample, system paging, OS memory pressure, thermal state, and a scheduler-delay probe. GPU, display, disk, and network activity are not measured. Process names come from the latest five-second inventory.".into(),
+        limits: if cfg!(target_os = "macos") {
+            "One-second samples of CPU per core, the 16 busiest of every readable process, system paging, OS memory pressure, thermal state, and a scheduler-delay probe. GPU, display, disk, and network activity are not measured, and processes of other users are not read."
+        } else {
+            "One-second samples of CPU per core, the 16 busiest processes from the last full sample, system paging, OS memory pressure, thermal state, and a scheduler-delay probe. GPU, display, disk, and network activity are not measured. Process names come from the latest five-second inventory."
+        }
+        .into(),
     }
 }
 
@@ -1634,6 +1669,124 @@ pub(crate) mod tests {
         let context = r.model_context().to_string();
         assert!(context.contains("claude in Editor"));
         assert!(!context.contains("secret-repo"));
+    }
+
+    #[test]
+    fn a_command_in_a_background_app_is_not_repeated_as_that_app() {
+        // `yes` runs in a background terminal; its CPU is also in the terminal's 5 s history.
+        let mut c = capture(|o, t| {
+            if (-8..=2).contains(&o) {
+                t.processes.push((420, 100.0));
+            }
+        });
+        c.identities.push(Identity {
+            pid: 420,
+            start_time: 3,
+            name: "yes".into(),
+            workload_id: "terminal".into(),
+            label: "Terminal".into(),
+            category: "app".into(),
+            parent_pid: Some(410),
+            bundle: None,
+        });
+        let mut s = snapshot();
+        let mut terminal = s.workloads[1].clone();
+        terminal.id = "terminal".into();
+        terminal.label = "Terminal".into();
+        for p in &mut terminal.history {
+            if p.time + 10 >= PRESS / 1000 {
+                p.cpu_percent = 12.5;
+            }
+        }
+        s.workloads.push(terminal);
+        for (pid, parent, name, exe) in [
+            (
+                400,
+                1,
+                "Terminal",
+                "/Applications/Terminal.app/Contents/MacOS/Terminal",
+            ),
+            (410, 400, "zsh", "/bin/zsh"),
+            (420, 410, "yes", "/usr/bin/yes"),
+        ] {
+            s.processes.push(ProcessRecord {
+                pid,
+                start_time: 3,
+                parent_pid: Some(parent),
+                name: name.into(),
+                workload_id: "terminal".into(),
+                executable: Some(exe.into()),
+                ..Default::default()
+            });
+        }
+        let r = analyze(&c, &s);
+        assert_eq!(r.culprit.as_ref().unwrap().label, "yes in Terminal");
+        assert!(r
+            .findings
+            .iter()
+            .all(|f| f.workload_id.as_deref() != Some("terminal")));
+    }
+
+    #[test]
+    fn an_app_started_from_a_terminal_stays_the_victim_of_its_own_work() {
+        // A bundle-less `java` window started from a shell in the editor is the app in front.
+        let mut c = capture(|o, t| {
+            if (-6..=2).contains(&o) {
+                t.processes.push((320, 100.0));
+            }
+        });
+        c.identities.push(Identity {
+            pid: 320,
+            start_time: 3,
+            name: "java".into(),
+            workload_id: "editor".into(),
+            label: "Editor".into(),
+            category: "app".into(),
+            parent_pid: Some(210),
+            bundle: None,
+        });
+        c.victim = Some(Victim {
+            pid: 320,
+            name: Some("java".into()),
+        });
+        let mut s = snapshot();
+        editor_with_terminal(&mut s);
+        s.processes.push(ProcessRecord {
+            pid: 320,
+            start_time: 3,
+            parent_pid: Some(210),
+            name: "java".into(),
+            workload_id: "editor".into(),
+            actions: vec!["lower_priority".into()],
+            ..Default::default()
+        });
+        let r = analyze(&c, &s);
+        assert_eq!(r.victim.as_ref().unwrap().label, "java");
+        assert!(r.culprit.is_none() && r.in_app.is_none());
+        assert_eq!(r.findings[0].kind, FindingKind::VictimBusy);
+    }
+
+    #[test]
+    fn members_of_a_command_exclude_the_app_and_other_commands() {
+        let mut s = snapshot();
+        editor_with_terminal(&mut s);
+        for (pid, parent, name) in [(310, 210, "claude"), (311, 310, "node"), (330, 210, "perl")] {
+            s.processes.push(ProcessRecord {
+                pid,
+                start_time: 3,
+                parent_pid: Some(parent),
+                name: name.into(),
+                workload_id: "editor".into(),
+                ..Default::default()
+            });
+        }
+        let pids = |id: &str| members(&s, id).iter().map(|p| p.pid).collect::<Vec<_>>();
+        assert_eq!(pids("cmd-310-3"), [310, 311]);
+        assert_eq!(pids("cmd-330-3"), [330]);
+        // The editor keeps its own processes; a shell is a command too (a busy shell loop).
+        assert_eq!(pids("editor"), [200]);
+        assert_eq!(pids("cmd-210-2"), [210]);
+        assert_eq!(suspect_id(&s, 311).as_deref(), Some("cmd-310-3"));
     }
 
     #[test]

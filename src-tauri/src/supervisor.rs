@@ -651,6 +651,19 @@ impl Runtime {
                 .clone();
             let case = self.case(id)?;
             let target = case.trigger.target.as_ref().map(|t| t.workload_id.as_str());
+            // A command inside an app is not a workload of its own: investigate its busiest
+            // live process within the app's workload, or the whole machine once it exited.
+            let (target, process) = match target {
+                Some(t) if !snapshot.workloads.iter().any(|w| w.id == t) => {
+                    jitter::members(&snapshot, t)
+                        .into_iter()
+                        .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))
+                        .map_or((None, None), |p| {
+                            (Some(p.workload_id.as_str()), Some((p.pid, p.start_time)))
+                        })
+                }
+                t => (t, None),
+            };
             let question = if target.is_some() {
                 "Investigate this selected workload around a Jitter Snapshot. Explain the supplied jitter_capture findings in plain language: what happened, the likely cause, and what the user could try. Keep the frontmost app (victim) separate from culprits. No action has been applied."
             } else {
@@ -673,7 +686,7 @@ impl Runtime {
                     }],
                     target,
                     tier,
-                    None,
+                    process,
                     Some(report.model_context()),
                 )
                 .await?;
@@ -1282,6 +1295,48 @@ mod tests {
         c.identities[0].label = "Example".into();
         c.victim = None;
         c
+    }
+    #[tokio::test]
+    async fn a_command_culprit_is_investigated_through_its_busiest_process() {
+        let f = Fixture::new();
+        let mut c = spike_capture(&f);
+        // A shell inside the Example app runs a busy `perl` the collector folded into the app.
+        let (app, shell, hog) = (u32::MAX, u32::MAX - 1, u32::MAX - 2);
+        {
+            let mut s = f.runtime.snapshot.write().unwrap();
+            s.processes[0].executable = Some("/Applications/Example.app/Contents/MacOS/Ex".into());
+            for (pid, parent, name) in [(shell, app, "zsh"), (hog, shell, "perl")] {
+                s.processes.push(ProcessRecord {
+                    pid,
+                    start_time: 1,
+                    parent_pid: Some(parent),
+                    workload_id: "fixture".into(),
+                    name: name.into(),
+                    cpu_percent: if pid == hog { 12.0 } else { 0.0 },
+                    actions: vec!["lower_priority".into()],
+                    ..Default::default()
+                });
+            }
+        }
+        for t in &mut c.ticks {
+            t.processes[0].0 = hog;
+        }
+        c.identities[0].pid = hog;
+        c.identities[0].name = "perl".into();
+        c.identities[0].parent_pid = Some(shell);
+        let (id, _) = f.runtime.report(c, &mut jitter::Tally::default()).unwrap();
+        let culprit = f.runtime.case(id).unwrap().jitter.unwrap().culprit.unwrap();
+        assert_eq!(
+            culprit.workload_id.as_deref(),
+            Some(format!("cmd-{hog}-1").as_str())
+        );
+        f.runtime.run(id).await;
+        let case = f.runtime.case(id).unwrap();
+        // Not "the selected workload is no longer in the inventory".
+        assert_eq!(case.diagnosis.unwrap().source, "rules");
+        let evidence = case.evidence.unwrap();
+        assert_eq!(evidence.target.pid, Some(hog));
+        assert!(evidence.processes.iter().all(|p| p.pid == hog));
     }
     #[tokio::test]
     async fn snapshots_bypass_cooldown_and_never_auto_apply_with_a_saved_permission() {

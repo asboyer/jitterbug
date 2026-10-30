@@ -145,7 +145,9 @@ suspect window (−15 s to +10 s against a −60 s to −15 s baseline), then **
   such as a script in an editor's terminal or a coding-agent session, is a separate suspect:
   the case names it ("claude in Visual Studio Code") and its busiest process, not the editor.
   A command is grouped from the outermost non-shell process below the app, so an agent
-  session and the tools it runs count together. Folder names in these labels stay local. CPU culprits can get **Lower priority**;
+  session and the tools it runs count together, and the investigation looks at its busiest
+  process. Folder names in these labels stay local. An app in front that was itself started
+  from a terminal without an app bundle stays the victim. CPU culprits can get **Lower priority**;
   strong memory findings can offer **Stop process** only where actions are already
   permitted. Priority is never suggested as a memory fix. The model only explains the
   findings and cannot add actions. Its request includes the victim and culprit app names and
@@ -166,8 +168,8 @@ suspect window (−15 s to +10 s against a −60 s to −15 s baseline), then **
   records the next 15 seconds and compares against five-second workload history.
 
 Measured cost of Auto mode on an Apple silicon Mac with about 830 processes (60 s, release
-build): about 0.27% of one core, +0.7 MiB resident, about two wakeups per second (tick plus
-probe), and under 3 ms of work per tick. Reading every process each second costs more than
+build): about 0.3% of one core (up to 0.4% while other work keeps the machine busy), +0.7 MiB
+resident, about two wakeups per second (tick plus probe), and 3 to 4 ms of work per tick. Reading every process each second costs more than
 the earlier 16-process sampler (0.06%) but stays inside the 0.5% budget; names and parents
 are read once per process launch, and unreadable processes are retried every 30 seconds. While sampling, Jitterbug holds a macOS activity assertion so
 App Nap timer coalescing is not misread as scheduler delay; this keeps the process from
