@@ -13,6 +13,7 @@ export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
         independent_roots: 1,
         application: null,
         can_generate_profile: false,
+        profile_key: null,
         profile: {
             text: workload.description,
             source: 'demo',

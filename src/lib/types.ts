@@ -77,6 +77,10 @@ export interface WorkloadDetails {
     independent_roots: number;
     application: {
         name: string;
+        executable_name: string;
+        component: string | null;
+        component_kind: string;
+        installation: string;
         identifier: string | null;
         version: string | null;
         identity_source: string;
@@ -92,6 +96,7 @@ export interface WorkloadDetails {
     origin_summary: string;
     origin_limit: string;
     can_generate_profile: boolean;
+    profile_key: string | null;
 }
 
 export interface Incident {
@@ -146,7 +151,14 @@ export interface ChatMessage {
     content: string;
 }
 
+export interface Insight {
+    headline: string;
+    finding: string;
+    next_step: string;
+}
+
 export interface Reply {
+    insight?: Insight | null;
     text: string;
     source: 'rules' | 'model' | 'demo' | 'guidance';
     provider: string | null;

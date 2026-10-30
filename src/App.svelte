@@ -26,6 +26,7 @@
         Bootstrap,
         Incident,
         ProcessRecord,
+        Reply,
         Snapshot,
         Workload,
     } from './lib/types';
@@ -218,6 +219,7 @@
     let bootstrap: Bootstrap = $state(structuredClone(demoBootstrap));
     let selectedId: string | null = $state(null);
     let chatOpen = $state(false);
+    let questionInsight: Reply | null = $state(null);
     let questionProcess: ProcessRecord | null = $state(null);
     let followUpContext: AutomationCase | null = $state(null);
     let automationOpen = $state(false);
@@ -376,9 +378,11 @@
         automationOpen = false;
         chatOpen = false;
         questionProcess = null;
+        questionInsight = null;
     }
     function ask() {
         questionProcess = null;
+        questionInsight = null;
         followUpContext = null;
         automationOpen = false;
         selectedContext = null;
@@ -406,6 +410,7 @@
         }
         chatOpen = true;
         questionProcess = null;
+        questionInsight = null;
         followUpContext = incident;
         actionReport = incident.report;
     }
@@ -446,7 +451,7 @@
             onclick={(event) => {
                 event.preventDefault();
                 navigate('dashboard');
-            }}><Icon name="bug" size={22} /> Jitterbug</a
+            }}><Icon name="companion" size={22} /> Jitterbug</a
         >
         <div class="nav-links">
             {#each pages as item}
@@ -597,8 +602,9 @@
                                 selectedId = null;
                                 chatOpen = false;
                             }}
-                            onask={(process) => {
+                            onask={(process, reply) => {
                                 questionProcess = process;
+                                questionInsight = reply ?? null;
                                 followUpContext = null;
                                 automationOpen = false;
                                 chatOpen = true;
@@ -652,7 +658,7 @@
                     />
                 {:else}
                     {#if demo}<section class="demo-story" aria-label="Try Jitterbug in action">
-                            <span class="story-mark"><Icon name="bug" size={24} /></span>
+                            <span class="story-mark"><Icon name="companion" size={24} /></span>
                             <div>
                                 <span class="eyebrow">TRY AN EXAMPLE</span>
                                 <h2>Two agents. Two test runs. One busy computer.</h2>
@@ -695,6 +701,7 @@
             {snapshot}
             workload={selected}
             {questionProcess}
+            initialReply={questionInsight}
             incident={followUpContext}
             {desktop}
             onclose={() => {

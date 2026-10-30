@@ -7,9 +7,13 @@ use std::{
     sync::Mutex,
 };
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Application {
     pub name: String,
+    pub executable_name: String,
+    pub component: Option<String>,
+    pub component_kind: String,
+    pub installation: String,
     pub identifier: Option<String>,
     pub version: Option<String>,
     pub identity_source: String,
@@ -18,8 +22,27 @@ pub struct Application {
 }
 
 pub fn identify(executable: &Path) -> Application {
-    let bundle = crate::attribution::application_bundle(executable);
-    let path = bundle.unwrap_or(executable).to_path_buf();
+    // Resolve links before classifying system locations. A similarly named executable
+    // in a user directory must not inherit an OS component's identity or cache entry.
+    let resolved = executable
+        .canonicalize()
+        .unwrap_or_else(|_| executable.to_path_buf());
+    let app_bundle = crate::attribution::application_bundle(&resolved);
+    let component = app_bundle.or_else(|| {
+        resolved.ancestors().find(|path| {
+            path.extension()
+                .is_some_and(|ext| ext == "framework" || ext == "xpc")
+        })
+    });
+    let path = app_bundle.unwrap_or(&resolved).to_path_buf();
+    let filename = |path: &Path| {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .chars()
+            .take(100)
+            .collect::<String>()
+    };
     let name = path
         .file_stem()
         .unwrap_or_default()
@@ -28,17 +51,47 @@ pub fn identify(executable: &Path) -> Application {
         .take(100)
         .collect();
     #[cfg(target_os = "macos")]
-    let (identifier, version) = bundle.map(macos::metadata).unwrap_or_default();
+    let (identifier, version) = component.map(macos::metadata).unwrap_or_default();
     #[cfg(not(target_os = "macos"))]
     let (identifier, version): (Option<String>, Option<String>) = (None, None);
+    let system_location = cfg!(target_os = "macos")
+        && resolved.is_absolute()
+        && !resolved
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        && [
+            "/System/Library",
+            "/usr/libexec",
+            "/usr/sbin",
+            "/sbin",
+            "/bin",
+        ]
+        .iter()
+        .any(|root| resolved.starts_with(root));
     Application {
         name,
+        executable_name: filename(&resolved),
+        component: component.map(filename),
+        component_kind: component
+            .and_then(|p| p.extension())
+            .map(|ext| ext.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "executable".into()),
+        installation: if system_location {
+            "macOS system component"
+        } else if app_bundle.is_some() {
+            "Installed application"
+        } else {
+            "Standalone executable"
+        }
+        .into(),
         identifier: identifier.map(|value| value.chars().take(256).collect()),
         version: version.map(|value| value.chars().take(80).collect()),
-        identity_source: if bundle.is_some() {
-            "Installed application bundle"
+        identity_source: if app_bundle.is_some() {
+            "Application bundle metadata and executable location"
+        } else if component.is_some() {
+            "Component bundle metadata and executable location"
         } else {
-            "Executable filename; publisher not verified"
+            "Observed executable location"
         }
         .into(),
         path,

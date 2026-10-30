@@ -2,7 +2,7 @@
 use crate::{
     actions,
     automation::{self, Case, Monitor, Policy, Rule, Stage},
-    budget, providers, settings, storage,
+    budget, details, profiles, providers, settings, storage,
     types::*,
 };
 use std::{
@@ -50,6 +50,53 @@ impl Runtime {
             book: Mutex::new(Book::default()),
             publish,
         })
+    }
+    /// One explicit detail-view request; cached across restarts, never run by the sampler.
+    pub async fn explain_application(
+        &self,
+        workload_id: &str,
+        pid: u32,
+        start_time: u64,
+    ) -> Result<profiles::Profile, String> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .clone();
+        let detail = details::inspect(&snapshot, workload_id, Some((pid, start_time)))?;
+        if detail.profile.source == "reference" {
+            return Ok(detail.profile);
+        }
+        if !detail.can_generate_profile {
+            return Err("The OS did not expose an executable identity for this process. Its observed parent chain is still available below.".into());
+        }
+        let app = detail
+            .application
+            .ok_or("Application identity unavailable.")?;
+        let key = profiles::key(&app);
+        if let Some(profile) = self
+            .profiles
+            .lock()
+            .map_err(|_| "Profile cache unavailable.")?
+            .get(&key)
+        {
+            return Ok(profile);
+        }
+        let _guard = self
+            .inference
+            .try_lock()
+            .map_err(|_| "One model request is already active. Please wait.")?;
+        let settings = self
+            .settings
+            .lock()
+            .map_err(|_| "Settings unavailable.")?
+            .clone();
+        let profile = self.engine.app_profile(&settings, &snapshot, &app).await?;
+        self.profiles
+            .lock()
+            .map_err(|_| "Profile cache unavailable.")?
+            .insert(key, profile.clone(), &self.directory)?;
+        Ok(profile)
     }
     pub fn cases(&self) -> Result<Vec<Case>, String> {
         Ok(self
@@ -277,6 +324,7 @@ impl Runtime {
                     } else {
                         "rules"
                     },
+                    None,
                 )
                 .await?;
             self.update(id, |c| {
@@ -542,6 +590,50 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
+    #[tokio::test]
+    async fn process_profiles_recheck_identity_and_cached_reads_need_no_model_slot() {
+        let f = Fixture::new();
+        let mut snapshot = sample(now(), 0.0);
+        snapshot.processes[0].executable = Some("/example/bin/service".into());
+        let process = snapshot.processes[0].clone();
+        let app = crate::applications::identify(process.executable.as_ref().unwrap());
+        *f.runtime.snapshot.write().unwrap() = snapshot;
+        f.runtime.profiles.lock().unwrap().insert_memory(
+            profiles::key(&app),
+            profiles::Profile {
+                text: "Synthetic service explanation.".into(),
+                source: "model".into(),
+                provider: Some("meta".into()),
+                model: Some("fixture".into()),
+                generated_at: Some(now()),
+                cached: false,
+            },
+        );
+        let guard = f.runtime.inference.lock().await;
+        let cached = f
+            .runtime
+            .explain_application(&process.workload_id, process.pid, process.start_time)
+            .await
+            .unwrap();
+        assert!(cached.cached);
+        assert!(f
+            .runtime
+            .explain_application(&process.workload_id, process.pid, process.start_time + 1)
+            .await
+            .is_err());
+        drop(guard);
+        f.runtime.snapshot.write().unwrap().processes[0].executable =
+            Some("/example/bin/other-service".into());
+        f.runtime.settings.lock().unwrap().mode = settings::Mode::LocalOnly;
+        assert!(f
+            .runtime
+            .explain_application(&process.workload_id, process.pid, process.start_time)
+            .await
+            .unwrap_err()
+            .contains("excluded"));
+        assert_eq!(f.runtime.spending().unwrap().requests, 0);
+    }
+
     #[tokio::test]
     async fn unapproved_incident_investigates_but_never_changes_a_process() {
         let f = Fixture::new();

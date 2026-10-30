@@ -48,7 +48,7 @@
 
 <section class="proactive-notice" aria-label="Jitterbug noticed something" aria-live="polite">
     <div class="notice-top">
-        <span class="bug-mark" class:checking><Icon name="bug" size={21} /></span><span
+        <span class="bug-mark" class:checking><Icon name="companion" size={21} /></span><span
             class="notice-name"
             >Jitterbug <small>{incident.source === 'demo' ? 'EXAMPLE' : 'LIVE'}</small></span
         ><button class="icon-button" aria-label="Dismiss assistant prompt" onclick={onlater}
