@@ -271,15 +271,80 @@ pub fn inspect(snapshot: &Snapshot, process: &ProcessRecord) -> Option<Launch> {
 }
 
 impl Launch {
+    pub fn insight(&self) -> Option<crate::providers::Insight> {
+        let (headline, purpose, next) = match self.known_role.as_deref()? {
+            "hermes_gateway" => ("Hermes’s background messaging gateway", "It keeps Hermes messaging connections and agent requests available in the background.", "Leave it running if you use Hermes messaging. Stopping it interrupts those connections."),
+            "hermes_log_wrapper" => ("Hermes’s gateway launcher and log wrapper", "It starts the Hermes child command and adds timestamps to its output.", "This supports the gateway. Stopping the wrapper can interrupt its child service."),
+            "hermes_cli" => ("The Hermes agent is running this command", "The command enters Hermes through its Python launcher.", "The entrypoint is known; this command does not identify a particular user assignment."),
+            _ => return None,
+        };
+        Some(crate::providers::Insight {
+            headline: headline.into(),
+            finding: format!("{purpose} Its observed parent is {}.", self.launcher),
+            next_step: next.into(),
+        })
+    }
+
     pub fn model_context(&self) -> serde_json::Value {
         // No free-form script/module names, arguments, PIDs, paths, or raw ancestry.
         serde_json::json!({"recognized_role": self.known_role, "observed_ancestor_roles": self.known_launchers, "basis": "fresh process identity and locally parsed command; current ancestors are not a historical launch log; no task transcript inspected"})
     }
 }
 
+pub fn origin_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    !crate::research::slowdown(&q)
+        && !q
+            .split(|c: char| !c.is_alphabetic())
+            .any(|word| matches!(word, "cpu" | "memory" | "ram") || word.starts_with("optimiz"))
+        && [
+            "what program",
+            "what spawned",
+            "who started",
+            "why is it running",
+            "why is this running",
+            "where did",
+            "what is this process",
+            "what is it doing",
+        ]
+        .iter()
+        .any(|phrase| q.contains(phrase))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn known_origins_answer_directly_and_only_fixed_roles_enter_model_context() {
+        let launch = Launch {
+            program: "private-program".into(),
+            task: "private-task".into(),
+            summary: "private-summary".into(),
+            launcher: "Hermes · Gateway log wrapper".into(),
+            evidence: vec!["private-command".into()],
+            chain: vec![Step {
+                pid: 12345,
+                role: "private-script".into(),
+            }],
+            limitation: String::new(),
+            reference_url: None,
+            known_role: Some("hermes_gateway".into()),
+            known_launchers: vec!["hermes_log_wrapper".into()],
+        };
+        let answer = launch.insight().unwrap();
+        assert!(answer.headline.contains("Hermes"));
+        assert!(answer.finding.contains("messaging connections"));
+        assert!(answer.finding.contains("Gateway log wrapper"));
+        let context = launch.model_context().to_string();
+        assert!(context.contains("hermes_log_wrapper"));
+        assert!(!context.contains("private-"));
+        assert!(!context.contains("12345"));
+        assert!(origin_question(
+            "What program is running this, what spawned it, and why is it running?"
+        ));
+        assert!(!origin_question("What is it doing with so much CPU?"));
+        assert!(!origin_question("Where did this lag come from?"));
+    }
     fn command(args: &[&str]) -> Option<Command> {
         classify(
             Some(Path::new("/example/.hermes/tools/bin/python3")),

@@ -250,6 +250,28 @@ impl Engine {
                 i.stack_checks = crate::probe::inspect(snapshot, &i.target, &self.directory).await;
             }
         }
+        if crate::origins::origin_question(&question) {
+            let origin = investigation.as_ref().and_then(|i| {
+                let members: Vec<_> = snapshot
+                    .processes
+                    .iter()
+                    .filter(|p| {
+                        p.workload_id == i.target.workload_id
+                            && i.target.pid.is_none_or(|pid| p.pid == pid)
+                    })
+                    .collect();
+                (!members.is_empty())
+                    .then(|| crate::details::representative(&members))
+                    .and_then(|p| crate::origins::inspect(snapshot, p))
+            });
+            if let Some(insight) = origin.and_then(|origin| origin.insight()) {
+                let mut reply = rules_reply(snapshot, workload_id, vec!["The locally inspected entrypoint and parent chain identify this job. No model call was needed.".into()]);
+                reply.text = insight.text();
+                reply.insight = Some(insight);
+                reply.investigation = investigation;
+                return Ok(reply);
+            }
+        }
         let workload_id = investigation
             .as_ref()
             .map(|i| i.target.workload_id.as_str());

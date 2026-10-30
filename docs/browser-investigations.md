@@ -110,6 +110,9 @@ Only parsed descriptions are cached in memory, for 30 seconds and at most 128
 process identities. An AI investigation receives only recognized fixed job
 categories; arbitrary script names, commands, paths and arguments remain local.
 These live launch findings take precedence over a cached interpreter description.
+Identity-only questions about a recognized command are answered directly from this
+evidence without inference cost; resource diagnoses continue through the configured
+investigation path.
 
 When a short sample captures an interface-thread sleep, synchronization wait,
 synchronous IPC or blocking I/O while macOS reports an unresponsive window, the
