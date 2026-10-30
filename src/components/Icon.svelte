@@ -17,10 +17,14 @@
             | 'inbox'
             | 'info'
             | 'eye'
-            | 'more';
+            | 'more'
+            | 'play'
+            | 'pause';
         size?: number;
     } = $props();
     const paths = {
+        play: 'm8 4 12 8-12 8z',
+        pause: 'M8 4v16M16 4v16',
         cpu: 'M6 6h12v12H6zM9 9h6v6H9zM9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4',
         memory: 'M3 6h18v12H3zM7 10h3v4H7zm7 0h3v4h-3zM6 18v3m4-3v3m4-3v3m4-3v3',
         info: 'M12 8h.01M11 11h1v6m-1 0h3M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',

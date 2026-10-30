@@ -24,7 +24,7 @@ pub fn open_main(
     page: String,
     workload_id: Option<String>,
 ) -> Result<(), String> {
-    if !matches!(page.as_str(), "dashboard" | "settings") {
+    if !matches!(page.as_str(), "hub" | "dashboard" | "settings") {
         return Err("Unknown destination.".into());
     }
     let window = app
@@ -126,7 +126,7 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
-                let _ = open_main(app.clone(), "dashboard".into(), None);
+                let _ = open_main(app.clone(), "hub".into(), None);
             }
             "settings" => {
                 let _ = open_main(app.clone(), "settings".into(), None);

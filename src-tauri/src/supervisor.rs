@@ -108,6 +108,10 @@ impl Runtime {
             .cloned()
             .collect())
     }
+    pub fn notifications_allowed(&self) -> bool {
+        self.policy().is_ok_and(|policy| policy.enabled)
+            && self.snoozed_until().is_ok_and(|until| until <= now())
+    }
     pub fn snoozed_until(&self) -> Result<u64, String> {
         Ok(self
             .book
@@ -609,6 +613,16 @@ mod tests {
                 .is_none());
             self.runtime.observe(&sample(at, 15.0)).unwrap().unwrap()
         }
+    }
+    #[test]
+    fn workflow_notifications_obey_disable_and_snooze() {
+        let f = Fixture::new();
+        assert!(f.runtime.notifications_allowed());
+        f.runtime.snooze(15).unwrap();
+        assert!(!f.runtime.notifications_allowed());
+        let f = Fixture::new();
+        f.runtime.settings.lock().unwrap().automation.enabled = false;
+        assert!(!f.runtime.notifications_allowed());
     }
     impl Drop for Fixture {
         fn drop(&mut self) {

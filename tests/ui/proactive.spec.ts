@@ -9,6 +9,10 @@ test('example demonstrates detecting, investigating, and reviewing without leavi
     });
     await page.clock.install();
     await page.goto('/');
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Activity', exact: true })
+        .click();
     await expect(page.getByRole('button', { name: 'See Jitterbug step in' })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
     await page
@@ -52,6 +56,10 @@ test('example demonstrates detecting, investigating, and reviewing without leavi
 test('Later keeps an incident in Inbox and does not repeat on refresh', async ({ page }) => {
     await page.clock.install();
     await page.goto('/');
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Activity', exact: true })
+        .click();
     await page.getByRole('button', { name: 'See Jitterbug step in' }).click();
     const prompt = page.getByRole('region', { name: 'Jitterbug noticed something' });
     await prompt.getByRole('button', { name: 'Later', exact: true }).click();

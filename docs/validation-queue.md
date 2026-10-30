@@ -183,8 +183,8 @@ Put an instruction like this in the project's appropriate local agent instructio
 > of busy polling. Do not run the same check directly while it is queued. Resubmit
 > if source inputs changed.
 
-Tools: `validation_profiles`, `validation_submit`, `validation_result`, and
-`validation_cancel`. Submission is asynchronous and idempotent for a retained
+Tools: `validation_profiles`, `validation_submit`, `validation_result`,
+`validation_cancel`, and `workflow_checkpoint`. Submission is asynchronous and idempotent for a retained
 request ID. Status and results survive client exit and desktop restart. Labels
 identify the submitting session; they are supplied by the client, not inferred
 proof of chat identity. Resource attribution uses the worker's verified PID/start
@@ -192,9 +192,10 @@ time and descendants, not a shared desktop app-server PID.
 
 ## Admission and recovery
 
-- One slot; FIFO across sessions. This MVP does not increase concurrency automatically.
+- One slot; FIFO across sessions unless you choose **Run next**. Held jobs are skipped.
+  This MVP does not increase concurrency automatically.
 - Two healthy samples; fresh telemetry no older than 15 seconds.
-- CPU below 70%, available memory at least the job estimate plus 2 GiB and at least
+- CPU below 55% for **Keep responsive**, or 70% for **Finish sooner**; available memory at least the job estimate plus 2 GiB and at least
   20% of total RAM, no OS memory warning, no reported thermal pressure, and less
   than 128 MiB swap growth in the latest interval. Missing Windows thermal/memory
   pressure sensors are unavailable, not proof of normal conditions.
@@ -262,3 +263,69 @@ children; detached background services are not supported queue jobs.
 
 Remote offloading needs a configured destination and a workload-specific runner.
 Moving an arbitrary already-running app to another machine is not implemented.
+
+## Workflow hub
+
+**Workflows** is the opening view. Approved checks, checkpoint sessions, and observed
+agent tasks appear together with harness logos, current step, available measurements,
+and controls matched to each row's capabilities. Click a row for evidence. Unmeasured
+usage remains blank; completed jobs show sampled peaks. Checkpoint registration alone
+does not establish PID ownership, so it does not manufacture resource attribution.
+
+- **Hold check / Release check** affects a queued check. Running commands finish normally.
+- **Run next** selects the next eligible check; it never overrides a hold or resource gate.
+- **Make room · 20 min** holds upcoming checks until a persisted deadline. The native
+  scheduler releases them after expiry, including after a restart, when headroom allows.
+- **Auto-balance paused** holds new checks globally. It does not stop running work.
+- **Keep responsive / Finish sooner** changes the CPU admission goal, within the shared
+  hard resource limits. Neither mode kills processes or promises shorter completion times.
+
+A compact suggestion can appear after sustained high CPU or OS memory pressure when
+there are upcoming eligible checks. It respects assistant disable/snooze, needs fresh
+consecutive samples, and has a 30-minute cooldown. Ordinary memory growth is not a trigger.
+The suggestion offers a timed hold; it does not apply one by itself.
+
+**Find a plan** is an explicit intelligent-model request. It sends bounded task titles,
+harness names, job states, the selected goal, and aggregate resource readings. It does not
+send commands, paths, transcripts, or credentials. The selected privacy mode, local-model
+guards, single-request lock, and cloud budget apply. The model may propose a timed hold,
+a different next check, or no change. Applying a plan rechecks native job state and preserves
+all admission gates. The continuous scheduling loop uses no model calls.
+
+### Cooperative agent pause
+
+The MCP server advertises `workflow_checkpoint` to Claude Code, Codex, and Muse Code
+through their existing scoped connections. Restart the client after updating Jitterbug.
+An agent must call it before each step using the same profile, session, and harness as
+its validation submissions:
+
+```json
+{
+    "profile": "project-tests",
+    "session": "search-session",
+    "task": "Improve search navigation",
+    "phase": "editing",
+    "wait_seconds": 20
+}
+```
+
+Phases are `planning`, `editing`, `tests`, `review`, and `complete`. This establishes a
+checkpoint row. **Pause at checkpoint** persists a request. **Paused at checkpoint** is
+shown only while a fresh client call is actually waiting. A timeout returns
+`may_proceed: false`: the client must remain paused and call again, not continue.
+**Resume agent** releases that checkpoint and matching waiting checks. Report `complete`
+when the session finishes. No signal is sent to an existing process, no memory is freed,
+and this cannot force a harness that ignores the protocol to stop. Unconnected observed
+tasks offer **Connect**, not a misleading pause button.
+
+The in-app **DEMO** flow simulates a spike, a checkpoint, and scheduling transitions with
+synthetic records. It never changes real jobs, opens a provider request, or stresses the
+computer. Native integration tests separately exercise real disposable commands and
+checkpoint requests for all three harness labels; this is protocol coverage, not proof
+that every desktop harness follows checkpoint instructions autonomously.
+
+Native macOS verification of the hub used a disposable one-second check, a real Meta
+scheduling plan, and a local MCP checkpoint client. The UI showed a requested pause,
+a fresh acknowledgment, and resume; ending protection preserved the real memory gate.
+The disposable profile was revoked afterward. UI tests also cover demo isolation,
+keyboard access at the minimum window size, and rejected plans remaining reviewable.

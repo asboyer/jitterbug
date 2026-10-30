@@ -3,6 +3,9 @@ export type QueueStage =
 
 export interface ValidationJob {
     id: string;
+    held?: boolean;
+    hold_reason?: string | null;
+    next?: boolean;
     task: string;
     harness: string;
     session: string;
@@ -23,6 +26,7 @@ export interface ValidationJob {
 
 export interface ValidationQueue {
     paused: boolean;
+    control?: WorkflowControls;
     capacity: number;
     reason: string;
     profiles: string[];
@@ -43,6 +47,27 @@ export interface ValidationQueue {
             recommendation: string;
         }[];
     };
+}
+
+export interface CheckpointSession {
+    id: string;
+    profile: string;
+    harness: string;
+    session: string;
+    task: string;
+    phase: 'planning' | 'editing' | 'tests' | 'review' | 'complete';
+    pause_requested: boolean;
+    waiting: boolean;
+    last_seen_at: number;
+}
+
+export interface WorkflowControls {
+    goal: 'responsive' | 'throughput';
+    protected_until: number | null;
+    next_job: string | null;
+    sessions: CheckpointSession[];
+    events: { at: number; message: string }[];
+    last_block: string | null;
 }
 
 export function demoQueue(): ValidationQueue {

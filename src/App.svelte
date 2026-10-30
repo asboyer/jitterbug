@@ -8,6 +8,10 @@
     import { tourPreference, tourSteps } from './lib/tour';
     import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
+    import WorkflowHub from './components/WorkflowHub.svelte';
+    import WorkflowNotice from './components/WorkflowNotice.svelte';
+    import { hubDemo, demoControl } from './lib/workflow-hub';
+    import type { ValidationQueue as QueueState } from './lib/queue';
     import Workloads from './components/Workloads.svelte';
     import AgentWorkflows from './components/AgentWorkflows.svelte';
     import ValidationQueue from './components/ValidationQueue.svelte';
@@ -32,7 +36,7 @@
     } from './lib/types';
 
     const desktop = isTauri();
-    let page = $state('dashboard');
+    let page = $state('hub');
     let demoMenuOpen = $state(false);
     let tourIndex = $state<number | null>(null);
     let tourSeen = $state(true);
@@ -113,6 +117,7 @@
         );
     }
     const pages = [
+        { id: 'hub', label: 'Workflows', icon: 'queue' },
         { id: 'dashboard', label: 'Activity', icon: 'activity' },
         { id: 'workloads', label: 'Workloads', icon: 'app' },
         { id: 'agents', label: 'Agent tasks', icon: 'code' },
@@ -253,6 +258,81 @@
         demoTick;
         return demoSnapshot(demoPressure);
     });
+    let workflowQueue = $state<QueueState | null>(null);
+    let workflowBusy = $state(false);
+    let workflowError = $state('');
+    let workflowNotice = $state(false);
+    let queueSource = '';
+    let queueVersion = 0;
+    $effect(() => {
+        const source = snapshot?.source;
+        snapshot?.captured_at;
+        const version = ++queueVersion;
+        if (!source) return;
+        if (queueSource !== source) {
+            workflowNotice = false;
+            workflowError = '';
+            workflowQueue = null;
+        }
+        if (source === 'demo') {
+            if (queueSource !== source) workflowQueue = hubDemo();
+        } else if (desktop) {
+            void invoke<QueueState>('get_validation_queue')
+                .then((value) => {
+                    if (version === queueVersion) {
+                        workflowQueue = value;
+                        workflowError = '';
+                    }
+                })
+                .catch((cause) => {
+                    if (version === queueVersion) workflowError = errorMessage(cause);
+                });
+        }
+        queueSource = source;
+        return () => {
+            if (queueVersion === version) queueVersion++;
+        };
+    });
+    async function controlWorkflow(action: string, id?: string) {
+        if (workflowBusy || !workflowQueue) return false;
+        const source = snapshot?.source;
+        workflowBusy = true;
+        queueVersion++;
+        workflowError = '';
+        try {
+            if (demo) {
+                workflowQueue = demoControl($state.snapshot(workflowQueue), action, id ?? null);
+                if (action === 'demo_pressure' && workflowQueue.resources.cpu_percent >= 85)
+                    workflowNotice = true;
+            } else {
+                await invoke('control_validation_queue', { action, jobId: id ?? null });
+                const value = await invoke<QueueState>('get_validation_queue');
+                if (source !== snapshot?.source) return false;
+                queueVersion++;
+                workflowQueue = value;
+            }
+            if (action === 'protect') workflowNotice = false;
+            return true;
+        } catch (cause) {
+            if (source === snapshot?.source) workflowError = errorMessage(cause);
+            return false;
+        } finally {
+            workflowBusy = false;
+        }
+    }
+    $effect(() => {
+        const queue = workflowQueue;
+        if (
+            queue &&
+            (queue.paused ||
+                (queue.control?.protected_until ?? 0) > (snapshot?.captured_at ?? 0) ||
+                !queue.jobs.some((job) => job.stage === 'queued' && !job.held) ||
+                (queue.resources.cpu_percent < 85 &&
+                    !['warning', 'critical'].includes(queue.resources.memory_pressure ?? '')))
+        ) {
+            workflowNotice = false;
+        }
+    });
     $effect(() => {
         if (!demo) return;
         const timer = setInterval(() => {
@@ -293,6 +373,14 @@
                     return;
                 }
                 cleanup.push(telemetry);
+                const scheduling = await listen('workflow-attention', () => {
+                    if (!demo) workflowNotice = true;
+                });
+                if (disposed) {
+                    scheduling();
+                    return;
+                }
+                cleanup.push(scheduling);
                 const automatic = await listen<AutomationCase>('automation-case', (event) => {
                     const incident = event.payload;
                     receiveCase(incident);
@@ -454,10 +542,10 @@
     <nav class="sidebar" aria-label="Main navigation">
         <a
             class="brand"
-            href="#dashboard"
+            href="#hub"
             onclick={(event) => {
                 event.preventDefault();
-                navigate('dashboard');
+                navigate('hub');
             }}><Icon name="companion" size={22} /> Jitterbug</a
         >
         <div class="nav-links">
@@ -572,7 +660,7 @@
             </div>{/if}
         {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
         <div class="page-content">
-            {#if !tourSeen && tourIndex === null && page === 'dashboard' && !selectedId}
+            {#if !tourSeen && tourIndex === null && ['dashboard', 'hub'].includes(page) && !selectedId}
                 <div class="tour-invitation">
                     <span>New to Jitterbug?</span><button class="text-button" onclick={startTour}
                         >Take a quick tour</button
@@ -625,6 +713,21 @@
                             }}
                         />
                     {/key}
+                {:else if page === 'hub'}
+                    <WorkflowHub
+                        {snapshot}
+                        queue={workflowQueue}
+                        busy={workflowBusy}
+                        error={workflowError}
+                        oncontrol={controlWorkflow}
+                        onmanage={(selection) => {
+                            management = selection;
+                        }}
+                        onselect={select}
+                        onusage={() => {
+                            void refreshBootstrap().catch(() => {});
+                        }}
+                    />
                 {:else if page === 'workloads'}
                     <Workloads {snapshot} onselect={select} />
                 {:else if page === 'agents'}
@@ -726,7 +829,19 @@
         />{/if}
 </div>
 
-{#if noticedCase && (noticedCase.source === 'demo') === demo && tourIndex === null && !management && !pendingAction && !actionBusy && !automationOpen && !chatOpen}
+{#if workflowNotice && workflowQueue && tourIndex === null && !management && !pendingAction && !actionBusy && !chatOpen && !automationOpen}
+    <WorkflowNotice
+        {demo}
+        busy={workflowBusy}
+        error={workflowError}
+        onprotect={() => controlWorkflow('protect')}
+        onlater={() => {
+            workflowNotice = false;
+        }}
+    />
+{/if}
+
+{#if !workflowNotice && noticedCase && (noticedCase.source === 'demo') === demo && tourIndex === null && !management && !pendingAction && !actionBusy && !automationOpen && !chatOpen}
     <ProactiveNotice
         incident={noticedCase}
         workflow={noticedWorkflow}

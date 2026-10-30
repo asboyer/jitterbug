@@ -2,6 +2,11 @@ import { expect, test } from '@playwright/test';
 
 test('activity answers the main question without queue or agent history', async ({ page }) => {
     await page.goto('/');
+    await expect(page.getByRole('heading', { name: 'Room to work.' })).toBeVisible();
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: 'Activity', exact: true })
+        .click();
     await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Computer health' })).toContainText(
         'Your computer has room to work'
