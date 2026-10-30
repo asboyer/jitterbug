@@ -569,7 +569,12 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
             if let Some(ref reason) = block {
                 s.control.record(reason.clone());
             } else if s.control.last_block.is_some() {
-                s.control.record("Checks are eligible again.");
+                s.control
+                    .record(if s.jobs.iter().any(|j| j.stage == Stage::Queued) {
+                        "Headroom is available again."
+                    } else {
+                        "No checks are waiting."
+                    });
             }
             s.control.last_block = block;
         }
