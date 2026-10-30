@@ -60,6 +60,15 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
         Stage::Detected | Stage::Investigating | Stage::Applying | Stage::Verifying => 1,
         _ => 0,
     };
+    // Automatic cases interrupt only with a decision: detection and analysis run quietly and
+    // a finding with nothing to ask stays in the Inbox. Progress and outcomes show for your own
+    // snapshots and once something is being changed.
+    let asked = |c: &Case| {
+        c.origin == Origin::Snapshot
+            || c.steps
+                .iter()
+                .any(|s| matches!(s.stage, Stage::Applying | Stage::Verifying))
+    };
     let visible: Vec<&Case> = cases
         .iter()
         .filter(|c| {
@@ -74,13 +83,14 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
                         Some(p) => !policy.allows(p),
                         None => c.alternative.is_some(),
                     },
-                    Stage::Detected | Stage::Investigating | Stage::Applying | Stage::Verifying => {
-                        true
+                    Stage::Detected | Stage::Investigating => c.origin == Origin::Snapshot,
+                    Stage::Applying | Stage::Verifying => true,
+                    Stage::Completed | Stage::Resolved | Stage::Blocked => {
+                        asked(c)
+                            && c.steps
+                                .last()
+                                .is_some_and(|s| gate.now.saturating_sub(s.at) <= RESULT_SECONDS)
                     }
-                    Stage::Completed | Stage::Resolved | Stage::Blocked => c
-                        .steps
-                        .last()
-                        .is_some_and(|s| gate.now.saturating_sub(s.at) <= RESULT_SECONDS),
                     Stage::Dismissed => false,
                 }
         })
@@ -557,19 +567,37 @@ mod tests {
             choose(&[case.clone()], &policy, &open(200), &[]),
             Some(Choice { id: 1, more: 0 })
         );
-        for stage in [
-            Stage::Detected,
-            Stage::Investigating,
-            Stage::Applying,
-            Stage::Verifying,
+        // Automatic detection and analysis run quietly; only a decision interrupts.
+        for (stage, shown) in [
+            (Stage::Detected, false),
+            (Stage::Investigating, false),
+            (Stage::Applying, true),
+            (Stage::Verifying, true),
         ] {
             case.stage = stage;
-            assert!(choose(&[case.clone()], &policy, &open(200), &[]).is_some());
+            assert_eq!(
+                choose(&[case.clone()], &policy, &open(200), &[]).is_some(),
+                shown
+            );
+        }
+        // Your own snapshot shows its progress.
+        let mut manual = case.clone();
+        manual.origin = Origin::Snapshot;
+        for stage in [Stage::Detected, Stage::Investigating] {
+            manual.stage = stage;
+            assert!(choose(&[manual.clone()], &policy, &open(200), &[]).is_some());
         }
         case.transition(Stage::Dismissed, "Dismissed.");
         assert_eq!(choose(&[case], &policy, &open(200), &[]), None);
-        // Nothing to apply is still news: a protected process gets a result, not silence.
+        // An automatic finding with nothing applied stays in the Inbox.
+        let mut quiet = waiting(5, 100);
+        quiet.proposal = None;
+        quiet.transition(Stage::Completed, "No change needed.");
+        let at = quiet.steps.last().unwrap().at;
+        assert_eq!(choose(&[quiet], &policy, &open(at + 5), &[]), None);
+        // For a snapshot, nothing to apply is still news: a result, not silence.
         let mut finished = waiting(2, 100);
+        finished.origin = Origin::Snapshot;
         finished.proposal = None;
         finished.transition(Stage::Completed, "No in-app change fits.");
         let at = finished.steps.last().unwrap().at;
@@ -646,6 +674,7 @@ mod tests {
             Some(Choice { id: 2, more: 1 })
         );
         let mut running = waiting(4, 500);
+        running.origin = Origin::Snapshot;
         running.transition(Stage::Investigating, "Investigating.");
         let mixed = [waiting(1, 100), running.clone()];
         assert_eq!(

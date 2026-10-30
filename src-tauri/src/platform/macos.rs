@@ -19,6 +19,14 @@ type Connection = unsafe extern "C" fn() -> i32;
 type Unresponsive = unsafe extern "C" fn(i32, *const ProcessSerialNumber) -> bool;
 
 pub fn app_unresponsive(pid: u32) -> Option<bool> {
+    // Only an app with a Dock icon and windows can visibly freeze. Background agents and helpers
+    // inside app bundles often never service a window event loop and would always look hung.
+    let app = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
+        i32::try_from(pid).ok()?,
+    )?;
+    if app.activationPolicy() != objc2_app_kit::NSApplicationActivationPolicy::Regular {
+        return None;
+    }
     static API: OnceLock<Option<(ProcessSerial, Connection, Unresponsive)>> = OnceLock::new();
     let (serial, connection, unresponsive) = API.get_or_init(|| unsafe {
         // Retain the system framework handle for the lifetime of its function pointers.

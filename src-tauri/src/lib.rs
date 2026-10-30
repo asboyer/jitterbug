@@ -701,7 +701,11 @@ pub fn run() {
                     let mut collector = collector::Collector::default();
                     let mut last_workflow_notice = types::now();
                     loop {
-                        let sample = collector.sample();
+                        let mut sample = collector.sample();
+                        sample.frontmost_workload = crate::platform::frontmost()
+                            .filter(|(pid, _)| *pid != std::process::id())
+                            .and_then(|(pid, _)| sample.processes.iter().find(|p| p.pid == pid))
+                            .map(|p| p.workload_id.clone());
                         pause::expire();
                         if let (Ok(directory), Ok(executable)) =
                             (queue::directory(), std::env::current_exe())
