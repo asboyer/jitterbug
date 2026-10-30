@@ -28,7 +28,7 @@ export function incidentTitle(incident: AutomationCase): string {
 export function incidentObservation(incident: AutomationCase): string {
     const observations: Record<string, string> = {
         system_cpu: 'Total CPU use stayed above your configured limit.',
-        memory_pressure: 'Available memory, memory pressure, or swap activity crossed a limit.',
+        memory_pressure: 'Your computer stayed under memory pressure.',
         thermal_pressure: 'The operating system reported elevated thermal pressure.',
         app_cpu: 'This workload stayed above your CPU limit. It may be doing useful work.',
         cpu_anomaly: 'CPU activity rose above this workload’s recent baseline.',
