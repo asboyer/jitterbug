@@ -12,17 +12,28 @@
     const desktop = isTauri();
     let snapshot: Snapshot | null = $state(desktop ? null : demoSnapshot());
     let error = $state('');
+    let capture = $state('');
+    const shortcut = navigator.userAgent.includes('Mac') ? '⌘⇧J' : 'Ctrl+Shift+J';
     onMount(() => {
         if (!desktop) return;
         let stop: UnlistenFn | undefined;
+        let stopCapture: UnlistenFn | undefined;
         let disposed = false;
         async function initialize() {
             try {
                 stop = await listen<Snapshot>('telemetry', (event) => {
                     snapshot = event.payload;
                 });
+                stopCapture = await listen<{ phase: string; message: string }>(
+                    'jitter-capture',
+                    (event) => {
+                        capture = event.payload.phase === 'error' ? '' : event.payload.message;
+                        if (event.payload.phase === 'error') error = event.payload.message;
+                    }
+                );
                 if (disposed) {
                     stop();
+                    stopCapture();
                     return;
                 }
                 snapshot = await invoke('get_quick_snapshot');
@@ -34,8 +45,21 @@
         return () => {
             disposed = true;
             stop?.();
+            stopCapture?.();
         };
     });
+    async function snapshotNow() {
+        if (!desktop) {
+            capture = 'Preview only. No snapshot was recorded.';
+            return;
+        }
+        error = '';
+        try {
+            capture = await invoke<string>('report_jitter');
+        } catch (cause) {
+            error = errorMessage(cause);
+        }
+    }
     async function open(page = 'dashboard', workloadId: string | null = null) {
         if (!desktop) return;
         try {
@@ -83,6 +107,14 @@
             >
         </div>
         <div class="quick-history"><ActivityGraph {snapshot} /></div>
+        <div class="quick-snapshot">
+            <button onclick={snapshotNow} title="Record what happened around this moment"
+                >Jitter Snapshot <kbd>{shortcut}</kbd></button
+            >
+            <small aria-live="polite"
+                >{capture || 'Felt a hitch? Capture the last minute and see why.'}</small
+            >
+        </div>
         <div class="quick-detail">
             <span>Compressed memory</span><span
                 >{snapshot.platform.memory

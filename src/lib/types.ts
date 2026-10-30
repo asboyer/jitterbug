@@ -320,6 +320,69 @@ export interface AutomationPolicy {
     cooldown_seconds: number;
     max_investigations_per_hour: number;
     rules: { workload_id: string; label: string }[];
+    jitter_mode: JitterMode;
+    action_popups: boolean;
+    auto_snapshots: boolean;
+}
+
+export type JitterMode = 'auto' | 'snapshot_only';
+export type CaseOrigin = 'automatic' | 'snapshot' | 'spike';
+export type FindingStrength = 'strong' | 'possible' | 'unexplained';
+
+export interface JitterFinding {
+    kind:
+        | 'process_spike'
+        | 'core_pegged'
+        | 'memory_thrash'
+        | 'thermal_escalation'
+        | 'scheduler_lag'
+        | 'victim_busy'
+        | 'nothing_found';
+    strength: FindingStrength;
+    title: string;
+    observed: string[];
+    inferred: string;
+    workload_id: string | null;
+    label: string | null;
+    category: string | null;
+}
+
+export interface JitterParty {
+    workload_id: string | null;
+    label: string;
+    category: string;
+}
+
+export interface JitterReport {
+    origin: CaseOrigin;
+    press_at_ms: number;
+    forward_only: boolean;
+    window: [number, number];
+    suspect: [number, number];
+    timeline: {
+        offset_s: number;
+        cpu_percent: number;
+        core_max: number;
+        lag_ms: number;
+        paging_mib_s: number | null;
+    }[];
+    findings: JitterFinding[];
+    victim: JitterParty | null;
+    culprit: JitterParty | null;
+    happened: string;
+    likely_cause: string;
+    in_app: { action: string; process: ProcessRecord; label: string } | null;
+    manual: string | null;
+    if_again: string;
+    recurrence: number;
+    offer_permission: boolean;
+    limits: string;
+}
+
+export interface JitterTally {
+    entries: { label: string; count: number; last_at: number }[];
+    mode: JitterMode;
+    sampling: boolean;
 }
 
 export type AutomationStage =
@@ -354,7 +417,72 @@ export interface AutomationCase {
         priority_verified: boolean;
     } | null;
     automatic: boolean;
+    origin?: CaseOrigin;
+    jitter?: JitterReport | null;
 }
+
+/** The workload around a popup option, measured when it was proposed. */
+export interface ActionImpact {
+    label: string;
+    workload_cpu_percent: number;
+    workload_memory_bytes: number;
+    process_count: number;
+    whole_app: boolean;
+}
+
+export interface ActionPopupOption {
+    action: 'lower_priority' | 'terminate';
+    process: { name: string; cpu_percent: number; memory_bytes: number };
+    impact: ActionImpact | null;
+    /** For a stop: what ends, in plain words. */
+    closes: string | null;
+}
+
+/** Trimmed case for the out-of-app popup: no paths, PIDs, evidence, or diagnosis. */
+export interface ActionPopupCase {
+    kind: 'case';
+    id: number;
+    source: string;
+    stage: AutomationStage;
+    trigger: { kind: string; title: string; target: { label: string } | null };
+    proposal: ActionPopupOption | null;
+    alternative: ActionPopupOption | null;
+    report: {
+        fresh: boolean;
+        after: true | null;
+        action: string;
+        process: string;
+        cpu_before: number;
+        cpu_after: number | null;
+        memory_before: number;
+        memory_after: number | null;
+    } | null;
+    verification: {
+        priority_verified: boolean;
+        system_cpu_before: number;
+        system_cpu_after: number | null;
+        available_memory_before: number;
+        available_memory_after: number | null;
+    } | null;
+    origin: CaseOrigin;
+    jitter: {
+        culprit: { label: string } | null;
+        victim: { label: string } | null;
+        happened: string;
+        likely_cause: string;
+        manual: string | null;
+    } | null;
+    more: number;
+}
+
+/** A snapshot is recording; its case does not exist yet. */
+export interface ActionPopupCapture {
+    kind: 'capturing';
+    id: 0;
+    message: string;
+}
+
+export type ActionPopupPayload = ActionPopupCase | ActionPopupCapture;
 
 export interface AgentRoleUsage {
     role: string;

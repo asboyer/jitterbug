@@ -57,11 +57,17 @@
         </p>
         <p>{incident.proposal?.rationale}</p>
     </details>
-    <label class="remember"
-        ><input type="checkbox" bind:checked={remember} disabled={busy || !current} /><span
-            >Allow automatically for {label}</span
-        ></label
-    >
+    {#if !incident.jitter || incident.jitter.offer_permission}
+        <label class="remember"
+            ><input type="checkbox" bind:checked={remember} disabled={busy || !current} /><span
+                >Allow automatically for {label}</span
+            ></label
+        >
+    {/if}
+    {#if incident.jitter?.offer_permission}<p class="permission-note">
+            {label} has come up in {incident.jitter.recurrence} of your recent snapshots. Snapshot suggestions
+            themselves always wait for you.
+        </p>{/if}
     {#if remember}<p class="permission-note">
             Applies now and permits future CPU priority changes for this workload. It never permits
             stopping processes. Revoke this permission in Settings.

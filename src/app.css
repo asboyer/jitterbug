@@ -1148,10 +1148,12 @@ summary:focus-visible {
     font-size: 10px;
     flex-shrink: 0;
 }
-.menubar-window {
+.menubar-window,
+.popup-window {
     background: transparent;
 }
-.menubar-window body {
+.menubar-window body,
+.popup-window body {
     min-width: 0;
     background: transparent;
     overflow: hidden;
@@ -1217,6 +1219,26 @@ summary:focus-visible {
 }
 .quick-history .activity-graph {
     height: 35px;
+}
+.quick-snapshot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 16px 8px;
+}
+.quick-snapshot button {
+    font-size: 11px;
+    white-space: nowrap;
+}
+.quick-snapshot kbd {
+    font: inherit;
+    color: var(--muted);
+    margin-left: 4px;
+}
+.quick-snapshot small {
+    font-size: 10px;
+    color: var(--muted);
+    line-height: 1.4;
 }
 .quick-detail {
     display: flex;

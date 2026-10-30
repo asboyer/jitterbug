@@ -248,6 +248,7 @@
         visibleCases.find((c) => c.id === automaticId) ?? visibleCases[0] ?? null
     );
     let error = $state('');
+    let captureStatus = $state('');
     let actionReport: ActionReport | null = $state(null);
     let alert: Incident | null = $state(null);
     let pendingAction: { process: ProcessRecord; action: string } | null = $state(null);
@@ -401,6 +402,19 @@
                     return;
                 }
                 cleanup.push(automatic);
+                const captured = await listen<{ phase: string; message: string }>(
+                    'jitter-capture',
+                    (event) => {
+                        if (event.payload.phase === 'error') error = event.payload.message;
+                        captureStatus =
+                            event.payload.phase === 'recording' ? event.payload.message : '';
+                    }
+                );
+                if (disposed) {
+                    captured();
+                    return;
+                }
+                cleanup.push(captured);
                 const simulated = await listen<AutomationCase>('demo-pressure-case', (event) => {
                     startDemoIncident(event.payload);
                 });
@@ -438,6 +452,31 @@
                     return;
                 }
                 cleanup.push(navigation);
+                const popupDetails = await listen<{ id: number; source: string }>(
+                    'open-incident',
+                    (event) => {
+                        if (tourIndex !== null) finishTour();
+                        const fromDemo = event.payload.source === 'demo';
+                        if (fromDemo !== demo) {
+                            navigate(page);
+                            if (!fromDemo) {
+                                stopDemoSequence();
+                                notice = null;
+                                demoPressure = false;
+                                alert = null;
+                            }
+                        }
+                        demo = fromDemo;
+                        const list = fromDemo ? demoCases : cases;
+                        const match = list.find((item) => item.id === event.payload.id) ?? list[0];
+                        if (match) showIncident(match.id);
+                    }
+                );
+                if (disposed) {
+                    popupDetails();
+                    return;
+                }
+                cleanup.push(popupDetails);
                 live = await invoke('get_snapshot');
                 await refreshBootstrap();
             } catch (cause) {
@@ -518,6 +557,22 @@
                 error = errorMessage(cause);
             }
         } else startDemoIncident();
+    }
+    let popupStatus = $state('');
+    async function previewPopup() {
+        if (!desktop) {
+            window.open('?view=popup', 'jitterbug-popup', 'popup,width=360,height=216');
+            return;
+        }
+        try {
+            await invoke('preview_action_popup');
+            popupStatus = 'Switch to another app. An example popup appears in 5 seconds.';
+            setTimeout(() => {
+                popupStatus = '';
+            }, 8000);
+        } catch (cause) {
+            error = errorMessage(cause);
+        }
     }
     async function confirmAction() {
         if (!pendingAction || demo || !desktop) return;
@@ -624,7 +679,10 @@
                             }}>Explore demo</button
                         >
                         <button onclick={simulatePressure}>Simulate pressure</button>
-                        <small>Synthetic data. No extra CPU or memory load.</small>
+                        <button onclick={previewPopup}>Preview action popup</button>
+                        <small
+                            >{popupStatus || 'Synthetic data. No extra CPU or memory load.'}</small
+                        >
                     </div>
                 </details>
             </div>
@@ -650,6 +708,7 @@
                     }}>Dismiss demo</button
                 >
             </div>{/if}
+        {#if captureStatus}<div class="banner" role="status">{captureStatus}</div>{/if}
         {#if error}<div class="banner error" role="alert">
                 {error}<button
                     class="text-button"
@@ -807,6 +866,10 @@
                     automationOpen = false;
                 }}
                 onask={followUp}
+                onaction={(process, action) => {
+                    error = '';
+                    pendingAction = { process, action };
+                }}
             />{/key}{:else if chatOpen && snapshot}<Chat
             {snapshot}
             workload={selected}
@@ -853,7 +916,12 @@
             agentTaskId = id ?? null;
         }}
         onlater={() => {
+            // Read the case before clearing the notice; noticedCase is derived from it.
+            const later = noticedCase;
             notice = null;
+            // The out-of-app popup honors the same "Later".
+            if (desktop && later?.source === 'live')
+                void invoke('close_action_popup', { id: later.id }).catch(() => {});
         }}
     />
 {/if}
