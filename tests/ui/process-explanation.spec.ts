@@ -163,7 +163,13 @@ test('process insights stay on the page and use the selection without another pi
     const insight = page.getByRole('region', { name: 'Workload activity insight' });
     await insight.getByRole('button', { name: 'Check activity', exact: true }).click();
     await expect(insight.getByRole('heading', { name: 'Activity is light' })).toBeVisible();
-    await expect(insight).toContainText('Keep it running.');
+    await expect(insight.getByText('Keep it running.', { exact: true })).toBeInViewport();
+    await expect(insight.getByRole('button', { name: 'Check again' })).toBeInViewport();
+    const purposeBox = await page
+        .getByRole('region', { name: 'Process explanation' })
+        .boundingBox();
+    const insightBox = await insight.boundingBox();
+    expect(Math.abs(purposeBox!.y - insightBox!.y)).toBeLessThan(2);
     await expect(page.locator('html')).toHaveAttribute('data-insight-target', 'demo-browser');
     await expect(insight.locator('details[open]')).toHaveCount(0);
     await expect(page.getByRole('complementary', { name: 'Contextual assistant' })).toHaveCount(0);

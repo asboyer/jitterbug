@@ -203,98 +203,101 @@
             >
         </div>{/if}
     {#if detail}
-        <section
-            class="panel app-explanation"
-            aria-label="Process explanation"
-            aria-busy={generating}
-        >
-            <div class="section-title">
-                <h2>What it does</h2>
-                <div class="explanation-source">
-                    <span
-                        >{detail.profile.source === 'model'
-                            ? detail.profile.cached
-                                ? 'AI · saved on this device'
-                                : 'AI explanation'
-                            : detail.profile.source === 'reference'
-                              ? 'Built-in reference'
-                              : demo
-                                ? 'Synthetic example'
-                                : generating
-                                  ? 'Identifying…'
-                                  : 'Local evidence'}</span
-                    >
-                    <InfoTip label="About this explanation">
-                        <p>
-                            General purpose, not a diagnosis of current activity. Cached for up to
-                            30 days; changes to the executable or app version invalidate the saved
-                            explanation.
-                        </p>
-                        <p>
-                            Models receive the executable name, component and bundle identifier.
-                            Paths, arguments, working directories and files stay on this device.
-                        </p>
-                        {#if detail.profile.generated_at}<p>
-                                {detail.profile.provider} · {detail.profile.model} · {date(
-                                    detail.profile.generated_at
-                                )}
-                            </p>{/if}
-                        {#if detail.application}<p>
-                                {detail.application.identity_source}{detail.application.identifier
-                                    ? ` · ${detail.application.identifier}`
-                                    : ''}. This does not verify a publisher’s signature.
-                            </p>{/if}
-                    </InfoTip>
+        <div class="process-overview">
+            <section
+                class="panel app-explanation"
+                aria-label="Process explanation"
+                aria-busy={generating}
+            >
+                <div class="section-title">
+                    <h2>What it does</h2>
+                    <div class="explanation-source">
+                        <span
+                            >{detail.profile.source === 'model'
+                                ? detail.profile.cached
+                                    ? 'AI · saved on this device'
+                                    : 'AI explanation'
+                                : detail.profile.source === 'reference'
+                                  ? 'Built-in reference'
+                                  : demo
+                                    ? 'Synthetic example'
+                                    : generating
+                                      ? 'Identifying…'
+                                      : 'Local evidence'}</span
+                        >
+                        <InfoTip label="About this explanation">
+                            <p>
+                                General purpose, not a diagnosis of current activity. Cached for up
+                                to 30 days; changes to the executable or app version invalidate the
+                                saved explanation.
+                            </p>
+                            <p>
+                                Models receive the executable name, component and bundle identifier.
+                                Paths, arguments, working directories and files stay on this device.
+                            </p>
+                            {#if detail.profile.generated_at}<p>
+                                    {detail.profile.provider} · {detail.profile.model} · {date(
+                                        detail.profile.generated_at
+                                    )}
+                                </p>{/if}
+                            {#if detail.application}<p>
+                                    {detail.application.identity_source}{detail.application
+                                        .identifier
+                                        ? ` · ${detail.application.identifier}`
+                                        : ''}. This does not verify a publisher’s signature.
+                                </p>{/if}
+                        </InfoTip>
+                    </div>
                 </div>
-            </div>
-            {#if generating && detail.profile.source === 'inference'}<p
-                    class="explanation-text identifying"
-                    role="status"
-                >
-                    Identifying {detail.process.name} and what it does…
-                </p>
-            {:else if profileError && profileErrorKey === detail.profile_key}<div
-                    class="profile-generation"
-                    role="status"
-                >
-                    <p>The explanation couldn’t be completed.</p>
-                    <button disabled={generating || !!error} onclick={explain}
-                        >Retry explanation</button
-                    ><InfoTip label="Why the explanation is unavailable"
-                        ><p>{profileError}</p></InfoTip
+                {#if generating && detail.profile.source === 'inference'}<p
+                        class="explanation-text identifying"
+                        role="status"
+                    >
+                        Identifying {detail.process.name} and what it does…
+                    </p>
+                {:else if profileError && profileErrorKey === detail.profile_key}<div
+                        class="profile-generation"
+                        role="status"
+                    >
+                        <p>The explanation couldn’t be completed.</p>
+                        <button disabled={generating || !!error} onclick={explain}
+                            >Retry explanation</button
+                        ><InfoTip label="Why the explanation is unavailable"
+                            ><p>{profileError}</p></InfoTip
+                        >
+                    </div>
+                {:else}<p class="explanation-text">{detail.profile.text}</p>{/if}
+                <div class="origin-preview" aria-label="Origin overview">
+                    <Icon name="app" size={16} />
+                    <div>
+                        <small>Part of</small><strong
+                            >{detail.application?.component ??
+                                detail.application?.executable_name ??
+                                detail.process.name}</strong
+                        >
+                    </div>
+                    <div>
+                        <small>Observed parent</small><strong
+                            >{parent?.name === 'launchd'
+                                ? 'macOS · launchd'
+                                : (parent?.name ?? 'Parent not observed')}</strong
+                        >
+                    </div>
+                    <button class="text-button" onclick={showOrigin}
+                        >Show origin evidence <span aria-hidden="true">↓</span></button
                     >
                 </div>
-            {:else}<p class="explanation-text">{detail.profile.text}</p>{/if}
-            <div class="origin-preview" aria-label="Origin overview">
-                <Icon name="app" size={16} />
-                <div>
-                    <small>Part of</small><strong
-                        >{detail.application?.component ??
-                            detail.application?.executable_name ??
-                            detail.process.name}</strong
-                    >
-                </div>
-                <div>
-                    <small>Observed parent</small><strong
-                        >{parent?.name === 'launchd'
-                            ? 'macOS · launchd'
-                            : (parent?.name ?? 'Parent not observed')}</strong
-                    >
-                </div>
-                <button class="text-button" onclick={showOrigin}
-                    >Show origin evidence <span aria-hidden="true">↓</span></button
-                >
-            </div>
-        </section>
-        <ProcessInsight
-            {snapshot}
-            workload={current}
-            {demo}
-            disabled={!!error || generating || actionBusy}
-            {onusage}
-            onask={(reply) => onask(null, reply)}
-            {onaction}
-        />
+            </section>
+            <ProcessInsight
+                {snapshot}
+                workload={current}
+                {demo}
+                disabled={!!error || generating || actionBusy}
+                {onusage}
+                onask={(reply) => onask(null, reply)}
+                {onaction}
+            />
+        </div>
         <details class="panel process-section">
             <summary
                 ><span>Processes</span><span class="summary-count">{detail.member_count}</span
@@ -436,6 +439,8 @@
 
 <style>
     .workload-detail {
+        container-type: inline-size;
+        container-name: process-detail;
         max-width: 920px;
         margin: 0 auto;
     }
@@ -487,9 +492,28 @@
         width: 100%;
         display: block;
     }
+    .process-overview {
+        display: grid;
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+    .process-overview :global(.activity-insight) {
+        margin: 0;
+        min-width: 0;
+    }
     .app-explanation {
-        margin-bottom: 16px;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
         padding: 18px 20px;
+    }
+    .app-explanation .explanation-text {
+        flex: 1;
+    }
+    @container process-detail (min-width: 800px) {
+        .process-overview {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
     }
     .section-title {
         flex-wrap: wrap;
@@ -718,7 +742,7 @@
         flex-wrap: wrap;
         margin-top: 20px;
     }
-    @media (max-width: 950px) {
+    @container process-detail (max-width: 700px) {
         .detail-stats {
             grid-template-columns: repeat(3, 1fr);
         }
