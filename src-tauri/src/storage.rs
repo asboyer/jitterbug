@@ -92,7 +92,7 @@ where
         ));
     }
     drop(file);
-    if replace(&tmp, path).is_err() {
+    if replace_with_retry(&tmp, path).is_err() {
         let _ = fs::remove_file(&tmp);
         return Err(WriteError::before_commit(
             "Cannot replace local application state.",
@@ -125,12 +125,12 @@ fn temporary_file(parent: &Path) -> Result<(PathBuf, File), String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::rename(from, to)
 }
 
 #[cfg(target_os = "windows")]
-fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -141,6 +141,20 @@ fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
     let flags = MOVE_FILE_FLAGS(MOVEFILE_REPLACE_EXISTING.0 | MOVEFILE_WRITE_THROUGH.0);
     unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), flags) }
         .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+pub(crate) fn replace_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut last = None;
+    for attempt in 0..8 {
+        match replace(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(1 << attempt.min(4)));
+            }
+        }
+    }
+    Err(last.unwrap())
 }
 
 #[cfg(unix)]

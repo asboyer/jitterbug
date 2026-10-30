@@ -1209,17 +1209,23 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
         getrandom::u64().map_err(|_| "Cannot prepare system settings data.")?
     ));
     atomic_create(&temporary, bytes)?;
-    if let Err(error) = fs::rename(&temporary, path) {
+    if let Err(error) = crate::storage::replace_with_retry(&temporary, path) {
         let _ = fs::remove_file(&temporary);
         return Err(format!("Cannot commit system settings data: {error}"));
     }
     sync_directory(parent)
 }
 
+#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), String> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| "Cannot durably commit system settings data.".into())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
