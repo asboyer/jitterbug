@@ -25,6 +25,7 @@ fs2 = "0.4"
 base64 = "0.22"
 dirs = "7"
 sha2 = "0.10"
+getrandom = "0.3"
 toml_edit = "0.25"
 tauri-plugin-global-shortcut = "2"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
@@ -33,9 +34,11 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+plist = "1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "libc", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "NSScreen", "NSStatusItem", "NSStatusBarButton", "NSWindow", "NSView", "NSResponder", "NSApplication", "NSPanel"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace", "NSRunningApplication", "libc", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "NSScreen", "NSStatusItem", "NSStatusBarButton", "NSWindow", "NSView", "NSResponder", "NSApplication", "NSPanel"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 png = "0.18"

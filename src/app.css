@@ -670,6 +670,96 @@ td small {
     padding: 18px;
     margin-bottom: 20px;
 }
+.settings-defaults .section-title {
+    align-items: start;
+}
+.settings-defaults > .default-entry {
+    padding-bottom: 0;
+}
+.preview-note {
+    color: var(--warning);
+    background: var(--warning-soft);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+.default-scope {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+}
+.default-scope > div {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+}
+.default-scope h3,
+.default-scope p {
+    margin: 0;
+}
+.default-scope p {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.6;
+    margin-top: 6px;
+}
+.default-entry {
+    border-top: 1px solid var(--border);
+    padding: 14px 0;
+}
+.default-entry-heading,
+.default-entry-heading > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.default-entry-heading > div {
+    align-items: baseline;
+    justify-content: start;
+}
+.default-entry time {
+    color: var(--muted);
+    font-size: 10px;
+}
+.default-entry > p {
+    font-size: 11px;
+}
+.snapshot-values,
+.restore-changes {
+    display: grid;
+    gap: 6px;
+    margin: 12px 0 0;
+}
+.snapshot-values > div,
+.restore-changes > div {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 12px;
+    font-size: 11px;
+}
+.snapshot-values dt,
+.restore-changes dt {
+    color: var(--muted);
+}
+.snapshot-values dd,
+.restore-changes dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+.empty.compact {
+    padding: 20px 0;
+}
+@media (max-width: 800px) {
+    .default-scope {
+        grid-template-columns: 1fr;
+    }
+    .default-entry-heading,
+    .default-entry-heading > div {
+        align-items: start;
+        flex-direction: column;
+    }
+}
 .mode-options {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1360,4 +1450,35 @@ summary:focus-visible {
     .shell:has(.assistant) main {
         filter: brightness(0.7);
     }
+}
+
+.defaults-dialog {
+    width: min(560px, calc(100vw - 32px));
+    max-width: none;
+    max-height: min(600px, calc(100dvh - 32px));
+    box-sizing: border-box;
+    padding: 20px;
+    color: var(--text);
+    overflow: hidden;
+}
+.defaults-dialog[open] {
+    display: flex;
+    flex-direction: column;
+}
+.defaults-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+}
+.defaults-dialog > .section-title {
+    flex-shrink: 0;
+    gap: 16px;
+}
+.defaults-dialog-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    min-height: 0;
+    scrollbar-gutter: stable;
+}
+.defaults-dialog .default-entry-heading,
+.defaults-dialog .default-entry-heading > div {
+    flex-wrap: wrap;
 }

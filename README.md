@@ -356,6 +356,49 @@ Meta and Claude use fixed official endpoints. Jev is wired for the decision tier
 
 Cloud calls come from activity checks, chat requests, opening uncached process details, explicitly requested task summaries, or enabled automatic incident investigations. They are bounded and have no automatic HTTP retries. The default lifetime prototype budget is $2; the lower of the in-app budget and `JITTERBUG_SPEND_LIMIT_USD` applies. There is also a $0.10 reservation ceiling per call, 200-request lifetime prototype limit, and $100 absolute app limit. Conservative reservations are saved **before** requests. Successful calls with complete token usage settle their own reservation to the estimated charge; failures and unknown usage keep the reservation across restarts. Legacy reservations remain conservative. The displayed usage estimate is not a provider billing balance; external clients sharing a key are outside this app's ledger.
 
+## System settings baseline and rollback
+
+**Set Default** captures macOS audio and saved desktop/input preferences before optimization.
+Choose Audio, Desktop & Dock, Keyboard, Pointer, and Finder storage categories. The typed allowlist covers master
+volume/mute plus 19 saved preferences: Dock auto-hide, magnification, launch animation, minimizing
+into the application icon, recent apps, icon size; keyboard repeat interval/delay and accent menu;
+natural scrolling and mouse/trackpad tracking speed (not acceleration); spelling correction,
+capitalization, period/dash/quote substitution; and .DS_Store creation preferences on network/USB
+volumes. Existing files are never deleted. Preference storage support is limited to macOS 13–15.
+Each immutable capture retains prior history and includes per-setting coverage. Windows and other
+platforms remain unsupported.
+
+Coverage & access distinguishes supported, read-only, manual, and unavailable settings and offers explicit
+System Settings links and Recheck access. Reduce motion/transparency are read-only public queries;
+CoreAudio nominal rate/full physical stream formats and CoreGraphics full display modes are observed
+with supported-range/mode and stable-identity checks, but **not restorable**: driver writability does
+not prove persistence, and display mode APIs can be application/session scoped. Saved power-source
+sleep/display-sleep timers are read using only `pmset -g custom`; no root writer is installed.
+Low/high power, login/background items, Time Machine scheduling, pointer acceleration, iCloud storage,
+microphone privacy, Spotlight exclusions, and Developer Tools access have precise manual coverage.
+Stage Manager and brightness are not falsely presented as restorable.
+There is no automatic permission request, password handling, sudo, or privileged helper.
+
+Audio is verified through live CoreAudio readback. Preferences are verified in saved CFPreferences
+storage only; live effects may require app relaunch, sign-out, or restart by the user. Jitterbug never
+restarts Dock/SystemUIServer. Absence of an override is preserved, not replaced with a guessed default.
+History and coverage are shown in bounded, keyboard-accessible views.
+
+Rollback starts with an exact before/after preview and explicit confirmation. Its one-use token binds
+the selected snapshot to fresh actual values and expires after five minutes. Compatibility is limited
+to the same OS version, effective user, machine, and default output device. Jitterbug rechecks actual
+state before each typed native write, records a durable intent first, verifies native readback after
+each write, and stops on external drift or partial failure. Interrupted journals are reported and
+never replayed automatically. Capture and rollback share the supervisor action lock with automation.
+
+This is not an OS upgrade/downgrade, disk backup, provider-configuration history, output-device
+switcher, or performance claim. It never changes credentials, privacy/security/network controls,
+processes, or arbitrary preferences. All one-time actions are excluded: purge/cache deletion, DNS
+flush, quarantine/sleepimage removal, process kills, temporary renice, session assertions, and
+security-disabling commands. Legacy provider-history files remain untouched in their old
+namespace but are no longer shown in Settings. See
+[system settings rollback](docs/system-settings-rollback.md) for native API scope and verification.
+
 ## What is a demo or future work
 
 **Explore demo** and **Simulate pressure** use synthetic fixtures. In the desktop app, pressure simulation feeds three synthetic samples through the real Rust detector and delivers its incident through the real event channel. It does not generate CPU/memory load, call models, or change processes. Exploring the demo does not pause the native monitor; a real incident switches the desktop UI back to LIVE. Browser preview is always a demo. The source badge and assistant message labels make this visible.
@@ -393,6 +436,8 @@ src-tauri/src/
   actions.rs            native process-action validation and OS priority verification
   providers.rs          Ollama, Meta, Claude, and Jev adapters; bounded routing
   settings.rs           inference modes, model tiers, credentials, reviewed prices
+  settings_history.rs   preserved legacy provider-history backend
+  system_settings.rs    native baseline history, journals, guarded audio/preference rollback
   budget.rs             locked, persistent pre-request spending reservations
   storage.rs            private local settings and ledger writes
   desktop.rs            template tray icon, native quick-view window, visibility-aware events

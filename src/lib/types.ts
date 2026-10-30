@@ -17,6 +17,161 @@ export interface Settings {
     automation: AutomationPolicy;
 }
 
+export interface SupportedSettings {
+    mode: Mode;
+    decision: Tier;
+    cheap: Tier;
+    intelligent: Tier;
+    decision_enabled: boolean;
+    budget_usd: number;
+}
+
+export interface SettingsDefaultSnapshot {
+    id: string;
+    current: boolean;
+    created_at_ms: number | null;
+    summary: string | null;
+    settings: SupportedSettings | null;
+    error: string | null;
+}
+
+export interface SettingsDefaultHistory {
+    entries: SettingsDefaultSnapshot[];
+    next_cursor: string | null;
+}
+
+export interface SettingsRestorePreview {
+    token: string;
+    expires_at_ms: number;
+    target: SettingsDefaultSnapshot;
+    changes: { field: string; before: string; after: string }[];
+}
+
+export interface SystemCapability {
+    included?: boolean;
+    id: string;
+    label: string;
+    group: string;
+    status: 'supported' | 'needs_permission' | 'read_only' | 'manual' | 'unavailable';
+    detail: string;
+    verification: string;
+    pane: string | null;
+}
+
+export type SystemPreferenceValue =
+    | { kind: 'absent' }
+    | { kind: 'boolean'; value: boolean }
+    | { kind: 'integer' | 'real'; value: number };
+
+export interface SystemAudioFormat {
+    sample_rate: number;
+    format_id: number;
+    flags: number;
+    bytes_per_packet: number;
+    frames_per_packet: number;
+    bytes_per_frame: number;
+    channels: number;
+    bits_per_channel: number;
+    reserved: number;
+}
+
+export type SystemHardwareValue =
+    | {
+          kind: 'audio';
+          uid: string;
+          rate: number | null;
+          streams: { starting_channel: number; terminal_type: number; format: SystemAudioFormat }[];
+      }
+    | {
+          kind: 'displays';
+          displays: {
+              uuid: string;
+              x: number;
+              y: number;
+              rotation: number;
+              main: boolean;
+              active: boolean;
+              mirror: string | null;
+              mode: {
+                  id: number;
+                  width: number;
+                  height: number;
+                  pixel_width: number;
+                  pixel_height: number;
+                  refresh_hz: number;
+                  flags: number;
+                  desktop_usable: boolean;
+              };
+          }[];
+      }
+    | { kind: 'power'; source: string; key: 'sleep' | 'displaysleep'; minutes: number }
+    | {
+          kind: 'energy_policy';
+          source: string;
+          mode: number;
+          high_power_supported: boolean;
+      }
+    | { kind: 'time_machine'; automatic: boolean | null; interval_seconds: number | null }
+    | { kind: 'login_items'; items: { path: string; hidden: boolean }[] }
+    | { kind: 'background_items'; values: Record<string, boolean> };
+
+export interface SystemSettingValues {
+    output_volume: number | null;
+    output_muted: boolean | null;
+    preferences?: Record<string, SystemPreferenceValue>;
+    hardware?: Record<string, SystemHardwareValue>;
+}
+
+export interface SystemDefaultSnapshot {
+    coverage?: SystemCapability[];
+    id: string;
+    current: boolean;
+    created_at_ms: number | null;
+    summary: string | null;
+    values: SystemSettingValues | null;
+    compatible: boolean;
+    error: string | null;
+}
+
+export interface SystemDefaultHistory {
+    entries: SystemDefaultSnapshot[];
+    next_cursor: string | null;
+    interrupted_operations: number;
+}
+
+export interface SystemRestorePreview {
+    coverage?: SystemCapability[];
+    token: string;
+    expires_at_ms: number;
+    target: SystemDefaultSnapshot;
+    changes: {
+        field: string;
+        before: string;
+        after: string;
+        group?: string;
+        verification?: string;
+    }[];
+}
+
+export type SystemRollbackStatus = 'no_changes' | 'verified' | 'partial_failure';
+export type SystemOutcomeStatus =
+    'pending' | 'applying' | 'verified' | 'write_failed' | 'readback_mismatch' | 'external_drift';
+
+export interface SystemRollbackResult {
+    status: SystemRollbackStatus;
+    outcomes: {
+        setting: 'output_volume' | 'output_muted' | { preference: string } | { hardware: number };
+        field: string;
+        before: string;
+        target: string;
+        status: SystemOutcomeStatus;
+        error: string | null;
+    }[];
+    current: SystemSettingValues | null;
+    journal_id: string | null;
+    message: string;
+}
+
 export interface Spending {
     reserved_usd: number;
     reported_estimate_usd: number;

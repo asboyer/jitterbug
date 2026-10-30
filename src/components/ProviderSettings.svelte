@@ -1,6 +1,7 @@
 <script lang="ts">
     import notices from '../../THIRD_PARTY_NOTICES.md?raw';
     import AutomationSettings from './AutomationSettings.svelte';
+    import SettingsDefaults from './SettingsDefaults.svelte';
     import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory } from '../lib/format';
@@ -221,6 +222,7 @@
             >
         </div>{/each}
 </section>
+<SettingsDefaults {desktop} />
 {#if status}<p class="success" role="status">{status}</p>{/if}{#if error}<p
         class="error"
         role="alert"

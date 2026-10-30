@@ -2,23 +2,68 @@
 use crate::{
     actions,
     automation::{self, Case, Monitor, Origin, Policy, Rule, Stage},
-    budget, details, jitter, profiles, providers, settings, storage,
+    budget, details, jitter, profiles, providers, settings, settings_history, storage,
+    system_settings,
     types::*,
 };
 use std::{
     collections::VecDeque,
     path::PathBuf,
-    sync::{Arc, Mutex, RwLock},
-    time::Duration,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, RwLock,
+    },
+    time::{Duration, Instant},
 };
 
 type Publish = Arc<dyn Fn(Case) + Send + Sync>;
+type SettingsWriter = Arc<
+    dyn Fn(&std::path::Path, &settings::Settings) -> Result<(), storage::WriteError> + Send + Sync,
+>;
 
 #[derive(Default)]
 struct Book {
     monitor: Monitor,
     cases: VecDeque<Case>,
     sequence: u64,
+}
+
+const RESTORE_PREVIEW_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_RESTORE_PREVIEWS: usize = 32;
+
+struct PendingRestore {
+    token: String,
+    target_id: String,
+    target_digest: String,
+    current_default: Option<settings_history::CurrentState>,
+    settings_revision: u64,
+    settings_digest: String,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct RestorePreviews {
+    entries: VecDeque<PendingRestore>,
+}
+
+impl RestorePreviews {
+    fn issue(&mut self, pending: PendingRestore) {
+        self.entries
+            .retain(|entry| entry.expires_at > Instant::now());
+        self.entries.push_back(pending);
+        while self.entries.len() > MAX_RESTORE_PREVIEWS {
+            self.entries.pop_front();
+        }
+    }
+
+    fn take(&mut self, token: &str) -> Option<PendingRestore> {
+        let position = self.entries.iter().position(|entry| entry.token == token)?;
+        self.entries.remove(position)
+    }
+
+    fn cancel(&mut self, token: &str) -> bool {
+        self.take(token).is_some()
+    }
 }
 
 /// Agent requests kept within the bounded incident history per hour.
@@ -69,6 +114,11 @@ pub struct Runtime {
     pub profiles: Mutex<crate::profiles::Cache>,
     pub task_summaries: Mutex<crate::profiles::Cache>,
     action: tokio::sync::Mutex<()>,
+    settings_revision: AtomicU64,
+    settings_defaults: Mutex<()>,
+    system_settings: system_settings::Controller,
+    restore_previews: Mutex<RestorePreviews>,
+    settings_writer: SettingsWriter,
     pub directory: PathBuf,
     book: Mutex<Book>,
     publish: Publish,
@@ -76,6 +126,52 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(directory: PathBuf, settings: settings::Settings, publish: Publish) -> Arc<Self> {
+        Self::new_with_settings_writer(
+            directory,
+            settings,
+            publish,
+            Arc::new(storage::write_detailed),
+        )
+    }
+
+    fn new_with_settings_writer(
+        directory: PathBuf,
+        settings: settings::Settings,
+        publish: Publish,
+        settings_writer: SettingsWriter,
+    ) -> Arc<Self> {
+        Self::new_with_components(
+            directory,
+            settings,
+            publish,
+            settings_writer,
+            system_settings::native_adapter(),
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_system_native(
+        directory: PathBuf,
+        settings: settings::Settings,
+        publish: Publish,
+        native: Arc<dyn system_settings::NativeSettings>,
+    ) -> Arc<Self> {
+        Self::new_with_components(
+            directory,
+            settings,
+            publish,
+            Arc::new(storage::write_detailed),
+            native,
+        )
+    }
+
+    fn new_with_components(
+        directory: PathBuf,
+        settings: settings::Settings,
+        publish: Publish,
+        settings_writer: SettingsWriter,
+        native: Arc<dyn system_settings::NativeSettings>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             snapshot: Arc::new(RwLock::new(Snapshot::default())),
             settings: Mutex::new(settings),
@@ -85,10 +181,46 @@ impl Runtime {
             profiles: Mutex::new(crate::profiles::Cache::read(&directory)),
             task_summaries: Mutex::new(crate::profiles::Cache::default()),
             action: tokio::sync::Mutex::new(()),
+            settings_revision: AtomicU64::new(0),
+            settings_defaults: Mutex::new(()),
+            system_settings: system_settings::Controller::new(directory.clone(), native),
+            restore_previews: Mutex::new(RestorePreviews::default()),
+            settings_writer,
             directory,
             book: Mutex::new(Book::default()),
             publish,
         })
+    }
+
+    fn persist_settings(
+        &self,
+        current: &mut settings::Settings,
+        next: &settings::Settings,
+    ) -> Result<(), String> {
+        let path = self.directory.join("settings.json");
+        match (self.settings_writer)(&path, next) {
+            Ok(()) => {
+                // Reconcile the actual persisted file, not just the requested values.
+                let effective: settings::Settings = storage::read(&path)?;
+                effective.validate()?;
+                *current = effective;
+                self.settings_revision.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            Err(error) if error.committed() => {
+                let original = error.into_message();
+                let effective: settings::Settings = storage::read(&path).map_err(|reconcile| {
+                    format!("{original} Runtime reconciliation also failed: {reconcile}")
+                })?;
+                effective.validate().map_err(|reconcile| {
+                    format!("{original} Runtime reconciliation also failed: {reconcile}")
+                })?;
+                *current = effective;
+                self.settings_revision.fetch_add(1, Ordering::SeqCst);
+                Err(original)
+            }
+            Err(error) => Err(error.into_message()),
+        }
     }
     /// One explicit detail-view request; cached across restarts, never run by the sampler.
     pub async fn explain_application(
@@ -1333,6 +1465,274 @@ impl Runtime {
     pub fn spending(&self) -> Result<budget::Ledger, String> {
         self.engine.spending()
     }
+
+    pub fn save_settings(&self, mut settings: settings::Settings) -> Result<(), String> {
+        let _guard = self
+            .inference
+            .try_lock()
+            .map_err(|_| "Wait for the active model request before changing policy.")?;
+        let mut current = self.settings.lock().map_err(|_| "Settings unavailable.")?;
+        // Automation permissions have a separate command so an older provider form cannot overwrite them.
+        settings.automation = current.automation.clone();
+        settings.validate()?;
+        self.persist_settings(&mut current, &settings)
+    }
+
+    pub fn set_settings_default(&self) -> Result<settings_history::SnapshotView, String> {
+        let _defaults = self
+            .settings_defaults
+            .lock()
+            .map_err(|_| "Saved default state unavailable.")?;
+        let settings = self
+            .settings
+            .lock()
+            .map_err(|_| "Settings unavailable.")?
+            .clone();
+        settings_history::capture(&self.directory, &settings)
+    }
+
+    pub fn system_capabilities(&self) -> Vec<system_settings::Capability> {
+        self.system_settings.inventory()
+    }
+
+    pub fn set_system_default(&self) -> Result<system_settings::SnapshotView, String> {
+        self.set_system_default_selected(None)
+    }
+
+    pub fn set_system_default_selected(
+        &self,
+        groups: Option<&[String]>,
+    ) -> Result<system_settings::SnapshotView, String> {
+        let _action = self.action.try_lock().map_err(|_| {
+            "A Jitterbug action is active. Wait for verification before capturing a baseline."
+        })?;
+        if self
+            .book
+            .lock()
+            .map_err(|_| "Incident state unavailable.")?
+            .cases
+            .iter()
+            .any(|case| case.stage.running())
+        {
+            return Err("Automatic assistance is active. Wait for it to finish before capturing a baseline.".into());
+        }
+        match groups {
+            None => self.system_settings.capture(),
+            Some(_) => self.system_settings.capture_selected(groups),
+        }
+    }
+
+    pub fn system_history(
+        &self,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<system_settings::HistoryPage, String> {
+        self.system_settings.history(cursor, page_size)
+    }
+
+    pub fn inspect_system_default(
+        &self,
+        id: &str,
+    ) -> Result<system_settings::SnapshotView, String> {
+        self.system_settings.inspect(id)
+    }
+
+    pub fn preview_system_restore(
+        &self,
+        id: &str,
+    ) -> Result<system_settings::RestorePreview, String> {
+        self.system_settings.preview(id)
+    }
+
+    pub fn cancel_system_restore(&self, token: &str) -> Result<(), String> {
+        self.system_settings.cancel(token)
+    }
+
+    pub async fn confirm_system_restore(
+        &self,
+        token: &str,
+    ) -> Result<system_settings::RollbackResult, String> {
+        let _action = match self.action.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                let _ = self.system_settings.cancel(token);
+                return Err(
+                    "A Jitterbug action is active. Wait for its verification before rollback."
+                        .into(),
+                );
+            }
+        };
+        if self
+            .book
+            .lock()
+            .map_err(|_| "Incident state unavailable.")?
+            .cases
+            .iter()
+            .any(|case| case.stage.running())
+        {
+            let _ = self.system_settings.cancel(token);
+            return Err(
+                "Automatic assistance is active. Wait for it to finish before rollback.".into(),
+            );
+        }
+        self.system_settings.confirm(token)
+    }
+
+    pub fn settings_history(
+        &self,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<settings_history::HistoryPage, String> {
+        let _defaults = self
+            .settings_defaults
+            .lock()
+            .map_err(|_| "Saved default state unavailable.")?;
+        settings_history::history(&self.directory, cursor, page_size)
+    }
+
+    pub fn inspect_settings_default(
+        &self,
+        id: &str,
+    ) -> Result<settings_history::SnapshotView, String> {
+        let _defaults = self
+            .settings_defaults
+            .lock()
+            .map_err(|_| "Saved default state unavailable.")?;
+        settings_history::inspect(&self.directory, id)
+    }
+
+    pub fn preview_settings_restore(
+        &self,
+        id: &str,
+    ) -> Result<settings_history::RestorePreview, String> {
+        let _defaults = self
+            .settings_defaults
+            .lock()
+            .map_err(|_| "Saved default state unavailable.")?;
+        let target = settings_history::inspect(&self.directory, id)?;
+        let target_settings = target.settings.as_ref().ok_or_else(|| {
+            target
+                .error
+                .clone()
+                .unwrap_or_else(|| "Saved default unavailable.".into())
+        })?;
+        let current = {
+            let settings = self.settings.lock().map_err(|_| "Settings unavailable.")?;
+            settings_history::SupportedSettings::from_saved(&settings)
+        };
+        let target_digest = settings_history::content_digest(target_settings)?;
+        let changes = settings_history::changes(&current, target_settings);
+        let token = secure_token()?;
+        let expires_at_ms = current_time_ms()?
+            .saturating_add(u64::try_from(RESTORE_PREVIEW_TTL.as_millis()).unwrap_or(u64::MAX));
+        let pending = PendingRestore {
+            token: token.clone(),
+            target_id: id.to_owned(),
+            target_digest,
+            current_default: settings_history::current_state(&self.directory)?,
+            settings_revision: self.settings_revision.load(Ordering::SeqCst),
+            settings_digest: settings_history::content_digest(&current)?,
+            expires_at: Instant::now() + RESTORE_PREVIEW_TTL,
+        };
+        self.restore_previews
+            .lock()
+            .map_err(|_| "Restore preview state unavailable.")?
+            .issue(pending);
+        Ok(settings_history::RestorePreview {
+            token,
+            expires_at_ms,
+            target,
+            changes,
+        })
+    }
+
+    pub fn cancel_settings_restore(&self, token: &str) -> Result<(), String> {
+        if self
+            .restore_previews
+            .lock()
+            .map_err(|_| "Restore preview state unavailable.")?
+            .cancel(token)
+        {
+            Ok(())
+        } else {
+            Err("Restore preview is unavailable or already used.".into())
+        }
+    }
+
+    pub async fn confirm_settings_restore(
+        &self,
+        token: &str,
+    ) -> Result<settings::Settings, String> {
+        // Consume first: every confirmation attempt is one-shot, including rejected stale attempts.
+        let pending = self
+            .restore_previews
+            .lock()
+            .map_err(|_| "Restore preview state unavailable.")?
+            .take(token)
+            .ok_or("Restore preview is unavailable or already used.")?;
+        if pending.expires_at <= Instant::now() {
+            return Err("Restore preview expired. Review the current values again.".into());
+        }
+        let _action = self.action.try_lock().map_err(|_| {
+            "A process action is active. Wait for its verification before restoring settings."
+        })?;
+        let _inference = self
+            .inference
+            .try_lock()
+            .map_err(|_| "A model request is active. Wait before restoring settings.")?;
+        if self
+            .book
+            .lock()
+            .map_err(|_| "Incident state unavailable.")?
+            .cases
+            .iter()
+            .any(|case| case.stage.running())
+        {
+            return Err(
+                "Automatic assistance is active. Wait for it to finish before restoring settings."
+                    .into(),
+            );
+        }
+        let _defaults = self
+            .settings_defaults
+            .lock()
+            .map_err(|_| "Saved default state unavailable.")?;
+        let mut current = self.settings.lock().map_err(|_| "Settings unavailable.")?;
+        let current_supported = settings_history::SupportedSettings::from_saved(&current);
+        let target = settings_history::load_supported(&self.directory, &pending.target_id)?;
+        let stale = self.settings_revision.load(Ordering::SeqCst) != pending.settings_revision
+            || settings_history::current_state(&self.directory)? != pending.current_default
+            || settings_history::content_digest(&current_supported)? != pending.settings_digest
+            || settings_history::content_digest(&target)? != pending.target_digest;
+        if stale {
+            return Err(
+                "This restore preview is stale. Review the latest saved and current settings."
+                    .into(),
+            );
+        }
+        let restored = target.apply_to(&current);
+        restored.validate()?;
+        self.persist_settings(&mut current, &restored)?;
+        let effective = current.clone();
+        if settings_history::SupportedSettings::from_saved(&effective) != target {
+            return Err("Persisted settings did not match the selected saved default.".into());
+        }
+        Ok(effective)
+    }
+}
+
+fn secure_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| "Cannot create a secure restore preview token.")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn current_time_ms() -> Result<u64, String> {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "System clock is unavailable.")?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| "System clock is out of range.".into())
 }
 
 #[cfg(test)]
@@ -1341,6 +1741,52 @@ mod tests {
     use crate::automation::tests::{memory_sample, sample};
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    #[derive(Clone)]
+    struct FakeSystemNative {
+        state: Arc<Mutex<crate::system_settings::NativeState>>,
+        writes: Arc<AtomicU64>,
+    }
+    impl crate::system_settings::NativeSettings for FakeSystemNative {
+        fn read(&self) -> Result<crate::system_settings::NativeState, String> {
+            Ok(self.state.lock().unwrap().clone())
+        }
+        fn write(
+            &self,
+            _expected: &crate::system_settings::NativeState,
+            _setting: crate::system_settings::Setting,
+            _value: crate::system_settings::SettingValue,
+        ) -> Result<(), String> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    fn fake_system_native() -> (
+        Arc<dyn crate::system_settings::NativeSettings>,
+        Arc<AtomicU64>,
+    ) {
+        let writes = Arc::new(AtomicU64::new(0));
+        (
+            Arc::new(FakeSystemNative {
+                state: Arc::new(Mutex::new(crate::system_settings::NativeState {
+                    identity: crate::system_settings::NativeIdentity {
+                        platform: "macos".into(),
+                        os_version: "15.7.1".into(),
+                        user: "user".into(),
+                        machine: "machine".into(),
+                        device: "device".into(),
+                    },
+                    values: crate::system_settings::SystemValues {
+                        preferences: Default::default(),
+                        hardware: Default::default(),
+                        output_volume: Some(0.5),
+                        output_muted: Some(false),
+                    },
+                })),
+                writes: writes.clone(),
+            }),
+            writes,
+        )
+    }
     struct Fixture {
         runtime: Arc<Runtime>,
         directory: PathBuf,
@@ -1359,6 +1805,48 @@ mod tests {
             settings.automation.model_analysis = false;
             Self {
                 runtime: Runtime::new(directory.clone(), settings, Arc::new(|_| {})),
+                directory,
+            }
+        }
+        fn with_settings_writer(writer: SettingsWriter) -> Self {
+            let directory = std::env::temp_dir().join(format!(
+                "jitterbug-supervisor-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut settings = settings::Settings {
+                budget_usd: 0.0,
+                ..Default::default()
+            };
+            settings.automation.model_analysis = false;
+            Self {
+                runtime: Runtime::new_with_settings_writer(
+                    directory.clone(),
+                    settings,
+                    Arc::new(|_| {}),
+                    writer,
+                ),
+                directory,
+            }
+        }
+        fn with_system_native(native: Arc<dyn crate::system_settings::NativeSettings>) -> Self {
+            let directory = std::env::temp_dir().join(format!(
+                "jitterbug-supervisor-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut settings = settings::Settings {
+                budget_usd: 0.0,
+                ..Default::default()
+            };
+            settings.automation.model_analysis = false;
+            Self {
+                runtime: Runtime::new_with_system_native(
+                    directory.clone(),
+                    settings,
+                    Arc::new(|_| {}),
+                    native,
+                ),
                 directory,
             }
         }
@@ -1707,6 +2195,386 @@ mod tests {
             .unwrap_err()
             .contains("excluded"));
         assert_eq!(f.runtime.spending().unwrap().requests, 0);
+    }
+
+    #[tokio::test]
+    async fn confirmed_settings_restore_preserves_automation_and_spending() {
+        let f = Fixture::new();
+        {
+            let mut settings = f.runtime.settings.lock().unwrap();
+            settings.mode = settings::Mode::CloudOnly;
+            settings.budget_usd = 8.0;
+        }
+        let saved = f.runtime.set_settings_default().unwrap();
+        let mut changed = f.runtime.settings.lock().unwrap().clone();
+        changed.mode = settings::Mode::LocalOnly;
+        changed.budget_usd = 1.0;
+        f.runtime.save_settings(changed).unwrap();
+        let mut policy = f.runtime.policy().unwrap();
+        policy.enabled = false;
+        f.runtime.save_policy(policy).unwrap();
+        std::fs::write(
+            f.directory.join("spending.json"),
+            br#"{"reserved_usd":0.75,"reported_estimate_usd":0.25,"requests":4}"#,
+        )
+        .unwrap();
+        let spending_before = std::fs::read(f.directory.join("spending.json")).unwrap();
+
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        assert_eq!(preview.target.id, saved.id);
+        let restored = f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap();
+        assert_eq!(restored.mode, settings::Mode::CloudOnly);
+        assert_eq!(restored.budget_usd, 8.0);
+        assert!(!restored.automation.enabled);
+        assert_eq!(
+            std::fs::read(f.directory.join("spending.json")).unwrap(),
+            spending_before
+        );
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn post_commit_sync_failure_reconciles_restore_without_hiding_durability_error() {
+        let fail_sync = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer_fail_sync = fail_sync.clone();
+        let writer: SettingsWriter = Arc::new(move |path, settings| {
+            storage::write_with_parent_sync(path, settings, |_| {
+                if writer_fail_sync.load(Ordering::SeqCst) {
+                    Err("Cannot durably persist local application state.".into())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let f = Fixture::with_settings_writer(writer);
+        let mut target = f.runtime.settings.lock().unwrap().clone();
+        target.mode = settings::Mode::CloudOnly;
+        target.budget_usd = 8.0;
+        f.runtime.save_settings(target).unwrap();
+        let saved = f.runtime.set_settings_default().unwrap();
+        let mut changed = f.runtime.settings.lock().unwrap().clone();
+        changed.mode = settings::Mode::LocalOnly;
+        changed.budget_usd = 1.0;
+        f.runtime.save_settings(changed).unwrap();
+        let mut policy = f.runtime.policy().unwrap();
+        policy.enabled = false;
+        f.runtime.save_policy(policy).unwrap();
+        std::fs::write(
+            f.directory.join("spending.json"),
+            br#"{"reserved_usd":0.75,"reported_estimate_usd":0.25,"requests":4}"#,
+        )
+        .unwrap();
+        let spending_before = std::fs::read(f.directory.join("spending.json")).unwrap();
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+
+        fail_sync.store(true, Ordering::SeqCst);
+        let error = f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "Cannot durably persist local application state.");
+        let disk: settings::Settings = storage::read(&f.directory.join("settings.json")).unwrap();
+        let runtime = f.runtime.settings.lock().unwrap().clone();
+        assert_eq!(runtime.mode, settings::Mode::CloudOnly);
+        assert_eq!(runtime.budget_usd, 8.0);
+        assert!(!runtime.automation.enabled);
+        assert_eq!(runtime.mode, disk.mode);
+        assert_eq!(runtime.budget_usd, disk.budget_usd);
+        assert_eq!(runtime.automation.enabled, disk.automation.enabled);
+        assert_eq!(
+            std::fs::read(f.directory.join("spending.json")).unwrap(),
+            spending_before
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_checks_actual_file_instead_of_assuming_writer_persisted_target() {
+        let writer: SettingsWriter = Arc::new(|path, settings| {
+            let mut effective = settings.clone();
+            effective.budget_usd = 9.0;
+            storage::write_detailed(path, &effective)
+        });
+        let f = Fixture::with_settings_writer(writer);
+        let saved = f.runtime.set_settings_default().unwrap();
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("did not match"));
+        assert_eq!(f.runtime.settings.lock().unwrap().budget_usd, 9.0);
+    }
+
+    #[test]
+    fn post_commit_sync_failure_reconciles_provider_settings_save() {
+        let fail_sync = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer_fail_sync = fail_sync.clone();
+        let writer: SettingsWriter = Arc::new(move |path, settings| {
+            storage::write_with_parent_sync(path, settings, |_| {
+                if writer_fail_sync.load(Ordering::SeqCst) {
+                    Err("Cannot durably persist local application state.".into())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let f = Fixture::with_settings_writer(writer);
+        let mut changed = f.runtime.settings.lock().unwrap().clone();
+        changed.mode = settings::Mode::CloudOnly;
+        changed.budget_usd = 6.0;
+
+        fail_sync.store(true, Ordering::SeqCst);
+        let error = f.runtime.save_settings(changed).unwrap_err();
+
+        assert_eq!(error, "Cannot durably persist local application state.");
+        let disk: settings::Settings = storage::read(&f.directory.join("settings.json")).unwrap();
+        let runtime = f.runtime.settings.lock().unwrap().clone();
+        assert_eq!(runtime.mode, settings::Mode::CloudOnly);
+        assert_eq!(runtime.budget_usd, 6.0);
+        assert_eq!(runtime.mode, disk.mode);
+        assert_eq!(runtime.budget_usd, disk.budget_usd);
+    }
+
+    #[tokio::test]
+    async fn restore_cancel_and_optimistic_validation_prevent_stale_changes() {
+        let f = Fixture::new();
+        let saved = f.runtime.set_settings_default().unwrap();
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        f.runtime.cancel_settings_restore(&preview.token).unwrap();
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .is_err());
+
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        let mut changed = f.runtime.settings.lock().unwrap().clone();
+        changed.budget_usd = 3.0;
+        f.runtime.save_settings(changed).unwrap();
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("stale"));
+
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        f.runtime.set_settings_default().unwrap();
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("stale"));
+    }
+
+    #[tokio::test]
+    async fn restore_rechecks_inference_and_native_action_slots() {
+        let f = Fixture::new();
+        let saved = f.runtime.set_settings_default().unwrap();
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        let inference = f.runtime.inference.lock().await;
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("model request"));
+        drop(inference);
+
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        let action = f.runtime.action.lock().await;
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("action"));
+        drop(action);
+    }
+
+    #[tokio::test]
+    async fn system_capture_excludes_concurrent_native_actions() {
+        let (native, writes) = fake_system_native();
+        let f = Fixture::with_system_native(native);
+        let action = f.runtime.action.lock().await;
+        assert!(f.runtime.set_system_default().is_err());
+        assert!(f
+            .runtime
+            .system_history(None, 20)
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        drop(action);
+        assert!(f.runtime.set_system_default().is_ok());
+    }
+
+    #[tokio::test]
+    async fn system_rollback_uses_the_supervisor_action_lock() {
+        let (native, writes) = fake_system_native();
+        let f = Fixture::with_system_native(native);
+        let saved = f.runtime.set_system_default().unwrap();
+        let preview = f.runtime.preview_system_restore(&saved.id).unwrap();
+        let action = f.runtime.action.lock().await;
+
+        let error = f
+            .runtime
+            .confirm_system_restore(&preview.token)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("action is active"));
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        drop(action);
+    }
+
+    #[tokio::test]
+    async fn snapshot_lifecycle_blocks_only_active_work_without_losing_baselines() {
+        let (native, writes) = fake_system_native();
+        let f = Fixture::with_system_native(native);
+        let legacy = f.runtime.set_settings_default().unwrap();
+        let first = f.runtime.set_system_default().unwrap();
+        let second = f.runtime.set_system_default().unwrap();
+        let (id, _) = f
+            .runtime
+            .report(spike_capture(&f), &mut jitter::Tally::default())
+            .unwrap();
+        assert_eq!(f.runtime.case(id).unwrap().origin, Origin::Snapshot);
+        for stage in [
+            Stage::Detected,
+            Stage::Investigating,
+            Stage::Applying,
+            Stage::Verifying,
+        ] {
+            f.runtime.update(id, |case| case.stage = stage).unwrap();
+            assert!(f
+                .runtime
+                .set_system_default()
+                .unwrap_err()
+                .contains("active"));
+            let preview = f.runtime.preview_system_restore(&first.id).unwrap();
+            assert!(f
+                .runtime
+                .confirm_system_restore(&preview.token)
+                .await
+                .unwrap_err()
+                .contains("active"));
+            assert!(f
+                .runtime
+                .confirm_system_restore(&preview.token)
+                .await
+                .is_err());
+        }
+        for stage in [
+            Stage::AwaitingApproval,
+            Stage::Completed,
+            Stage::Resolved,
+            Stage::Blocked,
+            Stage::Dismissed,
+        ] {
+            f.runtime.update(id, |case| case.stage = stage).unwrap();
+            let preview = f.runtime.preview_system_restore(&first.id).unwrap();
+            f.runtime
+                .confirm_system_restore(&preview.token)
+                .await
+                .unwrap();
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        let history = f.runtime.system_history(None, 20).unwrap();
+        assert_eq!(history.entries.len(), 2);
+        assert!(history.entries.iter().any(|entry| entry.id == first.id));
+        assert!(history
+            .entries
+            .iter()
+            .any(|entry| entry.id == second.id && entry.current));
+        assert_eq!(
+            f.runtime.inspect_settings_default(&legacy.id).unwrap().id,
+            legacy.id
+        );
+        assert!(f.runtime.case(id).unwrap().jitter.is_some());
+    }
+
+    #[tokio::test]
+    async fn restore_tokens_expire_and_target_content_is_revalidated() {
+        let f = Fixture::new();
+        let saved = f.runtime.set_settings_default().unwrap();
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        f.runtime
+            .restore_previews
+            .lock()
+            .unwrap()
+            .entries
+            .front_mut()
+            .unwrap()
+            .expires_at = Instant::now() - Duration::from_secs(1);
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("expired"));
+
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        let path = f
+            .directory
+            .join("settings-default-history/snapshots")
+            .join(format!("{}.json", saved.id));
+        let changed =
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .replacen("muse-spark-1.3", "muse-spark-1.2", 1);
+        std::fs::write(path, changed).unwrap();
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("stale"));
+    }
+
+    #[test]
+    fn restore_preview_memory_is_bounded() {
+        let f = Fixture::new();
+        let saved = f.runtime.set_settings_default().unwrap();
+        let mut tokens = Vec::new();
+        for _ in 0..(MAX_RESTORE_PREVIEWS + 8) {
+            tokens.push(f.runtime.preview_settings_restore(&saved.id).unwrap().token);
+        }
+        assert_eq!(
+            f.runtime.restore_previews.lock().unwrap().entries.len(),
+            MAX_RESTORE_PREVIEWS
+        );
+        assert!(f.runtime.cancel_settings_restore(&tokens[0]).is_err());
+        assert!(f
+            .runtime
+            .cancel_settings_restore(tokens.last().unwrap())
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn active_automatic_investigation_blocks_restore() {
+        let f = Fixture::new();
+        let saved = f.runtime.set_settings_default().unwrap();
+        let preview = f.runtime.preview_settings_restore(&saved.id).unwrap();
+        f.incident();
+        assert!(f
+            .runtime
+            .confirm_settings_restore(&preview.token)
+            .await
+            .unwrap_err()
+            .contains("Automatic assistance"));
     }
 
     #[tokio::test]

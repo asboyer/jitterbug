@@ -25,8 +25,10 @@ pub mod pulse;
 pub mod queue;
 pub mod research;
 pub mod settings;
+pub mod settings_history;
 pub mod storage;
 pub mod supervisor;
+pub mod system_settings;
 pub mod types;
 pub mod workflow_summary;
 pub mod workflows;
@@ -433,21 +435,137 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
 }
 
 #[tauri::command]
-fn save_settings(
+fn save_settings(state: State<'_, AppState>, settings: settings::Settings) -> Result<(), String> {
+    state.save_settings(settings)
+}
+
+#[tauri::command]
+fn set_settings_default(
     state: State<'_, AppState>,
-    mut settings: settings::Settings,
-) -> Result<(), String> {
-    let _guard = state
-        .inference
-        .try_lock()
-        .map_err(|_| "Wait for the active model request before changing policy.")?;
-    let mut current = state.settings.lock().map_err(|_| "Settings unavailable.")?;
-    // Automation permissions have a separate command so an older provider form cannot overwrite them.
-    settings.automation = current.automation.clone();
-    settings.validate()?;
-    storage::write(&state.directory.join("settings.json"), &settings)?;
-    *current = settings;
-    Ok(())
+) -> Result<settings_history::SnapshotView, String> {
+    state.set_settings_default()
+}
+
+#[tauri::command]
+fn get_settings_default_history(
+    state: State<'_, AppState>,
+    cursor: Option<String>,
+    page_size: usize,
+) -> Result<settings_history::HistoryPage, String> {
+    state.settings_history(cursor.as_deref(), page_size)
+}
+
+#[tauri::command]
+fn inspect_settings_default(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<settings_history::SnapshotView, String> {
+    state.inspect_settings_default(&id)
+}
+
+#[tauri::command]
+fn preview_settings_restore(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<settings_history::RestorePreview, String> {
+    state.preview_settings_restore(&id)
+}
+
+#[tauri::command]
+fn cancel_settings_restore(state: State<'_, AppState>, token: String) -> Result<(), String> {
+    state.cancel_settings_restore(&token)
+}
+
+#[tauri::command]
+async fn confirm_settings_restore(
+    state: State<'_, AppState>,
+    token: String,
+    confirmed: bool,
+) -> Result<settings::Settings, String> {
+    if !confirmed {
+        let _ = state.cancel_settings_restore(&token);
+        return Err("Explicit restore confirmation is required.".into());
+    }
+    state.confirm_settings_restore(&token).await
+}
+
+#[tauri::command]
+fn get_system_capabilities(state: State<'_, AppState>) -> Vec<system_settings::Capability> {
+    state.system_capabilities()
+}
+
+#[tauri::command]
+fn open_system_settings_pane(pane: String) -> Result<(), String> {
+    let url = system_settings::settings_url(&pane)?;
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSURL};
+        let url = NSURL::URLWithString(&NSString::from_str(url)).ok_or("Invalid settings URL.")?;
+        if objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&url) {
+            Ok(())
+        } else {
+            Err(
+                "macOS could not open this System Settings pane. Open System Settings manually."
+                    .into(),
+            )
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err("System Settings destinations are supported on macOS only.".into())
+    }
+}
+
+#[tauri::command]
+fn set_system_default(
+    state: State<'_, AppState>,
+    groups: Option<Vec<String>>,
+) -> Result<system_settings::SnapshotView, String> {
+    state.set_system_default_selected(groups.as_deref())
+}
+
+#[tauri::command]
+fn get_system_default_history(
+    state: State<'_, AppState>,
+    cursor: Option<String>,
+    page_size: usize,
+) -> Result<system_settings::HistoryPage, String> {
+    state.system_history(cursor.as_deref(), page_size)
+}
+
+#[tauri::command]
+fn inspect_system_default(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<system_settings::SnapshotView, String> {
+    state.inspect_system_default(&id)
+}
+
+#[tauri::command]
+fn preview_system_restore(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<system_settings::RestorePreview, String> {
+    state.preview_system_restore(&id)
+}
+
+#[tauri::command]
+fn cancel_system_restore(state: State<'_, AppState>, token: String) -> Result<(), String> {
+    state.cancel_system_restore(&token)
+}
+
+#[tauri::command]
+async fn confirm_system_restore(
+    state: State<'_, AppState>,
+    token: String,
+    confirmed: bool,
+) -> Result<system_settings::RollbackResult, String> {
+    if !confirmed {
+        let _ = state.cancel_system_restore(&token);
+        return Err("Explicit rollback confirmation is required.".into());
+    }
+    state.confirm_system_restore(&token).await
 }
 
 #[tauri::command]
@@ -790,6 +908,20 @@ pub fn run() {
             desktop::hide_quick_view,
             get_bootstrap,
             save_settings,
+            set_settings_default,
+            get_settings_default_history,
+            inspect_settings_default,
+            preview_settings_restore,
+            cancel_settings_restore,
+            confirm_settings_restore,
+            get_system_capabilities,
+            open_system_settings_pane,
+            set_system_default,
+            get_system_default_history,
+            inspect_system_default,
+            preview_system_restore,
+            cancel_system_restore,
+            confirm_system_restore,
             save_credential,
             list_local_models,
             unload_model,
