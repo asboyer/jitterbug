@@ -1,9 +1,13 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import { memory, percent } from '../lib/format';
-    import WorkflowResources from './WorkflowResources.svelte';
+    import { currentTip, taskImpact } from '../lib/task-view';
     import HarnessBadge from './HarnessBadge.svelte';
-    import TaskNarrative from './TaskNarrative.svelte';
-    import type { Snapshot, Workload } from '../lib/types';
+    import TaskDetail from './TaskDetail.svelte';
+    import QueuePreview from './QueuePreview.svelte';
+    import InfoTip from './InfoTip.svelte';
+    import Icon from './Icon.svelte';
+    import type { Snapshot, Workload, AgentWorkflow } from '../lib/types';
     import type { ManagementSelection } from '../lib/manage';
 
     let {
@@ -11,498 +15,439 @@
         onselect,
         onusage,
         onmanage,
+        selectedId = $bindable(null),
     }: {
         snapshot: Snapshot;
+        selectedId?: string | null;
         onselect: (workload: Workload) => void;
         onusage: () => void;
         onmanage: (selection: ManagementSelection) => void;
     } = $props();
-
-    function time(value: number): string {
-        return new Date(value * 1000).toLocaleTimeString([], {
-            hour: 'numeric',
-            minute: '2-digit',
-        });
+    let preview = $state<AgentWorkflow | null>(null);
+    let opener: HTMLButtonElement | null = null;
+    let detailHeading: HTMLHeadingElement | undefined = $state();
+    const selected = $derived(snapshot.agent_workflows.find((task) => task.task_id === selectedId));
+    const active = $derived(snapshot.agent_workflows.filter((task) => task.status === 'active'));
+    const recent = $derived(snapshot.agent_workflows.filter((task) => task.status !== 'active'));
+    const status = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+    $effect(() => {
+        if (selectedId) void tick().then(() => detailHeading?.focus());
+    });
+    function manage(workflow: AgentWorkflow) {
+        if (snapshot.source === 'demo') preview = workflow;
+        else onmanage({ task_id: workflow.task_id });
     }
-
-    function status(value: string): string {
-        return value.charAt(0).toUpperCase() + value.slice(1);
+    function view(workflow: AgentWorkflow, event: MouseEvent) {
+        opener = event.currentTarget as HTMLButtonElement;
+        selectedId = workflow.task_id;
+    }
+    function back() {
+        const id = selectedId;
+        selectedId = null;
+        void tick().then(() => {
+            [...document.querySelectorAll<HTMLButtonElement>('[data-task-view]')]
+                .find((button) => button.dataset.taskView === id)
+                ?.focus();
+        });
     }
 </script>
 
-<section class="panel workflow-panel" aria-label="Agent workflows" data-tour="agent-tasks">
-    <div class="section-title">
-        <div>
-            <h2>Recent tasks <span class="task-count">{snapshot.agent_workflows.length}</span></h2>
-        </div>
-        <span class="muted"
-            >{snapshot.source === 'demo' ? 'Synthetic example' : 'On this device'}</span
-        >
-    </div>
-    {#each snapshot.agent_workflows as workflow (workflow.task_id)}
-        <!-- The user owns disclosure state. Never derive `open` from refreshing telemetry. -->
-        <details class="workflow">
-            <summary class="workflow-heading">
-                <HarnessBadge harness={workflow.agents[0]?.harness ?? ''} compact />
-                <div class="task-heading-copy">
-                    <h3>{workflow.task_title}</h3>
-                    <div class="task-meta">
-                        {#each [...new Set(workflow.agents.map((agent) => agent.harness))] as harness}<HarnessBadge
+<section aria-label="Agent workflows" data-tour="agent-tasks">
+    {#if selectedId}
+        <button class="text-button back" onclick={back}>← All agent tasks</button>
+        {#if selected}
+            <div class="task-detail-heading">
+                <div>
+                    <div class="harnesses">
+                        {#each [...new Set(selected.agents.map((agent) => agent.harness))] as harness}<HarnessBadge
                                 {harness}
                             />{/each}
-                        <span
-                            >{workflow.agents.length}
-                            {workflow.agents.length === 1 ? 'session' : 'sessions'}</span
-                        >
                     </div>
+                    <h2 bind:this={detailHeading} tabindex="-1">{selected.task_title}</h2>
                 </div>
                 <span
-                    class:active={workflow.status === 'active'}
-                    class:completed={workflow.status === 'completed'}
-                    class:failed={workflow.status === 'failed' || workflow.status === 'interrupted'}
                     class="run-status"
+                    class:active={selected.status === 'active'}
+                    class:completed={selected.status === 'completed'}
+                    >{status(selected.status)}</span
                 >
-                    {status(workflow.status)}
-                </span>
-                <span class="workflow-chevron" aria-hidden="true">›</span>
-            </summary>
-            <div class="workflow-body">
-                <TaskNarrative {workflow} {onusage} demo={snapshot.source === 'demo'} />
-                <details class="resource-detail">
-                    <summary
-                        ><span>Resource use</span><span class="muted"
-                            >{workflow.observed_samples
-                                ? `${workflow.status === 'active' ? 'Now' : 'Sampled peak'} · ${percent(workflow.status === 'active' ? workflow.cpu_percent : workflow.peak_cpu_percent)} CPU · ${memory(workflow.status === 'active' ? workflow.memory_bytes : workflow.peak_memory_bytes)}`
-                                : 'Not sampled'}</span
-                        ></summary
-                    >
-                    <WorkflowResources {workflow} interval={snapshot.interval_ms} />
-                </details>
-                <div class="workflow-actions">
-                    <button
-                        disabled={snapshot.source === 'demo'}
-                        onclick={() => onmanage({ task_id: workflow.task_id })}
-                        >Manage this workload</button
-                    >
-                    <span class="muted">Let heavy checks take turns.</span>
+            </div>
+            <section class="panel" aria-label="Task detail">
+                {#key selected.task_id}<TaskDetail
+                        workflow={selected}
+                        {snapshot}
+                        {onselect}
+                        {onusage}
+                        onmanage={() => manage(selected)}
+                    />{/key}
+            </section>
+        {:else}<p>
+                This task is no longer in the recent inventory. Return to the task list for current
+                activity.
+            </p>{/if}
+    {:else}
+        {#each [{ label: 'Working now', tasks: active }, { label: 'Recent activity', tasks: recent }] as group}
+            {#if group.tasks.length}
+                <div class="group-heading">
+                    <h2>{group.label}</h2>
+                    <span>{group.tasks.length}</span>
                 </div>
-                <details class="technical-detail">
-                    <summary>Sessions & evidence · {workflow.agents.length}</summary>
-                    <p class="task-id">Task ID: {workflow.task_id}</p>
-                    <div class="agent-list">
-                        {#each workflow.agents as agent (agent.run_id)}
-                            <details class="agent">
-                                <summary>
-                                    <HarnessBadge harness={agent.harness} compact />
-                                    <span class="agent-name"
-                                        ><strong>{agent.agent}</strong><small
-                                            class:completed={agent.status === 'completed'}
-                                            >{status(agent.status)}</small
-                                        ></span
+                <div class="task-cards">
+                    {#each group.tasks as workflow (workflow.task_id)}
+                        {@const tip = currentTip(workflow)}
+                        {@const running = workflow.status === 'active'}
+                        {#if running}<article
+                                class="panel task-card"
+                                class:finished={!running}
+                                aria-label={workflow.task_title}
+                            >
+                                <div class="task-topline">
+                                    <div class="harnesses">
+                                        {#each [...new Set(workflow.agents.map((agent) => agent.harness))] as harness}<HarnessBadge
+                                                {harness}
+                                            />{/each}
+                                    </div>
+                                    <span
+                                        class="run-status"
+                                        class:active={running}
+                                        class:completed={workflow.status === 'completed'}
+                                        class:failed={['failed', 'interrupted'].includes(
+                                            workflow.status
+                                        )}>{status(workflow.status)}</span
                                     >
-                                    <span class="agent-usage">
-                                        {#if agent.status === 'active'}
-                                            {agent.observed_samples
-                                                ? percent(agent.cpu_percent)
-                                                : 'Sampling…'} · {memory(agent.memory_bytes)}
-                                        {:else}
-                                            {agent.peak_process_count === 0
-                                                ? 'Not sampled'
-                                                : `Peak ${memory(agent.peak_memory_bytes)}`}
-                                        {/if}
-                                    </span>
-                                </summary>
-                                <div class="agent-detail">
-                                    {#if agent.context.request}
-                                        <p><strong>Assignment:</strong> {agent.context.request}</p>
-                                        <p class="muted">
-                                            {agent.context.source === 'hook'
-                                                ? 'Harness request excerpt'
-                                                : 'Provided task description'} · saved {time(
-                                                agent.context.updated_at
-                                            )}
-                                        </p>
-                                    {/if}
-                                    {#if agent.context.latest_request}
-                                        <p>
-                                            <strong>Latest follow-up:</strong>
-                                            {agent.context.latest_request}
-                                        </p>
-                                    {/if}
-                                    {#if agent.context.last_activity_at}
-                                        <p class="muted">
-                                            Last reported activity: {agent.context.last_activity} · {time(
-                                                agent.context.last_activity_at
-                                            )}. This may not reflect work still running.
-                                        </p>
-                                    {/if}
-                                    <dl>
-                                        <div>
-                                            <dt>Worktree</dt>
-                                            <dd class="path">{agent.worktree}</dd>
-                                        </div>
-                                        <div>
-                                            <dt>Launch identity</dt>
-                                            <dd>
-                                                Wrapper PID {agent.root_pid} · started {time(
-                                                    agent.root_start_time
-                                                )}
-                                            </dd>
-                                        </div>
-                                        <div>
-                                            <dt>Observed peak</dt>
-                                            <dd>
-                                                {agent.observed_samples === 0
-                                                    ? 'Not sampled'
-                                                    : `${percent(agent.peak_cpu_percent)} sampled CPU`}
-                                                ·
-                                                {agent.peak_process_count
-                                                    ? memory(agent.peak_memory_bytes)
-                                                    : 'memory not sampled'} · {agent.peak_process_count}
-                                                processes
-                                            </dd>
-                                        </div>
-                                        <div>
-                                            <dt>Measurement</dt>
-                                            <dd>
-                                                {agent.observed_samples} samples{agent.exit_code !==
-                                                null
-                                                    ? ` · exit ${agent.exit_code}`
-                                                    : ''}
-                                            </dd>
-                                        </div>
-                                    </dl>
-                                    {#if agent.status === 'active' && agent.roles.length > 0}
-                                        <div class="roles" aria-label="Observed process roles">
-                                            {#each agent.roles as role}
-                                                <span
-                                                    >{role.role} × {role.process_count} · {memory(
-                                                        role.memory_bytes
-                                                    )}</span
+                                </div>
+                                <h3>{workflow.task_title}</h3>
+                                {#if running || workflow.observed_samples}<div class="impact-row">
+                                        <Icon name="activity" size={17} />
+                                        <p>{taskImpact(workflow)}</p>
+                                        <InfoTip
+                                            label={`How resource use was attributed for ${workflow.task_title}`}
+                                            ><p>
+                                                Process roles are inferred from names and commands.
+                                                Ownership uses the observed parent chain. This
+                                                describes measured work, not a proven cause of
+                                                slowness.
+                                            </p></InfoTip
+                                        >
+                                    </div>
+                                    {#if workflow.observed_samples}<div
+                                            class="task-readings"
+                                            aria-label={running
+                                                ? 'Current task resources'
+                                                : 'Retained task measurements'}
+                                        >
+                                            <span
+                                                ><strong
+                                                    >{workflow.observed_samples
+                                                        ? percent(
+                                                              running
+                                                                  ? workflow.cpu_percent
+                                                                  : workflow.peak_cpu_percent
+                                                          )
+                                                        : '—'}</strong
                                                 >
-                                            {/each}
-                                        </div>
-                                    {/if}
-                                    {#if agent.process_ids.length > 0}
-                                        <p class="muted">
-                                            Observed PIDs: {agent.process_ids.join(', ')}
-                                        </p>
-                                    {/if}
-                                    <div class="workload-links">
-                                        {#each snapshot.workloads.filter( (workload) => agent.workload_ids.includes(workload.id) ) as workload (workload.id)}
-                                            <button onclick={() => onselect(workload)}
-                                                >Inspect {workload.label} ↗</button
+                                                {running ? 'CPU now' : 'sampled CPU peak'}</span
                                             >
-                                        {/each}
+                                            <span
+                                                ><strong
+                                                    >{workflow.peak_process_count
+                                                        ? memory(
+                                                              running
+                                                                  ? workflow.memory_bytes
+                                                                  : workflow.peak_memory_bytes
+                                                          )
+                                                        : '—'}</strong
+                                                >
+                                                {running ? 'memory' : 'peak memory'}</span
+                                            >
+                                            <span
+                                                >{workflow.agents.length}
+                                                {workflow.agents.length === 1
+                                                    ? 'session'
+                                                    : 'sessions'}</span
+                                            >
+                                        </div>
+                                    {/if}{:else}<p class="no-measurements">
+                                        No resource samples available.
+                                    </p>{/if}
+                                {#if tip}
+                                    <div class="task-tip">
+                                        <Icon name="bulb" size={18} />
+                                        <div>
+                                            <strong
+                                                >{tip.id.startsWith('overlapping-')
+                                                    ? 'Let heavy checks take turns'
+                                                    : tip.title}</strong
+                                            >
+                                            <p>
+                                                {tip.id.startsWith('overlapping-')
+                                                    ? 'Set up a shared queue for future test and build runs.'
+                                                    : tip.recommendation}
+                                            </p>
+                                        </div>
+                                    </div>
+                                {/if}
+                                <div class="task-actions">
+                                    {#if running}<button
+                                            class:primary={!!tip}
+                                            onclick={(event) => {
+                                                opener = event.currentTarget;
+                                                manage(workflow);
+                                            }}
+                                            >{snapshot.source === 'demo'
+                                                ? 'Preview managed checks'
+                                                : 'Set up managed checks'}</button
+                                        >{/if}
+                                    <button
+                                        class="text-button"
+                                        data-task-view={workflow.task_id}
+                                        onclick={(event) => view(workflow, event)}
+                                        >View task <span aria-hidden="true">↗</span></button
+                                    >
+                                </div>
+                            </article>
+                        {:else}
+                            <article class="panel recent-task" aria-label={workflow.task_title}>
+                                <div class="recent-copy">
+                                    <h3>{workflow.task_title}</h3>
+                                    <div class="recent-meta">
+                                        <div class="harnesses">
+                                            {#each [...new Set(workflow.agents.map((agent) => agent.harness))] as harness}<HarnessBadge
+                                                    {harness}
+                                                />{/each}
+                                        </div>
+                                        <p class="retained">
+                                            {workflow.observed_samples
+                                                ? `Sampled peak · ${percent(workflow.peak_cpu_percent)} CPU · ${memory(workflow.peak_memory_bytes)}`
+                                                : 'No resource samples available.'}
+                                        </p>
                                     </div>
                                 </div>
-                            </details>
-                        {/each}
-                    </div>
-                    {#if workflow.suggestions.length > 0}
-                        <div class="workflow-advice">
-                            <h4>Ways to reduce resource use <span>Rule-based suggestions</span></h4>
-                            {#each workflow.suggestions as suggestion (suggestion.id)}
-                                <details class="suggestion">
-                                    <summary
-                                        ><strong>{suggestion.title}</strong><small
-                                            >{suggestion.current
-                                                ? 'Observed now'
-                                                : `Observed at ${time(suggestion.observed_at)}`}</small
-                                        ></summary
-                                    >
-                                    <p>{suggestion.recommendation}</p>
-                                    <ul>
-                                        {#each suggestion.evidence as evidence}<li>
-                                                {evidence}
-                                            </li>{/each}
-                                    </ul>
-                                    <p class="muted">{suggestion.uncertainty}</p>
-                                </details>
-                            {/each}
-                        </div>
-                    {/if}
-                    <details class="workflow-evidence">
-                        <summary>Attribution & measurement limits</summary>
-                        <ul>
-                            {#each workflow.evidence as evidence}<li>{evidence}</li>{/each}
-                        </ul>
-                        <p>
-                            Task titles come from the launcher; request excerpts come from opted-in
-                            harness hooks or provided descriptions. Ownership requires a matching
-                            process ID, start time, and observed parent chain. Working directories
-                            alone are not proof.
-                        </p>
-                        <p>
-                            Peaks are sampled every {snapshot.interval_ms / 1000} seconds and may miss
-                            short bursts. Shared memory may be counted more than once. Completed measurements
-                            remain in memory for this app session. Suggestions do not change your agents
-                            or tests.
-                        </p>
-                    </details>
-                </details>
+                                <span
+                                    class="run-status"
+                                    class:completed={workflow.status === 'completed'}
+                                    class:failed={['failed', 'interrupted'].includes(
+                                        workflow.status
+                                    )}>{status(workflow.status)}</span
+                                >
+                                <button
+                                    class="text-button"
+                                    data-task-view={workflow.task_id}
+                                    onclick={(event) => view(workflow, event)}
+                                    >View task <span aria-hidden="true">↗</span></button
+                                >
+                            </article>
+                        {/if}
+                    {/each}
+                </div>
+            {/if}
+        {/each}
+        {#if !snapshot.agent_workflows.length}
+            <div class="panel empty-tasks">
+                <Icon name="code" size={28} />
+                <h2>See the work behind your coding tools</h2>
+                <p>
+                    Connect a harness to see each task, what uses resources, and which checks could
+                    take turns. Your other apps are already in Workloads.
+                </p>
+                <button onclick={() => onmanage({})}>Connect a workload</button>
             </div>
-        </details>
-    {:else}
-        <p class="workflow-empty">
-            No agent tasks observed yet. Connected coding tools can share task context here.
-            Workloads still shows apps and processes without a harness connection.
-        </p>
-    {/each}
+        {/if}
+    {/if}
 </section>
+{#if preview}<QueuePreview
+        workflow={preview}
+        onclose={() => {
+            preview = null;
+            void tick().then(() => {
+                if (opener?.isConnected) opener.focus();
+                else document.querySelector<HTMLButtonElement>('.workflow-actions button')?.focus();
+            });
+        }}
+    />{/if}
 
 <style>
-    .technical-detail {
-        margin: 12px 0 0;
-    }
-    .technical-detail > summary {
-        cursor: pointer;
-        color: var(--muted);
-        font-size: 11px;
-    }
-    .technical-detail[open] > summary {
-        margin-bottom: 12px;
-    }
-    .workflow-panel {
-        margin-bottom: 20px;
-    }
-    .workflow-panel > .section-title {
-        padding: 12px 16px;
-        margin-bottom: 0;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-    .workflow {
-        padding: 16px;
-        border-top: 1px solid var(--border);
-    }
-    .workflow-heading {
-        color: var(--text);
+    .recent-task {
         display: flex;
         align-items: center;
-        padding: 0;
-        list-style: none;
-        cursor: pointer;
-        justify-content: space-between;
-        gap: 14px;
+        gap: 16px;
+        padding: 16px 20px;
     }
-    .workflow-heading::-webkit-details-marker {
-        display: none;
-    }
-    .task-heading-copy {
+    .recent-copy {
         flex: 1;
         min-width: 0;
     }
-    .task-meta {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-        margin-top: 8px;
-        font-size: 11px;
-        color: var(--muted);
-    }
-    .workflow-body {
-        padding: 6px 0 0 52px;
-    }
-    .workflow-actions {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 12px;
-        padding: 18px 0;
-        margin-top: 12px;
-        border-top: 1px solid var(--border);
-    }
-    .workflow-actions > span {
-        font-size: 11px;
-    }
-    .resource-detail {
-        border-top: 1px solid var(--border);
-        margin-top: 16px;
-        padding-top: 12px;
-    }
-    .resource-detail > summary {
-        cursor: pointer;
-        font-size: 11px;
-    }
-    .resource-detail > summary > span:last-child {
-        margin-left: 12px;
-    }
-    @media (max-width: 850px) {
-        .workflow-body {
-            padding-left: 0;
-        }
-    }
-    .workflow-chevron {
-        font-size: 18px;
-        color: var(--muted);
-    }
-    .workflow[open] > .workflow-heading .workflow-chevron {
-        transform: rotate(90deg);
-    }
-    .task-count {
-        font-size: 10px;
-        font-weight: 500;
-        color: var(--muted);
-        margin-left: 6px;
-    }
-    .task-id {
-        font-size: 11px;
-        font-weight: 650;
-        color: var(--muted);
-    }
-    h3 {
-        margin: 0;
+    .recent-copy h3 {
         font-size: 14px;
-        line-height: 1.4;
+        margin: 0 0 9px;
     }
-    .run-status {
-        border-radius: 5px;
-        background: var(--hover);
-        padding: 3px 7px;
-        font-size: 11px;
+    .retained {
+        color: var(--muted);
+        font-size: 10px;
+        margin: 0;
+    }
+    .recent-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+    }
+    .recent-task > button {
         white-space: nowrap;
     }
-    .run-status.active {
-        background: var(--accent-soft);
-        color: var(--accent);
+    @media (max-width: 850px) {
+        .recent-task {
+            flex-wrap: wrap;
+        }
+        .recent-copy {
+            flex-basis: 65%;
+        }
     }
-    .run-status.completed {
-        background: var(--success-soft);
-        color: var(--success);
+    .finished {
+        padding-top: 16px;
+        padding-bottom: 16px;
     }
-    .run-status.failed {
-        background: var(--warning-soft);
-        color: var(--warning);
+    .no-measurements {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 0;
     }
-    .agent-name small.completed {
-        color: var(--success);
+    .group-heading {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin: 6px 0 12px;
     }
-    .agent-list {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        overflow: hidden;
+    .group-heading h2 {
+        font-size: 13px;
+        margin: 0;
     }
-    .agent + .agent {
-        border-top: 1px solid var(--border);
+    .group-heading > span {
+        font-size: 11px;
+        color: var(--muted);
     }
-    .agent > summary {
+    .task-cards {
+        display: grid;
+        gap: 14px;
+        margin-bottom: 26px;
+    }
+    .task-card {
+        padding: 20px;
+    }
+    .task-topline,
+    .task-detail-heading {
         display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 12px;
-        padding: 12px;
-        cursor: pointer;
     }
-    .agent > summary::before {
-        content: '›';
-        color: var(--muted);
-    }
-    .agent[open] > summary::before {
-        transform: rotate(90deg);
-    }
-    .agent-name {
+    .harnesses {
         display: flex;
-        flex: 1;
-        flex-direction: column;
-        gap: 3px;
+        gap: 14px;
+        flex-wrap: wrap;
     }
-    .agent-name small,
-    .agent-usage {
+    h3 {
+        font-size: 17px;
+        line-height: 1.4;
+        margin: 14px 0 12px;
+    }
+    .impact-row {
+        display: flex;
+        gap: 9px;
+        align-items: center;
         color: var(--muted);
+    }
+    .impact-row p {
+        flex: 1;
+        font-size: 13px;
+        margin: 0;
+        line-height: 1.5;
+    }
+    .task-readings {
+        display: flex;
+        gap: 12px 22px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+        font-size: 11px;
+        color: var(--muted);
+    }
+    .task-readings strong {
+        font-size: 13px;
+        color: var(--text);
+        font-weight: 550;
         font-variant-numeric: tabular-nums;
     }
-    .agent-detail {
-        padding: 0 14px 14px 28px;
+    .task-tip {
+        margin-top: 18px;
+        padding: 14px;
+        display: flex;
+        align-items: start;
+        gap: 10px;
+        background: var(--accent-soft);
+        border-radius: 9px;
     }
-    dl {
-        margin: 0;
+    .task-tip > :global(svg) {
+        color: var(--accent);
+        flex-shrink: 0;
+        margin-top: 1px;
     }
-    dl > div {
-        display: grid;
-        grid-template-columns: 110px 1fr;
-        gap: 12px;
-        margin: 8px 0;
+    .task-tip strong {
+        font-size: 13px;
+        font-weight: 550;
     }
-    dt {
+    .task-tip p {
+        margin: 5px 0 0;
+        font-size: 12px;
+        line-height: 1.5;
         color: var(--muted);
     }
-    dd {
-        margin: 0;
-        min-width: 0;
-    }
-    .path {
-        overflow-wrap: anywhere;
-    }
-    .roles,
-    .workload-links {
+    .task-actions {
         display: flex;
-        gap: 6px;
         flex-wrap: wrap;
-        margin-top: 10px;
-    }
-    .roles span {
-        font-size: 11px;
-        background: var(--hover);
-        border-radius: 5px;
-        padding: 4px 7px;
-    }
-    .workflow-advice {
+        align-items: center;
+        gap: 14px;
         margin-top: 18px;
     }
-    h4 {
-        font-size: 12px;
-        margin: 0 0 6px;
-    }
-    h4 span {
-        margin-left: 8px;
+    .run-status {
+        font-size: 10px;
+        padding: 4px 7px;
+        border-radius: 5px;
+        background: var(--hover);
         color: var(--muted);
-        font-size: 11px;
-        font-weight: 400;
     }
-    .suggestion {
-        padding: 10px 0;
-        border-bottom: 1px solid var(--border);
+    .run-status.active {
+        color: var(--accent);
+        background: var(--accent-soft);
     }
-    .suggestion summary {
-        cursor: pointer;
+    .run-status.completed {
+        color: var(--success);
+        background: var(--success-soft);
     }
-    .suggestion summary small {
+    .run-status.failed {
+        color: var(--warning);
+        background: var(--warning-soft);
+    }
+    .back {
+        margin-bottom: 20px;
+    }
+    .task-detail-heading {
+        margin-bottom: 20px;
+        align-items: start;
+    }
+    .task-detail-heading h2 {
+        font-size: 20px;
+        margin: 12px 0 0;
+    }
+    .empty-tasks {
+        padding: 28px;
+    }
+    .empty-tasks h2 {
+        font-size: 18px;
+    }
+    .empty-tasks p {
+        max-width: 440px;
         color: var(--muted);
-        margin-left: 8px;
-    }
-    .suggestion p,
-    .suggestion ul,
-    .workflow-evidence p,
-    .workflow-evidence ul {
         line-height: 1.6;
-        margin: 8px 0;
-    }
-    .suggestion ul,
-    .workflow-evidence ul {
-        padding-left: 18px;
-    }
-    .workflow-evidence {
-        margin-top: 15px;
-        color: var(--muted);
-        font-size: 11px;
-    }
-    .workflow-evidence summary {
-        cursor: pointer;
-    }
-    .workflow-empty {
-        margin: 0;
-        padding: 6px 18px 18px;
-        line-height: 1.6;
-        color: var(--muted);
-    }
-    @media (max-width: 720px) {
-        .agent-usage {
-            font-size: 11px;
-        }
-        h4 span {
-            display: block;
-            margin: 0;
-        }
+        margin-bottom: 20px;
     }
 </style>

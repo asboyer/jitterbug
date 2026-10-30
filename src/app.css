@@ -1279,3 +1279,32 @@ summary:focus-visible {
 .tour-invitation > .icon-button {
     margin-left: auto;
 }
+
+.demo-story {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 20px;
+    margin: 0 0 24px;
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+.demo-story > div {
+    flex: 1;
+    min-width: 180px;
+}
+.demo-story h2 {
+    margin: 4px 0 6px;
+    font-size: 17px;
+}
+.demo-story p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+}
+.story-mark {
+    color: var(--accent);
+}

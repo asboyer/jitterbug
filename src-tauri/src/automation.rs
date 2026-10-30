@@ -389,6 +389,73 @@ impl Monitor {
     }
 }
 
+/// Exercise the real sustained-trigger monitor with three small in-memory fixtures. This
+/// deliberately has no Runtime, collector, provider, storage, or process-action capability.
+/// The caller only publishes the returned demo case; it must never dispatch Runtime::run.
+pub fn simulated_case(detected_at: u64) -> Result<Case, String> {
+    let detected_at = detected_at.max(11);
+    let mut monitor = Monitor::default();
+    let policy = Policy::default();
+    for at in [detected_at - 10, detected_at - 5, detected_at] {
+        let snapshot = simulation_sample(at, true);
+        if let Some(trigger) = monitor.observe(&snapshot, &policy, false) {
+            let mut case = Case::new(detected_at, &snapshot, trigger);
+            case.trigger.title = format!("Demo: {}", case.trigger.title);
+            if let Some(step) = case.steps.first_mut() {
+                step.at = detected_at;
+                step.message = "Demo: three synthetic samples, spaced five seconds apart, passed through the real automatic-assistance monitor. No host load, model call, or process action was generated.".into();
+            }
+            return Ok(case);
+        }
+    }
+    Err("The synthetic samples did not produce the expected sustained alert.".into())
+}
+
+fn simulation_sample(at: u64, busy: bool) -> Snapshot {
+    let app_cpu = if busy { 72.0 } else { 0.5 };
+    Snapshot {
+        source: "demo".into(),
+        captured_at: at,
+        sample_ready: true,
+        interval_ms: 5000,
+        logical_cpus: 8,
+        cpu_percent: if busy { 91.0 } else { 5.0 },
+        memory_total_bytes: 16 << 30,
+        memory_available_bytes: if busy {
+            (1.4 * (1_u64 << 30) as f64) as u64
+        } else {
+            8 << 30
+        },
+        process_count: 1,
+        workloads: vec![Workload {
+            id: "demo-project".into(),
+            label: "sample-web-app".into(),
+            category: "project".into(),
+            description: "Synthetic development workload for the automatic-assistance demo.".into(),
+            attribution: "Synthetic fixture; no real process was inspected.".into(),
+            cpu_percent: app_cpu,
+            memory_bytes: (2.4 * (1_u64 << 30) as f64) as u64,
+            process_count: 1,
+            ..Default::default()
+        }],
+        processes: vec![ProcessRecord {
+            pid: 9000,
+            start_time: 1,
+            name: "node".into(),
+            workload_id: "demo-project".into(),
+            description: "Synthetic process; this PID is never resolved on the host.".into(),
+            evidence: vec!["Generated fixture, not live telemetry.".into()],
+            cpu_percent: app_cpu,
+            memory_bytes: (2.4 * (1_u64 << 30) as f64) as u64,
+            // No allowed actions: even a future consumer must not treat this as executable.
+            actionable: false,
+            actions: vec![],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
 pub fn still_present(s: &Snapshot, policy: &Policy, trigger: &Trigger) -> bool {
     if let Some(w) = trigger
         .target
@@ -486,6 +553,109 @@ pub(crate) mod tests {
     fn tick(m: &mut Monitor, at: u64, cpu: f32, p: &Policy) -> Option<Trigger> {
         m.observe(&sample(at, cpu), p, false)
     }
+
+    #[test]
+    fn simulation_healthy_samples_and_transient_spikes_do_not_alert() {
+        let mut monitor = Monitor::default();
+        let policy = Policy::default();
+        for at in (100..=150).step_by(5) {
+            assert!(monitor
+                .observe(&simulation_sample(at, false), &policy, false)
+                .is_none());
+        }
+        for (at, busy) in [
+            (155, true),
+            (160, true),
+            (165, false),
+            (170, true),
+            (175, false),
+        ] {
+            assert!(monitor
+                .observe(&simulation_sample(at, busy), &policy, false)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn simulation_requires_three_sustained_samples_and_returns_detected_demo_case() {
+        let mut monitor = Monitor::default();
+        let policy = Policy::default();
+        assert!(monitor
+            .observe(&simulation_sample(100, true), &policy, false)
+            .is_none());
+        assert!(monitor
+            .observe(&simulation_sample(105, true), &policy, false)
+            .is_none());
+        assert!(monitor
+            .observe(&simulation_sample(110, true), &policy, false)
+            .is_some());
+        let case = simulated_case(110).unwrap();
+        assert_eq!(case.source, "demo");
+        assert_eq!(case.stage, Stage::Detected);
+        assert_eq!(case.detected_at, 110);
+        assert_eq!(case.trigger.kind, Kind::SystemCpu);
+        let target = case.trigger.target.unwrap();
+        assert_eq!(target.workload_id, "demo-project");
+        assert_eq!(target.label, "sample-web-app");
+        assert_eq!(case.steps.len(), 1);
+        assert_eq!(case.steps[0].stage, Stage::Detected);
+        assert!(case.proposal.is_none());
+        assert!(case.diagnosis.is_none());
+        assert!(case.report.is_none());
+        assert!(case.verification.is_none());
+        assert!(!case.automatic);
+    }
+
+    #[test]
+    fn simulation_monitor_cooldown_suppresses_duplicate_alerts() {
+        let mut monitor = Monitor::default();
+        let policy = Policy::default();
+        for at in [100, 105] {
+            assert!(monitor
+                .observe(&simulation_sample(at, true), &policy, false)
+                .is_none());
+        }
+        assert!(monitor
+            .observe(&simulation_sample(110, true), &policy, false)
+            .is_some());
+        // Recovery clears the fired latch, but the same trigger still has its cooldown.
+        for at in [115, 120, 125] {
+            assert!(monitor
+                .observe(&simulation_sample(at, false), &policy, false)
+                .is_none());
+        }
+        for at in (130..410).step_by(5) {
+            assert!(monitor
+                .observe(&simulation_sample(at, true), &policy, false)
+                .is_none());
+        }
+        assert!(monitor
+            .observe(&simulation_sample(410, true), &policy, false)
+            .is_some());
+    }
+
+    #[test]
+    fn simulation_only_contains_synthetic_non_actionable_evidence() {
+        let case = simulated_case(110).unwrap();
+        let evidence = case.evidence.unwrap();
+        assert_eq!(evidence.processes.len(), 1);
+        let process = &evidence.processes[0];
+        assert_eq!((process.pid, process.start_time), (9000, 1));
+        assert_eq!(process.name, "node");
+        assert!(!process.actionable);
+        assert!(process.actions.is_empty());
+        assert!(process.executable.is_none());
+        assert!(process.working_directory.is_none());
+        let snapshot = simulation_sample(110, true);
+        assert_eq!(snapshot.source, "demo");
+        assert!(proposal(&snapshot, &case.trigger).is_none());
+        // Independent calls are deterministic fixtures, not mutations of a live monitor.
+        assert_eq!(
+            serde_json::to_value(simulated_case(110).unwrap()).unwrap(),
+            serde_json::to_value(simulated_case(110).unwrap()).unwrap()
+        );
+    }
+
     #[test]
     fn sustained_unique_samples_and_recovery_are_required() {
         let p = Policy {

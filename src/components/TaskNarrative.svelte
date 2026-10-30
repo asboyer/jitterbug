@@ -187,7 +187,7 @@
                 <small class="muted">Local rules · suggestion only · no action applied</small>
             </div>
         </details>
-    {:else}
+    {:else if workflow.status === 'active' && workflow.observed_samples > 0}
         <div class="no-tip">
             <Icon name="bulb" size={14} /><span
                 >{workflow.observed_samples

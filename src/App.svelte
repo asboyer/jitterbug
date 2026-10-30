@@ -4,6 +4,7 @@
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import AutomationPanel from './components/AutomationPanel.svelte';
     import GuidedTour from './components/GuidedTour.svelte';
+    import ProactiveNotice from './components/ProactiveNotice.svelte';
     import { tourPreference, tourSteps } from './lib/tour';
     import Icon from './components/Icon.svelte';
     import Dashboard from './components/Dashboard.svelte';
@@ -39,6 +40,7 @@
         demo: boolean;
         demoPressure: boolean;
         selectedId: string | null;
+        agentTaskId: string | null;
         selectedContext: Workload | null;
         chatOpen: boolean;
         automationOpen: boolean;
@@ -72,12 +74,16 @@
             demo,
             demoPressure,
             selectedId,
+            agentTaskId,
             selectedContext,
             chatOpen,
             automationOpen,
             automaticId,
             alert,
         };
+        stopDemoSequence();
+        notice = null;
+        demoCases = demoIncidents();
         demo = true;
         demoPressure = false;
         alert = null;
@@ -92,6 +98,7 @@
                 demo,
                 demoPressure,
                 selectedId,
+                agentTaskId,
                 selectedContext,
                 chatOpen,
                 automationOpen,
@@ -113,7 +120,97 @@
         { id: 'settings', label: 'Settings', icon: 'settings' },
     ] as const;
     let demoTick = $state(0);
-    const demoCases = demoIncidents();
+    let demoCases = $state(demoIncidents());
+    let agentTaskId = $state<string | null>(null);
+    let notice = $state<{ id: number; source: string } | null>(null);
+    let announced: string[] = [];
+    let demoTimers: ReturnType<typeof setTimeout>[] = [];
+    const noticedCase = $derived.by(() =>
+        notice
+            ? (notice.source === 'demo' ? demoCases : cases).find((item) => item.id === notice?.id)
+            : undefined
+    );
+    const noticedWorkflow = $derived.by(() =>
+        snapshot?.agent_workflows.find(
+            (workflow) =>
+                workflow.status === 'active' &&
+                workflow.agents.some((agent) =>
+                    agent.workload_ids.includes(noticedCase?.trigger.target?.workload_id ?? '')
+                )
+        )
+    );
+    function receiveCase(incident: AutomationCase) {
+        if (incident.source === 'demo') {
+            demoCases = [incident, ...demoCases.filter((item) => item.id !== incident.id)].slice(
+                0,
+                12
+            );
+        } else {
+            cases = [incident, ...cases.filter((item) => item.id !== incident.id)].slice(0, 12);
+        }
+        const key = `${incident.source}:${incident.id}`;
+        if (incident.stage === 'detected' && !announced.includes(key)) {
+            announced = [...announced, key].slice(-24);
+            if ((incident.source === 'demo') === demo)
+                notice = { id: incident.id, source: incident.source };
+        }
+    }
+    function stopDemoSequence() {
+        demoTimers.forEach(clearTimeout);
+        demoTimers = [];
+    }
+    function startDemoIncident(detected?: AutomationCase) {
+        stopDemoSequence();
+        if (tourIndex !== null) finishTour();
+        if (!demo) {
+            agentTaskId = null;
+            selectedId = null;
+            selectedContext = null;
+            automationOpen = false;
+            chatOpen = false;
+        }
+        demo = true;
+        demoPressure = true;
+        alert = null;
+        const example = demoIncidents()[0];
+        if (detected?.evidence?.processes[0] && example.proposal) {
+            example.proposal.process = detected.evidence.processes[0];
+        }
+        const first: AutomationCase = detected
+            ? { ...detected, id: -1 }
+            : {
+                  ...example,
+                  stage: 'detected',
+                  diagnosis: null,
+                  proposal: null,
+                  steps: [
+                      {
+                          at: example.detected_at,
+                          stage: 'detected',
+                          message: 'Synthetic sustained-load example.',
+                      },
+                  ],
+              };
+        announced = announced.filter((key) => key !== 'demo:-1');
+        receiveCase(first);
+        demoTimers.push(
+            setTimeout(() => {
+                receiveCase({ ...first, stage: 'investigating' });
+            }, 1000)
+        );
+        demoTimers.push(
+            setTimeout(() => {
+                receiveCase({
+                    ...first,
+                    stage: 'awaiting_approval',
+                    diagnosis: example.diagnosis,
+                    proposal: example.proposal,
+                    steps: [...first.steps, ...example.steps],
+                });
+            }, 2500)
+        );
+    }
+    onMount(() => () => stopDemoSequence());
     let management: ManagementSelection | null = $state(null);
     let live: Snapshot | null = $state(null);
     let demo = $state(!desktop);
@@ -189,24 +286,7 @@
                 cleanup.push(telemetry);
                 const automatic = await listen<AutomationCase>('automation-case', (event) => {
                     const incident = event.payload;
-                    cases = [incident, ...cases.filter((c) => c.id !== incident.id)].slice(0, 12);
-                    if (incident.stage === 'detected' && !demo) {
-                        demo = false;
-                        demoPressure = false;
-                        alert = null;
-                        // Keep the current reading context. The inbox badge surfaces new incidents.
-                        if (
-                            !automationOpen &&
-                            !chatOpen &&
-                            !selectedId &&
-                            !management &&
-                            !demoMenuOpen &&
-                            page === 'dashboard'
-                        ) {
-                            automaticId = incident.id;
-                            automationOpen = true;
-                        }
-                    }
+                    receiveCase(incident);
                     if (
                         [
                             'completed',
@@ -224,12 +304,8 @@
                     return;
                 }
                 cleanup.push(automatic);
-                const simulated = await listen<Incident>('demo-pressure-incident', (event) => {
-                    demo = true;
-                    demoPressure = true;
-                    selectedId = null;
-                    alert = event.payload;
-                    chatOpen = true;
+                const simulated = await listen<AutomationCase>('demo-pressure-case', (event) => {
+                    startDemoIncident(event.payload);
                 });
                 if (disposed) {
                     simulated();
@@ -242,8 +318,11 @@
                         if (tourIndex !== null) finishTour();
                         navigate(event.payload.page);
                         if (page === 'dashboard') {
+                            stopDemoSequence();
+                            notice = null;
                             demoMenuOpen = false;
                             demo = false;
+                            agentTaskId = null;
                             demoPressure = false;
                             alert = null;
                         }
@@ -277,6 +356,7 @@
 
     function navigate(next: string) {
         page = next;
+        agentTaskId = null;
         demoMenuOpen = false;
         selectedId = null;
         selectedContext = null;
@@ -284,6 +364,7 @@
         automationOpen = false;
     }
     function showIncident(id: number) {
+        if (notice?.id === id) notice = null;
         automaticId = id;
         automationOpen = true;
         chatOpen = false;
@@ -330,21 +411,13 @@
     }
     async function simulatePressure() {
         demoMenuOpen = false;
-        followUpContext = null;
-        automationOpen = false;
         if (desktop) {
             try {
                 await invoke('simulate_pressure');
             } catch (cause) {
                 error = errorMessage(cause);
             }
-            return;
-        }
-        demo = true;
-        demoPressure = true;
-        selectedId = null;
-        alert = demoSnapshot(true).incident;
-        chatOpen = true;
+        } else startDemoIncident();
     }
     async function confirmAction() {
         if (!pendingAction || demo || !desktop) return;
@@ -420,8 +493,11 @@
                         class="text-button"
                         disabled={!desktop}
                         onclick={() => {
+                            stopDemoSequence();
+                            notice = null;
                             demoMenuOpen = false;
                             demo = false;
+                            agentTaskId = null;
                             demoPressure = false;
                             alert = null;
                             selectedId = null;
@@ -434,8 +510,12 @@
                     <div class="preview-actions">
                         <button
                             onclick={() => {
+                                stopDemoSequence();
+                                notice = null;
+                                demoCases = demoIncidents();
                                 demoMenuOpen = false;
                                 demo = true;
+                                agentTaskId = null;
                                 demoPressure = false;
                                 alert = null;
                                 selectedId = null;
@@ -535,16 +615,18 @@
                 {:else if page === 'workloads'}
                     <Workloads {snapshot} onselect={select} />
                 {:else if page === 'agents'}
-                    <div class="page-heading">
-                        <div>
-                            <h1>Agent tasks</h1>
-                            <p class="muted">
-                                What your coding tools are working on, and the resources they use.
-                            </p>
+                    {#if !agentTaskId}<div class="page-heading">
+                            <div>
+                                <h1>Agent tasks</h1>
+                                <p class="muted">
+                                    What your coding tools are working on, and the resources they
+                                    use.
+                                </p>
+                            </div>
                         </div>
-                    </div>
-                    <AgentWorkflows
+                    {/if}<AgentWorkflows
                         {snapshot}
+                        bind:selectedId={agentTaskId}
                         onselect={select}
                         onmanage={(selection) => {
                             management = selection;
@@ -570,6 +652,20 @@
                         }}
                     />
                 {:else}
+                    {#if demo}<section class="demo-story" aria-label="Try Jitterbug in action">
+                            <span class="story-mark"><Icon name="bug" size={24} /></span>
+                            <div>
+                                <span class="eyebrow">TRY AN EXAMPLE</span>
+                                <h2>Two agents. Two test runs. One busy computer.</h2>
+                                <p>
+                                    See Jitterbug notice the overlap and help plan a better next
+                                    run.
+                                </p>
+                            </div>
+                            <button class="primary" onclick={simulatePressure}
+                                >See Jitterbug step in</button
+                            >
+                        </section>{/if}
                     <Dashboard
                         {snapshot}
                         onselect={select}
@@ -616,6 +712,23 @@
             }}
         />{/if}
 </div>
+
+{#if noticedCase && (noticedCase.source === 'demo') === demo && tourIndex === null && !management && !pendingAction && !actionBusy && !automationOpen && !chatOpen}
+    <ProactiveNotice
+        incident={noticedCase}
+        workflow={noticedWorkflow}
+        onreview={() => showIncident(noticedCase.id)}
+        ontask={() => {
+            const id = noticedWorkflow?.task_id;
+            notice = null;
+            navigate('agents');
+            agentTaskId = id ?? null;
+        }}
+        onlater={() => {
+            notice = null;
+        }}
+    />
+{/if}
 
 {#if tourIndex !== null}
     <GuidedTour

@@ -18,48 +18,50 @@ test('activity answers the main question without queue or agent history', async 
     await expect(page.getByRole('region', { name: 'Agent workflows' })).toHaveCount(0);
 });
 
-test('task and nested disclosures retain user choice across telemetry refreshes', async ({
+test('task cards show value immediately and the detail stays open through refreshes', async ({
     page,
 }) => {
     await page.clock.install();
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
-    const active = page.locator('details.workflow').filter({
-        has: page.getByRole('heading', {
-            name: 'Add search and keyboard navigation',
-            exact: true,
-        }),
+    const active = page.getByRole('article', {
+        name: 'Add search and keyboard navigation',
+        exact: true,
     });
-    const completed = page.locator('details.workflow').filter({
-        has: page.getByRole('heading', { name: 'Check keyboard focus behavior', exact: true }),
+    const completed = page.getByRole('article', {
+        name: 'Check keyboard focus behavior',
+        exact: true,
     });
-    await expect(active).not.toHaveAttribute('open');
-    const logos = page.locator('.workflow-heading .harness-badge img');
-    await expect(logos).toHaveCount(5);
+    await expect(active).toContainText('Test runners are using most');
+    await expect(active).toContainText('Let heavy checks take turns');
+    await expect(active.getByRole('button', { name: 'Preview managed checks' })).toBeVisible();
+    const logos = page.locator('.task-cards .harness-badge img');
+    await expect(logos).toHaveCount(4);
     for (const logo of await logos.all()) {
         await expect(logo).toBeVisible();
         await expect
             .poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth))
             .toBeGreaterThan(0);
     }
-    await completed.locator(':scope > summary').click();
-    await completed.getByText('Sessions & evidence', { exact: false }).click();
-    const session = completed.locator('details.agent').first();
-    await session.locator(':scope > summary').click();
-    await page.clock.fastForward(16_000);
-    await expect(completed).toHaveAttribute('open');
-    await expect(completed.locator('details.technical-detail')).toHaveAttribute('open');
-    await expect(session).toHaveAttribute('open');
-    await expect(completed.getByRole('button', { name: 'Manage this workload' })).toBeVisible();
     await expect(completed.locator('.run-status.completed')).toHaveCSS(
         'color',
         'rgb(110, 213, 138)'
     );
-    await expect(completed.getByText('Meta · Muse Code', { exact: true }).first()).toBeAttached();
-    await completed.locator(':scope > summary').click();
+    await expect(completed.getByRole('button', { name: /managed checks/ })).toHaveCount(0);
+    await completed.getByRole('button', { name: 'View task' }).click();
+    const detail = page.getByRole('region', { name: 'Task detail' });
+    await detail.getByText('Sessions & evidence', { exact: false }).click();
+    const session = detail.locator('details.agent').first();
+    await session.locator(':scope > summary').click();
+    await page.clock.fastForward(16_000);
+    await expect(detail).toBeVisible();
+    await expect(detail.locator('details.technical-detail')).toHaveAttribute('open');
+    await expect(session).toHaveAttribute('open');
+    await expect(detail.getByText('Meta · Muse Code', { exact: true }).first()).toBeAttached();
+    await page.getByRole('button', { name: 'All agent tasks' }).click();
+    await expect(completed.getByRole('button', { name: 'View task' })).toBeFocused();
     await page.clock.fastForward(11_000);
-    await expect(completed).not.toHaveAttribute('open');
-    await expect(active).not.toHaveAttribute('open');
+    await expect(detail).toHaveCount(0);
 });
 
 test('simulated pressure and inbox keep explanations concise and demo actions disabled', async ({
@@ -103,9 +105,11 @@ test('minimum window width keeps navigation and primary actions reachable', asyn
     await page.setViewportSize({ width: 760, height: 560 });
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
-    const workflow = page.locator('details.workflow').first();
-    await workflow.locator(':scope > summary').click();
-    const manage = workflow.getByRole('button', { name: 'Manage this workload' });
+    const workflow = page.getByRole('article', {
+        name: 'Add search and keyboard navigation',
+        exact: true,
+    });
+    const manage = workflow.getByRole('button', { name: 'Preview managed checks' });
     await manage.scrollIntoViewIfNeeded();
     await expect(manage).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(

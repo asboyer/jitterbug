@@ -513,24 +513,27 @@ async fn approve_optimization(
 
 #[tauri::command]
 fn simulate_pressure(app: tauri::AppHandle) -> Result<(), String> {
-    notify_pressure(
+    publish_automation_case(
         &app,
-        "demo-pressure-incident",
-        &pressure::simulated_incident(),
+        "demo-pressure-case",
+        &automation::simulated_case(types::now())?,
     )
 }
 
-fn notify_pressure(
+fn publish_automation_case(
     app: &tauri::AppHandle,
     event: &str,
-    incident: &types::Incident,
+    case: &automation::Case,
 ) -> Result<(), String> {
-    app.emit(event, incident)
-        .map_err(|_| "Could not deliver the pressure incident.")?;
-    if let Some(window) = app.get_webview_window("main") {
-        if !window.is_focused().unwrap_or(false) {
+    app.emit(event, case)
+        .map_err(|_| "Could not deliver the automatic-assistance case.")?;
+    if case.stage == automation::Stage::Detected {
+        if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
-            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+            if !window.is_focused().unwrap_or(false) {
+                let _ =
+                    window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+            }
         }
     }
     Ok(())
@@ -556,15 +559,7 @@ pub fn run() {
                 directory,
                 settings,
                 Arc::new(move |case| {
-                    let _ = events.emit("automation-case", &case);
-                    if case.stage == automation::Stage::Detected {
-                        if let Some(window) = events.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.request_user_attention(Some(
-                                tauri::UserAttentionType::Informational,
-                            ));
-                        }
-                    }
+                    let _ = publish_automation_case(&events, "automation-case", &case);
                 }),
             );
             app.manage(runtime.clone());

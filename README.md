@@ -296,3 +296,18 @@ Incident cards keep explanations behind the **ⓘ** button and **View details**.
 priority changes. Opening a review grants no permission. Confirmation still passes
 through the existing native process-identity, pressure, and permission checks.
 Synthetic reviews can be explored, but their apply controls stay disabled.
+
+Agent tasks now lead with visible cards: the intended task, recognized resource consumers, and an
+applicable next step. Recent completed tasks have no active-management prompt; tasks without samples
+show one empty-state sentence instead of empty charts. View task opens a persistent detail view with
+measurements, original requests, and sessions available on demand.
+
+New sustained incidents surface a compact “Hey, I noticed…” prompt across the main views without
+replacing the selected task. The native window is shown and requests attention when unfocused;
+Later leaves the incident in Inbox and suppresses repeats for that case. The existing sustained
+sample, cooldown, snooze, and hourly-budget rules still control detection.
+
+In the demo, **See Jitterbug step in** exercises the real native monitor with three in-memory synthetic
+samples (the browser preview uses fixtures). Investigation and proposal stages are explicitly
+simulated; no model or real process action runs. **Preview managed checks** illustrates two future
+submitted checks taking turns. It does not pause existing tests or promise measured resource savings.

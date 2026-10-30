@@ -1,4 +1,4 @@
-import { demoWorkflow } from './demo-workflow';
+import { demoWorkflow, demoCompletedWorkflow, demoUnobservedWorkflow } from './demo-workflow';
 import type { AutomationCase, Bootstrap, Snapshot, WorkloadDetails } from './types';
 
 export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
@@ -107,20 +107,8 @@ export function demoSnapshot(pressure = false): Snapshot {
         workloads,
         agent_workflows: [
             demoWorkflow(time, pressure),
-            {
-                ...demoWorkflow(time - 120, false),
-                task_id: 'EXAMPLE-41',
-                task_title: 'Check keyboard focus behavior',
-                status: 'completed',
-                active_agents: 0,
-                agents: [
-                    {
-                        ...demoWorkflow(time - 120, false).agents[0],
-                        harness: 'muse',
-                        status: 'completed',
-                    },
-                ],
-            },
+            demoCompletedWorkflow(time),
+            demoUnobservedWorkflow(time),
         ],
         processes: workloads.map((w, index) => ({
             pid: 9000 + index,
