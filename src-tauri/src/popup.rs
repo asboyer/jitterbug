@@ -64,8 +64,10 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
         .iter()
         .filter(|c| {
             !deferred.contains(&c.id)
-                // A manual snapshot was asked for; automatic cases respect pause and disable.
-                && (c.origin == Origin::Snapshot || (policy.enabled && !gate.snoozed))
+                // A manual snapshot or an agent's request was asked for; automatic cases
+                // respect pause and disable.
+                && (matches!(c.origin, Origin::Snapshot | Origin::Agent)
+                    || (policy.enabled && !gate.snoozed))
                 && match c.stage {
                     // Workloads with a saved permission are applied automatically.
                     Stage::AwaitingApproval => match &c.proposal {
@@ -98,7 +100,7 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
 
 /// Only what the in-app notice and review already show: no paths, PIDs, evidence, or diagnosis.
 pub fn view(case: &Case, more: usize) -> Value {
-    json!({
+    let mut payload = json!({
         "kind": "case",
         "id": case.id,
         "source": case.source,
@@ -120,6 +122,11 @@ pub fn view(case: &Case, more: usize) -> Value {
             "cpu_after": r.after.as_ref().map(|a| a.cpu_percent),
             "memory_before": r.before.memory_bytes,
             "memory_after": r.after.as_ref().map(|a| a.memory_bytes),
+            // A paused command can be resumed from the popup until it resumes by itself.
+            "resumable": r.action == "pause"
+                && case.proposal.as_ref().is_some_and(|p| {
+                    crate::pause::is_paused(p.process.pid, p.process.start_time)
+                }),
         })),
         "verification": case.verification.as_ref().map(|v| json!({
             "priority_verified": v.priority_verified,
@@ -137,7 +144,12 @@ pub fn view(case: &Case, more: usize) -> Value {
             "manual": j.manual,
         })),
         "more": more,
-    })
+    });
+    // The reason an agent gave, already bounded and quoted; no other trigger text is sent.
+    if case.origin == automation::Origin::Agent {
+        payload["trigger"]["reason"] = json!(case.trigger.reason);
+    }
+    payload
 }
 
 /// An option's process name and current use, plus what it belongs to and, for a stop, what
@@ -151,7 +163,10 @@ fn option(p: &Proposal) -> Value {
             "memory_bytes": p.process.memory_bytes,
         },
         "impact": p.impact,
-        "closes": (p.action == "terminate").then_some(&p.rationale),
+        "closes": matches!(p.action.as_str(), "terminate" | "pause" | "close_tab")
+            .then_some(&p.rationale),
+        // A tab or command session: its title and kind only.
+        "unit": p.unit.as_ref().map(|u| json!({ "title": u.title, "kind": u.kind })),
     })
 }
 
@@ -499,12 +514,14 @@ fn demo_case(at: u64) -> Result<Case, String> {
             whole_app: true,
             ..i
         }),
+        unit: None,
     });
     case.proposal = Some(Proposal {
         process,
         action: "lower_priority".into(),
         rationale: "Demo: a synthetic busy process. Nothing will be applied.".into(),
         impact,
+        unit: None,
     });
     case.transition(
         Stage::AwaitingApproval,

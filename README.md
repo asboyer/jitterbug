@@ -94,6 +94,117 @@ changes. Reopening a detail page reuses the description without inference. Icons
 remain local; raw paths are omitted from normal telemetry, incident serialization, action reports,
 and model context. Demo origins are entirely synthetic and cannot call a provider or act on a process.
 
+## Inside an app
+
+A workload's detail page can split an app into the things you can actually act on.
+
+- **Browser tabs** (Chrome, Edge, Brave, Chromium, Vivaldi): choose **Show tabs** to measure each
+  tab for one second and see its CPU, memory, and host, plus what the browser itself, the GPU
+  process, and extensions use. **Show** brings a tab forward; **Close tab…** needs a second click
+  and first checks that the tab still shows the same address. This needs a one-time browser
+  setting: open `chrome://inspect/#remote-debugging` and allow remote debugging for the running
+  browser. The browser asks once to allow Jitterbug's connection, which stays local (loopback
+  only) and is kept open so you are not asked again. Turn the setting off to revoke access.
+- **How tab memory is found:** DevTools lists tabs but never says which renderer process hosts
+  each one. Each tab does report its renderer's cumulative CPU time, and the browser reports the
+  same counter per PID. Jitterbug reads both twice, a second apart and bracketed in time, so a
+  tab maps to exactly one renderer. Memory is that renderer's resident memory from the normal
+  sample. When several tabs share one renderer, the split is an estimate (JavaScript heap and
+  main-thread time) and is marked with ≈. Sleeping/discarded tabs have no renderer.
+- **Terminals, editors, and coding-agent apps** (Terminal, iTerm2, Ghostty, VS Code, Cursor,
+  Zed, Claude, JetBrains IDEs, …): each command started inside the app, such as an agent session,
+  a dev server, or a test run, becomes one row with its whole process subtree, working folder,
+  and busiest child. Sessions registered with `jitterbug-run` show their task. Rows reuse the
+  five-second inventory, so no extra sampling happens. Each row can be **paused**, as well as
+  the existing process actions with the same identity checks and confirmation.
+- **Pause, not quit:** pausing freezes a command and everything it started, such as an agent
+  session with its test runs. It uses no CPU until you choose **Resume**. Nothing is closed,
+  and an agent picks up where it was. Memory stays allocated, but it stops growing, and macOS
+  can compress or swap it for your other sessions. Pauses resume by themselves after 15
+  minutes, when Jitterbug quits, and on the next launch after a crash. A small detached timer
+  also resumes them shortly after the 15 minutes if Jitterbug was killed and not started
+  again. A plain stop signal would make the terminal's shell report the command as suspended
+  and take the terminal away from it. For a command that owns its terminal, Jitterbug stops
+  that launching shell first and continues it last, so the command keeps its terminal; a
+  background job is paused alone, so the prompt stays usable. Only your own commands can be
+  paused; apps (a frozen window cannot redraw), jobs you already suspended, and anything
+  containing Jitterbug itself are refused. This was exercised
+  with a real coding-agent CLI session paused for 20 seconds in the middle of a tool call. It used
+  no CPU while paused, then finished its task.
+- **Incidents offer the smallest fix:** when an app stays busy or memory runs short, the
+  out-of-app popup offers the most specific action before quitting anything:
+    - **Close the heaviest tab**, for a browser you already connected with **Show tabs**. A
+      background alert never opens a browser connection by itself.
+    - **Pause the heaviest command session** inside a terminal or editor. It is offered when that
+      session carries at least 30% of the app's use, or when it launched the busy project.
+    - Otherwise, the existing stop.
+
+    Every option still needs your explicit click and is never applied automatically.
+
+Titles, addresses, and folders stay on this computer except the tab or session name shown in
+an incident. No page content, history, or cookies are read.
+
+```sh
+# Opt-in check against an isolated headless Chrome profile: one busy and two idle tabs.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-inside-probe
+# Commands inside running terminal/editor apps, by command name only.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-inside-probe -- --sessions
+# Pause one command's tree for 20 seconds, confirm it used no CPU, then resume it.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-pause-probe -- --pid <pid> --seconds 20
+```
+
+## Agent control over MCP
+
+An agent can see what each app is running and ask Jitterbug to act on one part of it.
+For example, an orchestrating agent can find which of five coding-agent sessions in your
+editor's terminals is using the memory, then pause just that session instead of quitting
+the editor. Connect any MCP client to the stdio server:
+
+```sh
+cargo build --manifest-path src-tauri/Cargo.toml --bin jitterbug-run
+claude mcp add jitterbug-control -- /absolute/path/to/jitterbug-run control-mcp
+```
+
+| Tool                       | What it does                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------ |
+| `jitterbug_overview`       | Machine pressure, the busiest apps, and the command sessions inside each one   |
+| `jitterbug_inspect_app`    | One app's sessions, or a browser's tabs measured over one second               |
+| `jitterbug_pause_session`  | Ask to pause a session and everything it started (reversible; 15-minute limit) |
+| `jitterbug_resume_session` | Resume a session that an agent's request paused                                |
+| `jitterbug_close_tab`      | Ask to close one browser tab                                                   |
+| `jitterbug_request_status` | Whether a request is waiting for you, applied, or declined, with the result    |
+
+- **Off until you turn it on.** Any program running as you can reach the control socket, so
+  agent control starts disabled. Turn on **Settings → Let connected agents see what each app
+  runs** to use it.
+- **You stay in charge.** Every pause or close is a request that appears in the popup (and in
+  the app) with the agent's session and its stated reason. Nothing happens until you approve.
+  **Settings → Agents may pause sessions without asking** lets reversible pauses apply at
+  once, except while you have paused actions from the popup. Closing a tab always asks. Agents
+  can resume only what an agent's request paused, never a session you paused. Turning off
+  agent control refuses every request.
+- **An agent can never pause itself.** Its caller's process ID comes from the kernel, not
+  from the request, and its own session is marked `is_your_session`.
+- **Bounded:** one open request per target and at most six agent requests an hour, so a
+  looping agent cannot crowd out real incidents.
+- **Local and private:** the server holds no state. Each call goes over an owner-only Unix
+  socket in the app-data folder to the running app, which checks that the caller is your user.
+  Results go to the agent's model provider. They include app labels, session titles and
+  folder names, tab titles, and hosts. They never include full paths, URLs, command lines,
+  or page content.
+- **Exercised end to end:** a coding-agent CLI session ran a single-core busy loop in a separate
+  Terminal window. A second coding agent, connected only through this MCP server, picked
+  that session from the overview (12.6% of the machine) and asked to pause it. After the
+  approval, the session used no CPU. When resumed, it finished its task.
+
+Agent control is macOS and Linux only for now; Windows reports it as unavailable.
+
+```sh
+# Opt-in headless server for checks without the desktop UI (--approve stands in for your click).
+JITTERBUG_CONTROL_SOCKET=/absolute/short/path.sock \
+    cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-control-probe -- --approve
+```
+
 ## What is real
 
 - Live process CPU, resident memory, disk read/write counters, parent relationships, available memory, and swap usage through `sysinfo`. App/workload history retains the last 24 samples (about two minutes).
@@ -266,6 +377,9 @@ src-tauri/src/
   queue/                shared validation admission, private profiles/results, stdio MCP
   bin/jitterbug-run.rs   opt-in wrapper and harness hook event bridge
   diagnostics.rs        app/PID resolution and scoped investigation evidence
+  inside/               per-tab (browser DevTools) and per-command (process tree) app views
+  pause.rs              pause/resume a command tree without its shell noticing; expiry, recovery
+  control/              agent control: owner-only socket server, request handlers, stdio MCP
   details.rs            local process details and bounded, identity-checked parent chains
   applications.rs       installed app identity and bounded native icon cache
   profiles.rs           built-in app reference and private, versioned AI description cache

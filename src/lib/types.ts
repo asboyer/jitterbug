@@ -246,10 +246,12 @@ export interface AutomationPolicy {
     jitter_mode: JitterMode;
     action_popups: boolean;
     auto_snapshots: boolean;
+    agent_control: boolean;
+    agent_pause_without_asking: boolean;
 }
 
 export type JitterMode = 'auto' | 'snapshot_only';
-export type CaseOrigin = 'automatic' | 'snapshot' | 'spike';
+export type CaseOrigin = 'automatic' | 'snapshot' | 'spike' | 'agent';
 export type FindingStrength = 'strong' | 'possible' | 'unexplained';
 
 export interface JitterFinding {
@@ -328,6 +330,13 @@ export interface AutomationCase {
     evidence: Investigation | null;
     diagnosis: Reply | null;
     proposal: { process: ProcessRecord; action: string; rationale: string } | null;
+    /** A stop, pause, or tab close offered instead of (or besides) the priority change. */
+    alternative?: {
+        process: ProcessRecord;
+        action: string;
+        rationale: string;
+        unit?: { title: string; kind: 'tab' | 'session' } | null;
+    } | null;
     report: ActionReport | null;
     verification: {
         summary: string;
@@ -354,11 +363,13 @@ export interface ActionImpact {
 }
 
 export interface ActionPopupOption {
-    action: 'lower_priority' | 'terminate';
+    action: 'lower_priority' | 'terminate' | 'pause' | 'close_tab';
     process: { name: string; cpu_percent: number; memory_bytes: number };
     impact: ActionImpact | null;
-    /** For a stop: what ends, in plain words. */
+    /** For a stop, pause, or tab close: what it does, in plain words. */
     closes: string | null;
+    /** The tab or command session a granular action targets. */
+    unit?: { title: string; kind: 'tab' | 'session' } | null;
 }
 
 /** Trimmed case for the out-of-app popup: no paths, PIDs, evidence, or diagnosis. */
@@ -367,7 +378,13 @@ export interface ActionPopupCase {
     id: number;
     source: string;
     stage: AutomationStage;
-    trigger: { kind: string; title: string; target: { label: string } | null };
+    trigger: {
+        kind: string;
+        title: string;
+        target: { label: string } | null;
+        /** An agent's stated reason, for agent requests only. */
+        reason?: string | null;
+    };
     proposal: ActionPopupOption | null;
     alternative: ActionPopupOption | null;
     report: {
@@ -379,6 +396,7 @@ export interface ActionPopupCase {
         cpu_after: number | null;
         memory_before: number;
         memory_after: number | null;
+        resumable?: boolean;
     } | null;
     verification: {
         priority_verified: boolean;
@@ -485,4 +503,40 @@ export interface AgentWorkflow {
     history: ResourcePoint[];
     suggestions: WorkflowSuggestion[];
     evidence: string[];
+}
+
+export interface InsideUnit {
+    id: string;
+    kind: 'tab' | 'session';
+    title: string;
+    detail: string;
+    host: string | null;
+    cpu_percent: number;
+    memory_bytes: number;
+    process_count: number;
+    shared_with: number;
+    pid: number | null;
+    start_time: number | null;
+    actions: string[];
+    evidence: string[];
+    confidence: string;
+    paused_until: number | null;
+}
+
+export interface InsideView {
+    workload_id: string;
+    source: string;
+    status: 'ready' | 'setup' | 'unavailable';
+    message: string;
+    setup: string[];
+    units: InsideUnit[];
+    remainder: {
+        label: string;
+        cpu_percent: number;
+        memory_bytes: number;
+        process_count: number;
+    }[];
+    measured_seconds: number;
+    captured_at: number;
+    limits: string;
 }

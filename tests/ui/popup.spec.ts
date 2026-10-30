@@ -89,3 +89,57 @@ test('quitting needs a second click and reports before and after', async ({ page
         true
     );
 });
+
+test('a tab offer closes only that tab and a session offer pauses without closing', async ({
+    page,
+}) => {
+    await page.clock.install();
+    await page.goto('/?view=popup&example=tab');
+    let popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+    await expect(popup).toContainText('Close the “Video call” tab');
+    await expect(popup).toContainText('The rest of Example Browser stays open.');
+    await popup.getByRole('button', { name: 'Close…', exact: true }).click();
+    await popup.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.clock.runFor(4000);
+    await expect(popup).toContainText('Closed the “Video call” tab');
+    await page.goto('/?view=popup&example=pause');
+    popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+    await expect(popup).toContainText('Pause claude · feat-search in Example Editor');
+    await expect(popup).toContainText('no CPU until resumed; memory stays allocated');
+    await expect(popup).toContainText('Nothing is closed.');
+    await expect(popup.getByRole('button', { name: 'Pause…', exact: true })).toBeVisible();
+});
+
+test('an agent request names the agent, quotes its reason, and still needs a click', async ({
+    page,
+}) => {
+    await page.goto('/?view=popup&example=agent');
+    const popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+    await expect(popup).toContainText(
+        'An agent in claude · fix-login asks to close the tab “Video call”'
+    );
+    await expect(popup).toContainText('Reason given: “The video call tab uses 640 MiB');
+    await expect(popup).not.toContainText('Apply');
+    await expect(popup.getByRole('button', { name: 'Close…', exact: true })).toBeVisible();
+});
+
+for (const example of ['', 'tab', 'pause', 'agent']) {
+    test(`every button of the ${example || 'default'} example stays inside the window`, async ({
+        page,
+    }) => {
+        await page.goto(example ? `/?view=popup&example=${example}` : '/?view=popup');
+        const popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+        await expect(popup).toBeVisible();
+        for (const button of await popup.getByRole('button').all()) {
+            const box = await button.boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.y + box!.height).toBeLessThanOrEqual(300);
+        }
+        // Nothing is clipped: neither the popup nor its options need to scroll.
+        for (const element of [popup, popup.getByRole('list')]) {
+            expect(await element.evaluate((node) => node.scrollHeight <= node.clientHeight)).toBe(
+                true
+            );
+        }
+    });
+}

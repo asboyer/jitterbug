@@ -44,8 +44,17 @@ impl Budget {
         let lock = options
             .open(self.path.with_extension("lock"))
             .map_err(|_| "Cannot open spending lock.")?;
-        lock.try_lock_exclusive()
-            .map_err(|_| "Another Jitterbug instance is updating spending; retry later.")?;
+        // A child process spawned by another thread holds a copy of this descriptor until it
+        // starts, so a just-released lock can look taken for a moment. Retry briefly; another
+        // instance holding it for longer still fails closed.
+        let mut attempts = 0;
+        while lock.try_lock_exclusive().is_err() {
+            attempts += 1;
+            if attempts >= 20 {
+                return Err("Another Jitterbug instance is updating spending; retry later.".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         let mut ledger: Ledger = crate::storage::read(&self.path)?;
         if !ledger.reserved_usd.is_finite()
             || ledger.reserved_usd < 0.0

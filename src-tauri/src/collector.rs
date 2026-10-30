@@ -53,6 +53,43 @@ impl Collector {
         self.system.refresh_memory();
         self.system.refresh_cpu_usage();
         let cores = self.system.cpus().len().max(1);
+        // Terminal tabs start through a root-owned `login` whose parent the process table
+        // cannot read; the kernel still reports it, so sessions stay attached to their app.
+        self.attribution.bridges = self
+            .system
+            .processes()
+            .values()
+            .filter(|p| p.parent().is_none() && p.pid().as_u32() > 1)
+            .filter_map(|p| {
+                let pid = p.pid().as_u32();
+                crate::platform::parent_pid(pid)
+                    .filter(|parent| *parent > 1)
+                    .map(|parent| (pid, parent))
+            })
+            .collect();
+        let parents: HashMap<u32, u32> = self
+            .system
+            .processes()
+            .values()
+            .filter_map(|p| Some((p.pid().as_u32(), p.parent()?.as_u32())))
+            .chain(self.attribution.bridges.iter().map(|(a, b)| (*a, *b)))
+            .collect();
+        let starts: HashMap<u32, u64> = self
+            .system
+            .processes()
+            .values()
+            .map(|p| (p.pid().as_u32(), p.start_time()))
+            .collect();
+        // An unreadable start time (zero) is taken as no earlier than its parent's, so
+        // parent-chain checks still hold through it. Actions recheck the real identity.
+        let start_of = |pid: u32| match starts.get(&pid) {
+            Some(&start) if start != 0 => start,
+            _ => parents
+                .get(&pid)
+                .and_then(|parent| starts.get(parent))
+                .copied()
+                .unwrap_or(0),
+        };
         let mut groups: HashMap<String, Workload> = HashMap::new();
         let mut processes = Vec::new();
         for p in self.system.processes().values() {
@@ -87,13 +124,10 @@ impl Collector {
                     .into(),
                 executable: p.exe().map(|path| path.to_path_buf()),
                 working_directory: p.cwd().map(|path| path.to_path_buf()),
-                parent_start_time: p
-                    .parent()
-                    .and_then(|id| self.system.process(id))
-                    .map(|parent| parent.start_time()),
+                parent_start_time: parents.get(&p.pid().as_u32()).map(|id| start_of(*id)),
                 pid: p.pid().as_u32(),
-                start_time: p.start_time(),
-                parent_pid: p.parent().map(|id| id.as_u32()),
+                start_time: start_of(p.pid().as_u32()),
+                parent_pid: parents.get(&p.pid().as_u32()).copied(),
                 name: p.name().to_string_lossy().chars().take(80).collect(),
                 cpu_percent: cpu,
                 memory_bytes: p.memory(),

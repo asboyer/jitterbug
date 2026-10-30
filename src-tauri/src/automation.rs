@@ -35,6 +35,12 @@ pub struct Policy {
     /// Attach a snapshot to automatic incidents and open short-hitch cases. Off by default:
     /// snapshots are taken on demand unless the user turns this on.
     pub auto_snapshots: bool,
+    /// Agents connected through `jitterbug-run control-mcp` may ask for granular actions. Off
+    /// by default: any process running as this user can reach the socket, so the person opts in.
+    pub agent_control: bool,
+    /// Agent pause requests apply at once instead of waiting for approval. Pauses are
+    /// reversible and expire; closing a tab always asks.
+    pub agent_pause_without_asking: bool,
 }
 
 impl Default for Policy {
@@ -53,6 +59,8 @@ impl Default for Policy {
             jitter_mode: crate::pulse::Mode::Auto,
             action_popups: true,
             auto_snapshots: false,
+            agent_control: false,
+            agent_pause_without_asking: false,
         }
     }
 }
@@ -114,6 +122,8 @@ pub enum Kind {
     UserReported,
     /// Auto-mode pulse detector saw a sustained short hitch.
     ShortSpike,
+    /// An agent asked through MCP for one granular action (pause a session, close a tab).
+    AgentRequest,
 }
 
 /// Where a case came from. Snapshot and spike cases always wait for explicit approval.
@@ -124,6 +134,8 @@ pub enum Origin {
     Automatic,
     Snapshot,
     Spike,
+    /// Requested by an agent through the local MCP control server.
+    Agent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,6 +186,9 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default)]
     pub impact: Option<Impact>,
+    /// The tab or command session a granular action targets (pause, close_tab).
+    #[serde(default)]
+    pub unit: Option<crate::inside::Unit>,
 }
 
 /// The workload around a proposal, measured when it was made, so "now" and "after" can be
@@ -236,6 +251,7 @@ pub fn stop_option(s: &Snapshot, workload_id: &str) -> Option<Proposal> {
         process,
         action: "terminate".into(),
         rationale,
+        unit: None,
     })
 }
 
@@ -742,7 +758,7 @@ pub fn proposal(s: &Snapshot, trigger: &Trigger) -> Option<Proposal> {
         })
         .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))?
         .clone();
-    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into() })
+    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into(), unit: None })
 }
 
 pub fn verify(

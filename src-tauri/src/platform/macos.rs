@@ -306,6 +306,24 @@ pub fn all_processes() -> Vec<super::NativeProcess> {
     out
 }
 
+/// Parent of any process, including root-owned launchers such as Terminal's `login`, whose
+/// full process information is unreadable without privileges.
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdshortinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+            size,
+        )
+    };
+    (read == size && info.pbsi_pid == pid && info.pbsi_ppid > 0 && info.pbsi_ppid != pid)
+        .then_some(info.pbsi_ppid)
+}
+
 /// Name of the outermost `.app` bundle holding this process's executable, if any.
 pub fn bundle_name(pid: u32) -> Option<String> {
     let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];

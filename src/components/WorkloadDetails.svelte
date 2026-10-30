@@ -15,6 +15,7 @@
     import InfoTip from './InfoTip.svelte';
     import ProcessInsight from './ProcessInsight.svelte';
     import Icon from './Icon.svelte';
+    import InsidePanel from './InsidePanel.svelte';
     import type { ManagementSelection } from '../lib/manage';
 
     let {
@@ -318,6 +319,7 @@
                 {onaction}
             />
         </div>
+        <InsidePanel {snapshot} workload={current} {demo} {actionBusy} {onaction} />
         <details class="panel process-section">
             <summary
                 ><span>Processes</span><span class="summary-count">{detail.member_count}</span
