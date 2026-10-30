@@ -33,7 +33,9 @@ fn related(cases: &VecDeque<Case>, workload: Option<&str>, at: u64) -> Option<u6
     cases
         .iter()
         .find(|c| {
+            // An agent's request is not an incident: monitoring and snapshots never merge into it.
             c.stage != Stage::Dismissed
+                && c.origin != Origin::Agent
                 && at.saturating_sub(c.detected_at) <= MERGE_SECONDS
                 && c.trigger
                     .target
@@ -1425,6 +1427,35 @@ mod tests {
             .unwrap_err();
         assert!(limited.contains("Too many"));
     }
+    #[tokio::test]
+    async fn real_incidents_are_never_merged_into_an_agent_request() {
+        let f = Fixture::new();
+        let at = now();
+        for offset in [10, 5] {
+            assert!(f
+                .runtime
+                .observe(&sample(at - offset, 15.0))
+                .unwrap()
+                .is_none());
+        }
+        let request = f
+            .runtime
+            .agent_request(
+                agent_option("a"),
+                Some("fixture".into()),
+                "An agent",
+                "busy",
+            )
+            .await
+            .unwrap();
+        // Same workload within the merge window: a separate incident, investigated as usual.
+        let incident = f.runtime.observe(&sample(at, 15.0)).unwrap().unwrap();
+        assert_ne!(incident, request.id);
+        let request = f.runtime.case(request.id).unwrap();
+        assert_eq!(request.origin, automation::Origin::Agent);
+        assert_eq!(request.steps.len(), 2);
+    }
+
     #[tokio::test]
     async fn memory_growth_stays_quiet_until_sustained_pressure_needs_investigation() {
         let f = Fixture::new();
