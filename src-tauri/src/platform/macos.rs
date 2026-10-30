@@ -291,7 +291,7 @@ pub fn all_processes() -> Vec<super::NativeProcess> {
                     start_us: bsd.pbi_start_tvsec * 1_000_000 + bsd.pbi_start_tvusec,
                     parent_pid: Some(bsd.pbi_ppid).filter(|p| *p > 0),
                     cpu_ns: 0,
-                    name: String::from_utf8_lossy(&name).into_owned(),
+                    name: String::from_utf8_lossy(&name).into(),
                 }
             }
         };

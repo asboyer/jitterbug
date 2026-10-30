@@ -442,9 +442,9 @@ fn name(state: &mut State, tick: &Tick, found: Vec<platform::NativeProcess>) {
                 Identity {
                     pid: native.pid,
                     start_time: native.start_time,
-                    name: native.name.clone(),
+                    name: native.name.to_string(),
                     workload_id: format!("p-{}-{}", native.pid, native.start_time),
-                    label: native.name.clone(),
+                    label: native.name.to_string(),
                     category: crate::attribution::category(&native.name).0.into(),
                     parent_pid: native.parent_pid,
                     bundle: platform::bundle_name(native.pid),
@@ -783,7 +783,7 @@ mod tests {
             start_us,
             parent_pid: Some(1),
             cpu_ns,
-            name: format!("p{pid}"),
+            name: format!("p{pid}").into(),
         };
         let previous: HashMap<(u32, u64), u64> =
             [((10, 5), 1_000_000_000), ((11, 5), 0), ((12, 5), 0)].into();

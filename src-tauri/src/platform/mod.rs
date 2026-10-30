@@ -88,7 +88,8 @@ pub struct NativeProcess {
     pub start_us: u64,
     pub parent_pid: Option<u32>,
     pub cpu_ns: u64,
-    pub name: String,
+    /// Shared with the scan's identity cache, so a tick does not copy every name.
+    pub name: std::sync::Arc<str>,
 }
 
 /// Every readable process with cumulative CPU time. Empty when unsupported (non-macOS).
