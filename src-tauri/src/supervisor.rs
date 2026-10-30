@@ -176,6 +176,23 @@ impl Runtime {
             return Ok(None);
         }
         let policy = self.policy()?;
+        // Keep a finished memory warning from lingering after the machine recovers.
+        // Running investigations already recheck pressure before and after inference.
+        for case in self.cases()? {
+            if case.trigger.kind == automation::Kind::MemoryPressure
+                && matches!(case.stage, Stage::Completed | Stage::Blocked)
+                && sample.sample_ready
+                && sample.captured_at.saturating_add(20) >= now()
+                && !automation::still_present(sample, &policy, &case.trigger)
+            {
+                self.update(case.id, |c| {
+                    c.transition(
+                        Stage::Resolved,
+                        "Memory pressure has cleared. No process changes were needed.",
+                    )
+                })?;
+            }
+        }
         let case = {
             let mut book = self
                 .book
@@ -546,7 +563,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation::tests::sample;
+    use crate::automation::tests::{memory_sample, sample};
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     struct Fixture {
@@ -590,6 +607,75 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
+    #[tokio::test]
+    async fn memory_growth_stays_quiet_until_sustained_pressure_needs_investigation() {
+        let f = Fixture::new();
+        let at = now();
+        for offset in (35..=100).rev().step_by(5) {
+            assert!(f
+                .runtime
+                .observe(&memory_sample(at - offset, "normal"))
+                .unwrap()
+                .is_none());
+        }
+        assert!(f.runtime.cases().unwrap().is_empty());
+        assert_eq!(f.runtime.spending().unwrap().requests, 0);
+        for offset in (5..=30).rev().step_by(5) {
+            assert!(f
+                .runtime
+                .observe(&memory_sample(at - offset, "warning"))
+                .unwrap()
+                .is_none());
+        }
+        let id = f
+            .runtime
+            .observe(&memory_sample(at, "warning"))
+            .unwrap()
+            .unwrap();
+        f.runtime.run(id).await;
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.trigger.kind, automation::Kind::MemoryPressure);
+        assert_eq!(case.stage, Stage::Completed);
+        assert_eq!(case.diagnosis.unwrap().source, "rules");
+        assert!(case.proposal.is_none());
+        assert!(case.report.is_none());
+        assert_eq!(f.runtime.cases().unwrap().len(), 1);
+        assert_eq!(f.runtime.spending().unwrap().requests, 0);
+        assert!(f
+            .runtime
+            .observe(&memory_sample(at + 5, "normal"))
+            .unwrap()
+            .is_none());
+        assert_eq!(f.runtime.case(id).unwrap().stage, Stage::Resolved);
+        assert!(f.runtime.case(id).unwrap().diagnosis.is_some()); // retained in Inbox
+    }
+
+    #[tokio::test]
+    async fn recovered_memory_pressure_skips_inference_even_if_app_memory_stays_high() {
+        let f = Fixture::new();
+        let at = now();
+        for offset in (5..=30).rev().step_by(5) {
+            assert!(f
+                .runtime
+                .observe(&memory_sample(at - offset, "warning"))
+                .unwrap()
+                .is_none());
+        }
+        let id = f
+            .runtime
+            .observe(&memory_sample(at, "warning"))
+            .unwrap()
+            .unwrap();
+        *f.runtime.snapshot.write().unwrap() = memory_sample(at, "normal");
+        f.runtime.run(id).await;
+        let case = f.runtime.case(id).unwrap();
+        assert_eq!(case.stage, Stage::Resolved);
+        assert!(case.diagnosis.is_none());
+        assert!(case.proposal.is_none());
+        assert!(case.report.is_none());
+        assert_eq!(f.runtime.spending().unwrap().requests, 0);
+    }
+
     #[tokio::test]
     async fn process_profiles_recheck_identity_and_cached_reads_need_no_model_slot() {
         let f = Fixture::new();

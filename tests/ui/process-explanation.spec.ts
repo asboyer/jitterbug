@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { demoSnapshot, demoDetails, demoBootstrap } from '../../src/lib/demo';
+import { demoSnapshot, demoDetails, demoBootstrap, demoIncidents } from '../../src/lib/demo';
 
 async function mockDesktop(page: Page, fail = false) {
     const snapshot = demoSnapshot();
@@ -112,6 +112,11 @@ async function mockDesktop(page: Page, fail = false) {
                 snapshot.captured_at += 5;
                 callbacks.get(listeners.get('telemetry'))?.({ payload: snapshot });
             });
+            window.addEventListener('fixture-incident', (event) => {
+                const incident = (event as CustomEvent).detail;
+                bootstrap.automation_cases = [incident];
+                callbacks.get(listeners.get('automation-case'))?.({ payload: incident });
+            });
         },
         { snapshot, detail, bootstrap: demoBootstrap, fail }
     );
@@ -119,6 +124,40 @@ async function mockDesktop(page: Page, fail = false) {
     await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('button', { name: /Example Browser/ }).click();
 }
+
+test('a memory prompt closes after recovery while its findings stay in Inbox', async ({ page }) => {
+    await mockDesktop(page);
+    await expect(page.getByRole('region', { name: 'Process explanation' })).toContainText(
+        'This system component analyzes media'
+    );
+    const incident = demoIncidents()[0];
+    incident.source = 'live';
+    incident.stage = 'detected';
+    incident.trigger.kind = 'memory_pressure';
+    incident.trigger.key = 'memory-pressure';
+    incident.proposal = null;
+    await page.evaluate((detail) => {
+        window.dispatchEvent(new CustomEvent('fixture-incident', { detail }));
+    }, incident);
+    const prompt = page.getByRole('region', { name: 'Jitterbug noticed something' });
+    await expect(prompt).toContainText('your computer is short on memory');
+    incident.stage = 'completed';
+    await page.evaluate((detail) => {
+        window.dispatchEvent(new CustomEvent('fixture-incident', { detail }));
+    }, incident);
+    await expect(prompt).toContainText('No automatic change was applied');
+    incident.stage = 'resolved';
+    await page.evaluate((detail) => {
+        window.dispatchEvent(new CustomEvent('fixture-incident', { detail }));
+    }, incident);
+    await expect(prompt).toHaveCount(0);
+    await page
+        .getByRole('navigation')
+        .getByRole('button', { name: /^Inbox/ })
+        .click();
+    await expect(page.getByText('Memory pressure detected', { exact: true })).toBeVisible();
+    await expect(page.getByText('Trigger cleared', { exact: true })).toBeVisible();
+});
 
 test('opening a process explains it automatically once and keeps origins visible', async ({
     page,

@@ -70,7 +70,7 @@
             /></label
         >
         <label
-            >Available memory below (%)<input
+            >Memory fallback threshold (%)<input
                 type="number"
                 min="5"
                 max="30"
@@ -120,10 +120,22 @@
     </div>
     <p class="muted">
         Unusual CPU activity must exceed the app minimum, reach 3× its recent baseline, and rise by
-        five percentage points of total capacity. Memory growth requires at least 50% and 512 MiB.
-        Both require baseline history and sustained samples. Repeated alerts wait for recovery,
-        cooldown, and a global 60-second gap. Incident history is kept only in memory.
+        five percentage points of total capacity. Repeated alerts wait for recovery, cooldown, and a
+        global 60-second gap. Incident history is kept only in memory.
     </p>
+    <details>
+        <summary>When memory alerts appear</summary>
+        <p class="muted">
+            App memory growth alone stays quiet. Alerts need 30 seconds of OS memory pressure or
+            swap growth above 256 MiB per sample. Without a native pressure reading, available
+            memory must fall below both the fallback threshold and 2 GiB. Critical OS pressure uses
+            the faster 10-second minimum. Your consecutive-sample limit also applies.
+        </p>
+        <p class="muted">
+            Memory alerts cover the whole computer, with growing apps included as context. Another
+            alert requires a full minute of recovery and at least 15 minutes since the last one.
+        </p>
+    </details>
     <h3>Workloads allowed to change priority automatically</h3>
     <p>
         By default, proposals wait for your approval. Grant permission from an incident’s proposal.

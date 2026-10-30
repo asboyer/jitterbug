@@ -219,7 +219,9 @@ impl Case {
 #[derive(Default)]
 struct Track {
     consecutive: u32,
+    active_since: Option<u64>,
     healthy: u32,
+    healthy_since: Option<u64>,
     fired: bool,
     last_fired: u64,
 }
@@ -241,6 +243,58 @@ fn target(w: &Workload) -> Target {
     }
 }
 
+const MEMORY_KEY: &str = "memory-pressure";
+const MEMORY_SUSTAIN_SECONDS: u64 = 30;
+const MEMORY_RECOVERY_SECONDS: u64 = 60;
+const MEMORY_COOLDOWN_SECONDS: u64 = 900;
+
+fn cooldown(key: &str, policy: &Policy) -> u64 {
+    if key == MEMORY_KEY {
+        policy.cooldown_seconds.max(MEMORY_COOLDOWN_SECONDS)
+    } else {
+        policy.cooldown_seconds
+    }
+}
+
+/// App allocations and cached pages are not, on their own, a reason to interrupt.
+/// Prefer native pressure when available; use headroom as a fallback on other hosts.
+fn memory_pressure_reason(s: &Snapshot, policy: &Policy) -> Option<String> {
+    if matches!(
+        s.platform.memory_pressure.as_deref(),
+        Some("warning" | "critical")
+    ) {
+        return Some("The operating system reports memory pressure.".into());
+    }
+    if s.swap_growth_bytes > 256 * 1024 * 1024 {
+        return Some("Swap use is growing by over 256 MiB per sample.".into());
+    }
+    let available = s.memory_available_bytes as f64 / s.memory_total_bytes.max(1) as f64 * 100.0;
+    if s.platform.memory_pressure.as_deref() != Some("normal")
+        && s.memory_total_bytes > 0
+        && available < policy.available_memory_percent as f64
+        && s.memory_available_bytes < 2 * 1024 * 1024 * 1024
+    {
+        return Some(format!(
+            "Available memory is below {:.0}% and 2 GiB; native memory pressure is unavailable.",
+            policy.available_memory_percent
+        ));
+    }
+    None
+}
+
+/// Growth supplies context for a machine-wide incident, never a separate alert.
+fn memory_growth(w: &Workload) -> Option<u64> {
+    if w.history.len() < 9 {
+        return None;
+    }
+    let baseline = &w.history[..w.history.len() - 3];
+    let memory =
+        baseline.iter().map(|p| p.memory_bytes as f64).sum::<f64>() / baseline.len() as f64;
+    let growth = w.memory_bytes as f64 - memory;
+    (w.memory_bytes as f64 >= memory * 1.5 && growth >= 512.0 * 1048576.0)
+        .then_some(growth.max(0.0) as u64)
+}
+
 /// Pure rule evaluation: no inference, file access, or process changes in the sampler.
 pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
     if !s.sample_ready {
@@ -251,11 +305,6 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
         .workloads
         .iter()
         .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))
-        .map(target);
-    let memory_target = s
-        .workloads
-        .iter()
-        .max_by_key(|w| w.memory_bytes)
         .map(target);
     if s.cpu_percent >= policy.system_cpu_percent {
         found.push(Trigger {
@@ -271,15 +320,30 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
             target: cpu_target.clone(),
         });
     }
-    let available = s.memory_available_bytes as f64 / s.memory_total_bytes.max(1) as f64 * 100.0;
-    if (s.memory_total_bytes > 0 && available < policy.available_memory_percent as f64)
-        || matches!(
-            s.platform.memory_pressure.as_deref(),
-            Some("warning" | "critical")
-        )
-        || s.swap_growth_bytes > 256 * 1024 * 1024
-    {
-        found.push(Trigger { cpu_floor_percent: None, memory_floor_bytes: None, key: "memory-pressure".into(), kind: Kind::MemoryPressure, title: "Memory needs attention".into(), reason: "Available memory, OS memory pressure, or active swap growth crossed a limit. Summed app memory is attribution evidence, not proof of a leak.".into(), target: memory_target });
+    if let Some(mut reason) = memory_pressure_reason(s, policy) {
+        let growing = s
+            .workloads
+            .iter()
+            .filter_map(|w| memory_growth(w).map(|g| (w, g)))
+            .max_by_key(|(_, growth)| *growth)
+            .map(|(w, _)| w);
+        let workload = growing.or_else(|| s.workloads.iter().max_by_key(|w| w.memory_bytes));
+        if workload.is_some() {
+            reason.push_str(if growing.is_some() {
+                " The selected workload's reported memory also rose at least 50% and 512 MiB. This is context, not proof that it caused the pressure or has a leak."
+            } else {
+                " The selected workload has the largest reported memory footprint; it is not necessarily the cause."
+            });
+        }
+        found.push(Trigger {
+            cpu_floor_percent: None,
+            memory_floor_bytes: None,
+            key: MEMORY_KEY.into(),
+            kind: Kind::MemoryPressure,
+            title: "Memory needs attention".into(),
+            reason,
+            target: workload.map(target),
+        });
     }
     if matches!(s.platform.thermal.as_deref(), Some("serious" | "critical")) {
         found.push(Trigger {
@@ -302,8 +366,6 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
         if w.history.len() >= 9 {
             let baseline: Vec<_> = w.history.iter().take(w.history.len() - 3).collect();
             let cpu = baseline.iter().map(|p| p.cpu_percent).sum::<f32>() / baseline.len() as f32;
-            let memory =
-                baseline.iter().map(|p| p.memory_bytes as f64).sum::<f64>() / baseline.len() as f64;
             // A large ratio against an idle baseline is normal when an app wakes up.
             // Require an absolute machine-wide impact as well as a significant rise.
             let cpu_floor = policy
@@ -321,11 +383,6 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
                     target: Some(target(w)),
                 });
             }
-            if w.memory_bytes as f64 >= memory * 1.5
-                && w.memory_bytes as f64 - memory >= 512.0 * 1048576.0
-            {
-                found.push(Trigger { cpu_floor_percent: None, memory_floor_bytes: Some((memory * 1.5).max(memory + 512.0 * 1048576.0) as u64), key: format!("memory-growth:{}",w.id), kind: Kind::MemoryGrowth, title: format!("{} memory grew unusually",w.label), reason: "Summed resident memory grew at least 50% and 512 MiB above its recent baseline. Shared pages can be counted more than once.".into(), target: Some(target(w)) });
-            }
         }
     }
     found
@@ -339,7 +396,13 @@ impl Monitor {
         let gap = s.captured_at.saturating_sub(self.last_sample);
         self.last_sample = s.captured_at;
         if !policy.enabled || !s.sample_ready || gap > 20 {
-            self.tracks.clear();
+            // A sampling gap breaks evidence continuity, not the alert cooldown.
+            for track in self.tracks.values_mut() {
+                track.consecutive = 0;
+                track.active_since = None;
+                track.healthy = 0;
+                track.healthy_since = None;
+            }
             if !policy.enabled || !s.sample_ready {
                 return None;
             }
@@ -348,18 +411,27 @@ impl Monitor {
         self.tracks.retain(|key, track| {
             if !found.iter().any(|t| &t.key == key) {
                 track.consecutive = 0;
+                track.active_since = None;
                 track.healthy += 1;
-                if track.healthy >= 3 {
+                let since = *track.healthy_since.get_or_insert(s.captured_at);
+                let recovered = if key == MEMORY_KEY {
+                    s.captured_at.saturating_sub(since) >= MEMORY_RECOVERY_SECONDS
+                } else {
+                    track.healthy >= 3
+                };
+                if recovered {
                     track.fired = false;
                 }
             }
             track.healthy < 120
-                || s.captured_at.saturating_sub(track.last_fired) < policy.cooldown_seconds
+                || s.captured_at.saturating_sub(track.last_fired) < cooldown(key, policy)
         });
         for trigger in &found {
             let track = self.tracks.entry(trigger.key.clone()).or_default();
             track.consecutive = track.consecutive.saturating_add(1);
+            track.active_since.get_or_insert(s.captured_at);
             track.healthy = 0;
+            track.healthy_since = None;
         }
         while self
             .recent
@@ -379,10 +451,24 @@ impl Monitor {
         }
         for trigger in found {
             let track = self.tracks.get_mut(&trigger.key).unwrap();
+            let sustained = if trigger.key == MEMORY_KEY {
+                let seconds = if s.platform.memory_pressure.as_deref() == Some("critical") {
+                    10
+                } else {
+                    MEMORY_SUSTAIN_SECONDS
+                };
+                track
+                    .active_since
+                    .is_some_and(|at| s.captured_at.saturating_sub(at) >= seconds)
+            } else {
+                true
+            };
             if track.consecutive >= policy.sustained_samples
+                && sustained
                 && !track.fired
                 && (track.last_fired == 0
-                    || s.captured_at.saturating_sub(track.last_fired) >= policy.cooldown_seconds)
+                    || s.captured_at.saturating_sub(track.last_fired)
+                        >= cooldown(&trigger.key, policy))
             {
                 track.fired = true;
                 track.last_fired = s.captured_at;
@@ -482,7 +568,9 @@ pub fn still_present(s: &Snapshot, policy: &Policy, trigger: &Trigger) -> bool {
             return s.sample_ready && w.cpu_percent >= floor.max(policy.app_cpu_percent);
         }
         if let Some(floor) = trigger.memory_floor_bytes {
-            return w.memory_bytes >= floor;
+            return s.sample_ready
+                && w.memory_bytes >= floor
+                && memory_pressure_reason(s, policy).is_some();
         }
     }
     conditions(s, policy).iter().any(|t| t.key == trigger.key)
@@ -760,12 +848,193 @@ pub(crate) mod tests {
         assert!(still_present(&s, &p, &trigger)); // recent baseline can adapt during inference
         s.workloads[0].cpu_percent = 0.2;
         assert!(!still_present(&s, &p, &trigger));
+    }
+
+    pub(crate) fn memory_sample(at: u64, pressure: &str) -> Snapshot {
+        let mut s = sample(at, 0.5);
+        s.platform.memory_pressure = Some(pressure.into());
         s.workloads[0].memory_bytes = 1 << 30;
-        let trigger = conditions(&s, &p)
-            .into_iter()
-            .find(|t| t.kind == Kind::MemoryGrowth)
-            .unwrap();
-        assert!(proposal(&s, &trigger).is_none()); // renice does not fix memory
+        s.workloads[0].history = vec![
+            ResourcePoint {
+                cpu_percent: 0.5,
+                memory_bytes: 32 << 20,
+                ..Default::default()
+            };
+            12
+        ];
+        s
+    }
+
+    #[test]
+    fn normal_app_memory_growth_never_dispatches_an_investigation() {
+        let policy = Policy::default();
+        for total_gib in [8, 16, 64] {
+            for native_pressure in [None, Some("normal".into())] {
+                let mut monitor = Monitor::default();
+                for at in (100..=700).step_by(5) {
+                    let mut s = memory_sample(at, "normal");
+                    s.platform.memory_pressure = native_pressure.clone();
+                    s.memory_total_bytes = total_gib << 30;
+                    s.memory_available_bytes = s.memory_total_bytes / 2;
+                    // Startup/cache/test-worker allocations grow well beyond the old rule.
+                    s.workloads[0].memory_bytes = (1 << 30) + (at - 100) * (1 << 20);
+                    assert!(memory_growth(&s.workloads[0]).is_some());
+                    assert!(conditions(&s, &policy).is_empty());
+                    assert!(monitor.observe(&s, &policy, false).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn memory_alerts_prefer_os_pressure_and_bound_the_headroom_fallback() {
+        let policy = Policy::default();
+        let mut s = memory_sample(100, "normal");
+        s.memory_available_bytes = 1 << 30;
+        assert!(conditions(&s, &policy).is_empty()); // native normal, cached pages are OK
+        s.platform.memory_pressure = None;
+        assert_eq!(conditions(&s, &policy)[0].kind, Kind::MemoryPressure);
+        s.memory_total_bytes = 64 << 30;
+        s.memory_available_bytes = 4 << 30;
+        assert!(conditions(&s, &policy).is_empty()); // low percentage, ample absolute room
+        s.memory_total_bytes = 8 << 30;
+        s.memory_available_bytes = 1 << 30;
+        assert!(conditions(&s, &policy).is_empty()); // 12.5%, above configured threshold
+        s.memory_available_bytes = 512 << 20;
+        assert_eq!(conditions(&s, &policy)[0].kind, Kind::MemoryPressure);
+        s.platform.memory_pressure = Some("normal".into());
+        s.swap_used_bytes = 8 << 30;
+        assert!(conditions(&s, &policy).is_empty()); // old swap is not current pressure
+        s.swap_growth_bytes = 257 << 20;
+        assert_eq!(conditions(&s, &policy)[0].kind, Kind::MemoryPressure);
+    }
+
+    #[test]
+    fn memory_pressure_needs_thirty_seconds_and_growth_is_only_context() {
+        let policy = Policy::default();
+        let mut monitor = Monitor::default();
+        for at in (100..130).step_by(5) {
+            assert!(monitor
+                .observe(&memory_sample(at, "warning"), &policy, false)
+                .is_none());
+        }
+        let mut s = memory_sample(130, "warning");
+        // A second growing app is part of the same machine-wide memory episode.
+        let mut second = s.workloads[0].clone();
+        second.id = "another-workload".into();
+        second.memory_bytes = 2 << 30;
+        s.workloads.push(second);
+        let trigger = monitor.observe(&s, &policy, false).unwrap();
+        assert_eq!(trigger.kind, Kind::MemoryPressure);
+        assert_eq!(
+            trigger.target.as_ref().unwrap().workload_id,
+            "another-workload"
+        );
+        assert!(trigger.reason.contains("reported memory also rose"));
+        assert_eq!(conditions(&s, &policy).len(), 1);
+        assert!(proposal(&s, &trigger).is_none()); // priority changes cannot free memory
+        assert!(still_present(&s, &policy, &trigger));
+        s.platform.memory_pressure = Some("normal".into());
+        assert!(!still_present(&s, &policy, &trigger)); // allocation can remain high
+    }
+
+    #[test]
+    fn brief_pressure_or_swap_bursts_clear_without_a_popup() {
+        let policy = Policy::default();
+        for pressure in ["warning", "normal"] {
+            let mut monitor = Monitor::default();
+            for at in (100..=400).step_by(5) {
+                let mut s = memory_sample(at, pressure);
+                if pressure == "normal" {
+                    s.swap_growth_bytes = 300 << 20;
+                }
+                if at % 30 == 0 {
+                    s.platform.memory_pressure = Some("normal".into());
+                    s.swap_growth_bytes = 0;
+                }
+                assert!(monitor.observe(&s, &policy, false).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn critical_memory_pressure_keeps_the_faster_sustained_alert() {
+        let policy = Policy::default();
+        let mut monitor = Monitor::default();
+        for at in [100, 105] {
+            assert!(monitor
+                .observe(&memory_sample(at, "critical"), &policy, false)
+                .is_none());
+        }
+        assert_eq!(
+            monitor
+                .observe(&memory_sample(110, "critical"), &policy, false)
+                .unwrap()
+                .kind,
+            Kind::MemoryPressure
+        );
+    }
+
+    #[test]
+    fn repeated_memory_alerts_require_real_recovery_and_fifteen_minute_cooldown() {
+        let policy = Policy::default();
+        let mut monitor = Monitor::default();
+        for at in (100..=130).step_by(5) {
+            let event = monitor.observe(&memory_sample(at, "warning"), &policy, false);
+            assert_eq!(event.is_some(), at == 130);
+        }
+        // Brief normal readings must not rearm the alert, even beyond the cooldown.
+        for at in (135..=1100).step_by(5) {
+            let state = if at % 60 < 20 { "normal" } else { "warning" };
+            assert!(monitor
+                .observe(&memory_sample(at, state), &policy, false)
+                .is_none());
+        }
+        // A full minute of observed recovery permits a new episode.
+        for at in (1105..=1165).step_by(5) {
+            assert!(monitor
+                .observe(&memory_sample(at, "normal"), &policy, false)
+                .is_none());
+        }
+        for at in (1170..=1200).step_by(5) {
+            let event = monitor.observe(&memory_sample(at, "warning"), &policy, false);
+            assert_eq!(event.is_some(), at == 1200);
+        }
+        // Recovery alone is insufficient: the second episode retains its cooldown.
+        for at in (1205..=1270).step_by(5) {
+            assert!(monitor
+                .observe(&memory_sample(at, "normal"), &policy, false)
+                .is_none());
+        }
+        for at in (1275..=2100).step_by(5) {
+            let event = monitor.observe(&memory_sample(at, "warning"), &policy, false);
+            assert_eq!(event.is_some(), at == 2100);
+        }
+    }
+
+    #[test]
+    fn sampling_gaps_and_pause_do_not_erase_memory_cooldowns_or_count_as_recovery() {
+        let mut policy = Policy::default();
+        let mut monitor = Monitor::default();
+        for at in [100, 105, 110] {
+            monitor.observe(&memory_sample(at, "warning"), &policy, false);
+        }
+        // Sleep during a pending condition restarts the thirty-second observation.
+        for at in (200..=230).step_by(5) {
+            let event = monitor.observe(&memory_sample(at, "warning"), &policy, false);
+            assert_eq!(event.is_some(), at == 230);
+        }
+        policy.enabled = false;
+        assert!(monitor
+            .observe(&memory_sample(235, "normal"), &policy, false)
+            .is_none());
+        policy.enabled = true;
+        // A long sleep is not evidence of recovery, even once the cooldown has elapsed.
+        for at in (2000..=2100).step_by(5) {
+            assert!(monitor
+                .observe(&memory_sample(at, "warning"), &policy, false)
+                .is_none());
+        }
     }
     #[test]
     fn ordinary_app_wakeups_do_not_interrupt_even_on_many_core_machines() {
