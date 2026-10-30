@@ -36,6 +36,13 @@ pub enum Preference {
     NaturalScroll,
     MouseSpeed,
     TrackpadSpeed,
+    AutomaticSpelling,
+    AutomaticCapitalization,
+    AutomaticPeriod,
+    AutomaticDash,
+    AutomaticQuote,
+    DsStoreNetwork,
+    DsStoreUsb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,7 +60,7 @@ pub enum PreferenceValue {
 }
 
 impl Preference {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 19] = [
         Self::DockAutohide,
         Self::DockMagnification,
         Self::DockAnimate,
@@ -66,9 +73,58 @@ impl Preference {
         Self::NaturalScroll,
         Self::MouseSpeed,
         Self::TrackpadSpeed,
+        Self::AutomaticSpelling,
+        Self::AutomaticCapitalization,
+        Self::AutomaticPeriod,
+        Self::AutomaticDash,
+        Self::AutomaticQuote,
+        Self::DsStoreNetwork,
+        Self::DsStoreUsb,
     ];
     pub fn descriptor(self) -> (&'static str, &'static str, &'static str, &'static str) {
         match self {
+            Self::AutomaticSpelling => (
+                "NSGlobalDomain",
+                "NSAutomaticSpellingCorrectionEnabled",
+                "Automatic spelling correction",
+                "Keyboard",
+            ),
+            Self::AutomaticCapitalization => (
+                "NSGlobalDomain",
+                "NSAutomaticCapitalizationEnabled",
+                "Automatic capitalization",
+                "Keyboard",
+            ),
+            Self::AutomaticPeriod => (
+                "NSGlobalDomain",
+                "NSAutomaticPeriodSubstitutionEnabled",
+                "Automatic period substitution",
+                "Keyboard",
+            ),
+            Self::AutomaticDash => (
+                "NSGlobalDomain",
+                "NSAutomaticDashSubstitutionEnabled",
+                "Smart dashes",
+                "Keyboard",
+            ),
+            Self::AutomaticQuote => (
+                "NSGlobalDomain",
+                "NSAutomaticQuoteSubstitutionEnabled",
+                "Smart quotes",
+                "Keyboard",
+            ),
+            Self::DsStoreNetwork => (
+                "com.apple.desktopservices",
+                "DSDontWriteNetworkStores",
+                "Avoid .DS_Store on network volumes",
+                "Finder storage",
+            ),
+            Self::DsStoreUsb => (
+                "com.apple.desktopservices",
+                "DSDontWriteUSBStores",
+                "Avoid .DS_Store on USB volumes",
+                "Finder storage",
+            ),
             Self::DockAutohide => (
                 "com.apple.dock",
                 "autohide",

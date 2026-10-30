@@ -52,7 +52,7 @@ export interface SystemCapability {
     id: string;
     label: string;
     group: string;
-    status: 'supported' | 'needs_permission' | 'read_only' | 'unavailable';
+    status: 'supported' | 'needs_permission' | 'read_only' | 'manual' | 'unavailable';
     detail: string;
     verification: string;
     pane: string | null;

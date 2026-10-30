@@ -1,4 +1,8 @@
 mod capabilities;
+#[cfg(target_os = "macos")]
+mod displays;
+#[cfg(target_os = "macos")]
+mod power;
 mod preferences;
 pub use capabilities::{settings_url, Capability, CapabilityStatus};
 pub use preferences::{Preference, PreferenceValue};
@@ -285,12 +289,19 @@ impl Controller {
     pub fn capture_selected(&self, groups: Option<&[String]>) -> Result<SnapshotView, String> {
         if let Some(groups) = groups {
             if groups.is_empty()
-                || groups.len() > 4
+                || groups.len() > 5
                 || groups.iter().any(|group| {
-                    !["Audio", "Desktop & Dock", "Keyboard", "Pointer"].contains(&group.as_str())
+                    ![
+                        "Audio",
+                        "Desktop & Dock",
+                        "Keyboard",
+                        "Pointer",
+                        "Finder storage",
+                    ]
+                    .contains(&group.as_str())
                 })
             {
-                return Err("Choose at least one supported category: Audio, Desktop & Dock, Keyboard, or Pointer.".into());
+                return Err("Choose at least one supported category: Audio, Desktop & Dock, Keyboard, Pointer, or Finder storage.".into());
             }
         }
         let _guard = self
@@ -310,7 +321,7 @@ impl Controller {
                 .preferences
                 .retain(|key, _| selected(key.descriptor().3));
             for item in &mut coverage {
-                if !selected(&item.group) {
+                if item.status == CapabilityStatus::Supported && !selected(&item.group) {
                     item.included = false;
                     item.detail = format!("Not selected for this capture. {}", item.detail);
                 }
@@ -1189,6 +1200,7 @@ struct MacOsNativeSettings;
 
 #[cfg(target_os = "macos")]
 mod core_audio {
+    pub(super) mod formats;
     use super::*;
     use core_foundation::{base::TCFType, string::CFString, string::CFStringRef};
     use std::{ffi::c_void, mem::size_of, ptr};
@@ -1497,6 +1509,9 @@ mod core_audio {
 impl NativeSettings for MacOsNativeSettings {
     fn coverage(&self, values: &SystemValues) -> Vec<Capability> {
         let mut items = capabilities::coverage(values);
+        power::annotate(&mut items);
+        displays::annotate(&mut items);
+        core_audio::formats::annotate(&mut items);
         for (index, key) in Preference::ALL.into_iter().enumerate() {
             if !values.preferences.contains_key(&key) {
                 if !preferences::supported_version() {
@@ -2256,13 +2271,49 @@ mod tests {
             Ok(discovered) => {
                 println!("Read-only native discovery: supported controls found (identities and values omitted).");
                 assert_eq!(discovered.identity.platform, "macos");
-                assert!(
-                    !discovered.values.preferences.is_empty(),
-                    "native preference discovery must cover more than audio"
+                assert_eq!(
+                    discovered.values.preferences.len(),
+                    Preference::ALL.len(),
+                    "native discovery must capture every allowlisted preference"
+                );
+                assert_eq!(
+                    usize::from(discovered.values.output_volume.is_some())
+                        + usize::from(discovered.values.output_muted.is_some()),
+                    2,
+                    "native discovery must capture both audio controls"
                 );
                 discovered.values.validate().unwrap();
                 let inventory = native_adapter().coverage(&discovered.values);
-                assert_eq!(inventory.len(), 20);
+                assert_eq!(inventory.len(), 2 + Preference::ALL.len() + 18);
+                assert_eq!(
+                    inventory
+                        .iter()
+                        .filter(|item| item.status == CapabilityStatus::Supported)
+                        .count(),
+                    Preference::ALL.len() + 2,
+                    "all 21 captured controls must be supported"
+                );
+                for id in [
+                    "audio_format",
+                    "display_mode",
+                    "system_sleep",
+                    "display_sleep",
+                ] {
+                    let item = inventory.iter().find(|item| item.id == id).unwrap();
+                    assert_eq!(item.status, CapabilityStatus::ReadOnly, "{id}");
+                    assert!(!item.included, "{id}");
+                }
+                let audio_format = inventory
+                    .iter()
+                    .find(|item| item.id == "audio_format")
+                    .unwrap();
+                assert!(audio_format.detail.contains("ASBD"));
+                assert!(
+                    !audio_format.detail.split("; ").any(|detail| {
+                        detail.starts_with("Output stream ") && detail.contains(": unknown:")
+                    }),
+                    "every output stream must have a known physical ASBD"
+                );
                 for item in &inventory {
                     println!(
                         "{}: {:?}; included={}",
@@ -2272,7 +2323,7 @@ mod tests {
                 let directory = directory("native-read-only-probe");
                 let controller = Controller::new(directory.clone(), native_adapter());
                 let saved = controller.capture().unwrap();
-                assert_eq!(saved.coverage.len(), 20);
+                assert_eq!(saved.coverage.len(), inventory.len());
                 assert!(controller.preview(&saved.id).unwrap().changes.is_empty());
                 fs::remove_dir_all(directory).unwrap();
             }

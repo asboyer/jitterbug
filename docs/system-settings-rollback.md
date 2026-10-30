@@ -1,34 +1,48 @@
 # System settings baseline and rollback
 
-**Implemented:** macOS audio plus current-user saved Dock, keyboard, and pointer preferences.
+**Implemented:** macOS audio plus current-user saved Dock, keyboard/text, pointer, and Finder storage
+preferences (21 restore entries when all controls are available). Hardware formats and power timers
+have read-only discovery, not persistent restore adapters.
 This is not a full-system backup, OS downgrade, performance optimization, or a claim that writing a
 preference immediately changes live behavior. Windows and other platforms remain explicitly
 unsupported; no Windows baseline adapter was implemented or cross-compiled in this change.
 
 ## Exact capture/restore scope
 
-Users can include Audio, Desktop & Dock, Keyboard, and Pointer independently. Every Set Default
+Users can include Audio, Desktop & Dock, Keyboard, Pointer, and Finder storage independently. Every Set Default
 creates an immutable snapshot and keeps every earlier snapshot. Each snapshot includes a per-setting
 coverage report, including exclusions. Existing v1 audio-only snapshots and separate legacy
 provider-history files remain readable/preserved; restoring an old audio snapshot does not touch
 newly supported preferences.
 
-| Group          | Setting                        | Native property / domain and key                          | Stored type                        |
-| -------------- | ------------------------------ | --------------------------------------------------------- | ---------------------------------- |
-| Audio          | Default output master volume   | CoreAudio `kAudioDevicePropertyVolumeScalar`, output/main | Float32, 0–1                       |
-| Audio          | Default output master mute     | CoreAudio `kAudioDevicePropertyMute`, output/main         | UInt32 Boolean                     |
-| Desktop & Dock | Auto-hide                      | `com.apple.dock` / `autohide`                             | Boolean or absent                  |
-| Desktop & Dock | Magnification                  | `com.apple.dock` / `magnification`                        | Boolean or absent                  |
-| Desktop & Dock | Animate opening applications   | `com.apple.dock` / `launchanim`                           | Boolean or absent                  |
-| Desktop & Dock | Minimize into application icon | `com.apple.dock` / `minimize-to-application`              | Boolean or absent                  |
-| Desktop & Dock | Show recent applications       | `com.apple.dock` / `show-recents`                         | Boolean or absent                  |
-| Desktop & Dock | Icon size                      | `com.apple.dock` / `tilesize`                             | Integer or real, 16–256, or absent |
-| Keyboard       | Repeat interval                | global / `KeyRepeat`                                      | Integer, 0–10000, or absent        |
-| Keyboard       | Initial repeat delay           | global / `InitialKeyRepeat`                               | Integer, 0–10000, or absent        |
-| Keyboard       | Press-and-hold accent menu     | global / `ApplePressAndHoldEnabled`                       | Boolean or absent                  |
-| Pointer        | Natural scrolling              | global / `com.apple.swipescrolldirection`                 | Boolean or absent                  |
-| Pointer        | Mouse tracking speed           | global / `com.apple.mouse.scaling`                        | Real, −1–10, or absent             |
-| Pointer        | Trackpad tracking speed        | global / `com.apple.trackpad.scaling`                     | Real, −1–10, or absent             |
+| Group          | Setting                            | Native property / domain and key                          | Stored type                        |
+| -------------- | ---------------------------------- | --------------------------------------------------------- | ---------------------------------- |
+| Audio          | Default output master volume       | CoreAudio `kAudioDevicePropertyVolumeScalar`, output/main | Float32, 0–1                       |
+| Audio          | Default output master mute         | CoreAudio `kAudioDevicePropertyMute`, output/main         | UInt32 Boolean                     |
+| Desktop & Dock | Auto-hide                          | `com.apple.dock` / `autohide`                             | Boolean or absent                  |
+| Desktop & Dock | Magnification                      | `com.apple.dock` / `magnification`                        | Boolean or absent                  |
+| Desktop & Dock | Animate opening applications       | `com.apple.dock` / `launchanim`                           | Boolean or absent                  |
+| Desktop & Dock | Minimize into application icon     | `com.apple.dock` / `minimize-to-application`              | Boolean or absent                  |
+| Desktop & Dock | Show recent applications           | `com.apple.dock` / `show-recents`                         | Boolean or absent                  |
+| Desktop & Dock | Icon size                          | `com.apple.dock` / `tilesize`                             | Integer or real, 16–256, or absent |
+| Keyboard       | Repeat interval                    | global / `KeyRepeat`                                      | Integer, 0–10000, or absent        |
+| Keyboard       | Initial repeat delay               | global / `InitialKeyRepeat`                               | Integer, 0–10000, or absent        |
+| Keyboard       | Press-and-hold accent menu         | global / `ApplePressAndHoldEnabled`                       | Boolean or absent                  |
+| Pointer        | Natural scrolling                  | global / `com.apple.swipescrolldirection`                 | Boolean or absent                  |
+| Pointer        | Mouse tracking speed               | global / `com.apple.mouse.scaling`                        | Real, −1–10, or absent             |
+| Pointer        | Trackpad tracking speed            | global / `com.apple.trackpad.scaling`                     | Real, −1–10, or absent             |
+| Keyboard       | Automatic spelling correction      | global / `NSAutomaticSpellingCorrectionEnabled`           | Boolean or absent                  |
+| Keyboard       | Automatic capitalization           | global / `NSAutomaticCapitalizationEnabled`               | Boolean or absent                  |
+| Keyboard       | Automatic period substitution      | global / `NSAutomaticPeriodSubstitutionEnabled`           | Boolean or absent                  |
+| Keyboard       | Smart dashes                       | global / `NSAutomaticDashSubstitutionEnabled`             | Boolean or absent                  |
+| Keyboard       | Smart quotes                       | global / `NSAutomaticQuoteSubstitutionEnabled`            | Boolean or absent                  |
+| Finder storage | Avoid .DS_Store on network volumes | `com.apple.desktopservices` / `DSDontWriteNetworkStores`  | Boolean or absent                  |
+| Finder storage | Avoid .DS_Store on USB volumes     | `com.apple.desktopservices` / `DSDontWriteUSBStores`      | Boolean or absent                  |
+
+The Finder entries are **future file-creation preferences**, not cleanup: existing files are never
+deleted, regenerated, or restored. USB behavior is an observed preference convention, not a public
+Finder API guarantee. Applications can override global text preferences. Tracking speed is not a
+separately captured pointer-acceleration toggle. No predetermined values are supplied.
 
 The preference adapter is enabled on macOS major versions **13–15** only. Exact OS-version matching
 is required for restoration, including minor/patch changes. These keys are observed macOS preference
@@ -51,7 +65,10 @@ still determine effective behavior.
 
 ## Coverage, access, and permissions
 
-Coverage & access inventories each setting as supported, needs permission, read-only, or unavailable.
+Coverage & access inventories each setting as supported, needs permission, read-only, manual, or unavailable.
+Manual means there is a user-controlled settings route but no validated restore adapter; unavailable
+means discovery is missing/failed or a platform API is unsupported. Unknown values are never replaced
+with defaults. A successful read-only observation does not make an entry selectable.
 Current implemented writable adapters require no microphone, Accessibility, Full Disk Access, or
 administrator grant. **Supported means a readable valid value and implemented setter, not proof of
 write permission.** Managed preferences are rejected by `CFPreferencesAppValueIsForced`; denied
@@ -59,14 +76,55 @@ synchronization, unsupported native types, and unvalidated OS versions are expla
 No permission is requested automatically. Recheck access performs fresh discovery, including after
 manual permission/management changes. There is no fake grant button.
 
-| Additional setting    | Current behavior                                                                                                     |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Reduce motion         | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceMotion`; no baseline restoration         |
-| Reduce transparency   | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; no baseline restoration   |
-| Stage Manager         | Unavailable; no reliable public reversible setting API implemented                                                   |
-| Display sleep timeout | Unavailable for capture/restore; administrator-managed power preferences, no privileged authorization adapter        |
-| System idle sleep     | Unavailable for capture/restore; hardware/power-source-dependent power profiles, no privileged authorization adapter |
-| Display brightness    | Unavailable; no implemented verified per-display adapter across Apple Silicon and external displays                  |
+| Additional setting             | Current behavior                                                                                                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reduce motion                  | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceMotion`; no baseline restoration                                                                 |
+| Reduce transparency            | Read-only effective value from `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; no baseline restoration                                                           |
+| Stage Manager                  | Unavailable; no reliable public reversible setting API implemented                                                                                                           |
+| Display sleep timeout          | Read-only `pmset -g custom` saved `displaysleep`, separately per reported AC/Battery/UPS source; no authorized restore                                                       |
+| System idle sleep              | Read-only `pmset -g custom` saved `sleep`, separately per reported AC/Battery/UPS source; no authorized restore                                                              |
+| Display brightness             | Unavailable; no implemented verified per-display adapter across Apple Silicon and external displays                                                                          |
+| Audio nominal rate/full format | Read-only nominal rate, supported rate ranges, full physical-stream ASBD, matching supported format ranges, and settable status; default-device UID and stream drift checked |
+| Display mode/refresh           | Read-only full CoreGraphics mode: points, pixels, refresh, mode ID, flags, desktop usability, exact supported-mode match; stable display UUID and topology drift checked     |
+| Low/High Power Mode            | Manual; hardware and power-source dependent, no authorized writer; undocumented numeric `powermode` values are not interpreted                                               |
+| Login/background items         | Manual; ServiceManagement does not provide a general reversible adapter for other applications' registrations and approvals                                                  |
+| Time Machine scheduling        | Manual; no typed authorized schedule adapter; backup execution/deletion is excluded                                                                                          |
+| Pointer acceleration           | Manual, explicitly distinct from captured tracking speed; no validated separate acceleration adapter                                                                         |
+| iCloud Optimize Mac Storage    | Manual account-managed policy; no eviction, download, or file deletion                                                                                                       |
+| Microphone TCC grants          | Manual Privacy & Security approval; grants cannot be replayed; no discovery prompt or TCC database writes                                                                    |
+| Spotlight exclusions           | Manual Search Privacy; no exact supported exclusion-list restore adapter, no indexing actions                                                                                |
+| Developer Tools access         | Manual per-app privacy approval, not replayable; no security-disabling controls                                                                                              |
+
+### Hardware persistence gate
+
+The public SDK explicitly documents `CGDisplaySetDisplayMode` as **application-lifetime**, reverting
+on termination. `CGCompleteDisplayConfiguration(kCGConfigurePermanently)` can fall back to the login
+session if the UI cannot support the configuration. Neither an immediate readback nor a mode's Hz
+proves persistence. Display writes are therefore not enabled. Full modes are compared, never refresh
+alone; a reported zero refresh is shown as unknown/variable, not converted to a guessed Hz. Deprecated
+pixel-encoding APIs are not used. Full-mode observations are not HDR/color-profile/VRR-policy backups.
+
+CoreAudio `AudioObjectIsPropertySettable` describes driver writability, not persistence across reboot
+or reconnect. No device-specific persistence contract has been validated for nominal rate or physical
+format, so their writers are also gated. The physical ASBD observation retains sample rate, format ID,
+flags, bytes/packet, frames/packet, bytes/frame, channels, bits/channel, and reserved field; supported
+rate ranges alone do not validate a full format. Per-stream errors remain explicitly unknown.
+These observations are saved only in the **excluded coverage report**, not `SystemValues` and not
+restore targets. Stable hardware identities are checked in memory, not exposed in report text.
+
+The fixed `/usr/bin/pmset -g custom` probe is read-only, bounded to two seconds and 16 KiB, with no
+caller-controlled executable or arguments. Missing sources/keys remain unknown; zero means never.
+This is saved profile state, not effective sleep behavior (assertions, lid state, and hardware can
+override it). The `pmset(1)` manual requires root to modify settings and documents per-system
+persistence. No safe native authorized helper exists in this app; there is no fake grant or writable
+power adapter. Timeout cleanup reaps only the app's own probe subprocess, never user workloads.
+
+### Excluded one-time actions
+
+This baseline never offers purge, cache deletion, DNS flushing, quarantine removal, sleepimage deletion,
+process termination, temporary renice, session keep-awake assertions, index rebuilds, bulk tweaks,
+or security-disabling commands. Those are not persistent settings that this history could restore.
+No generalized command runner or automatic optimization values were added.
 
 Power settings are not presented as grantable just because an administrator password could exist.
 Jitterbug does not use `sudo`, ask for passwords, install a persistent privileged helper, or use a
@@ -94,6 +152,16 @@ selection, process termination, or arbitrary setting writes are included.
   use `kCFPreferencesCurrentApplication` and its global search chain; Dock checks use its bundle ID.
 - AppKit SDK `NSAccessibility.h`: the two NSWorkspace display-accessibility queries are read-only;
   they do not prompt for Accessibility permission and have no corresponding supported setter here.
+- CoreGraphics SDK `CGDirectDisplay.h` documents the application lifetime of `CGDisplaySetDisplayMode`;
+  `CGDisplayConfiguration.h` documents the permanent-to-session fallback. Read-only discovery uses
+  `CGDisplayCreateUUIDFromDisplayID`, `CGDisplayCopyDisplayMode`, `CGDisplayCopyAllDisplayModes`, and
+  nondeprecated full-mode accessors. No display setter is linked by the new adapter.
+- CoreAudio SDK `AudioHardwareBase.h` defines `kAudioDevicePropertyNominalSampleRate`,
+  `kAudioDevicePropertyAvailableNominalSampleRates`, `kAudioDevicePropertyStreams`,
+  `kAudioStreamPropertyPhysicalFormat`, and `kAudioStreamPropertyAvailablePhysicalFormats`.
+  The new format observer links only read/size/settable queries, not a format setter.
+- `pmset(1)` sections SETTING, GETTING, and FILES document root authorization, `-g custom`, per-source
+  timers, and per-system preference persistence. No private power plist is written.
 - `geteuid(2)` and `gethostuuid(3)` supply compatibility identity. Only locally keyed hashes are saved.
 
 Reference documentation and observed key semantics:
@@ -126,7 +194,7 @@ and selected-category baselines leave other preferences unchanged. Audio unavail
 prevent independent preference capture; its compatibility sentinel prevents later silent rebinding.
 
 There is no atomic compare-and-set across macOS preference/audio APIs. An external change during the
-last native call cannot be ruled out. Operations have finite setting lists, no command execution,
+last native call cannot be ruled out. Restore operations have finite setting lists, no command execution,
 no unbounded retries, and immediate readback; native synchronous APIs do not provide a cancellable
 per-call deadline. The identity query has a five-second timeout.
 
@@ -143,8 +211,9 @@ reports and optimizer incidents are not baseline snapshots and never replace the
 
 ## Verification record and limits
 
-The read-only native probe on macOS 15 discovered all 14 allowlisted capture/restore entries, the two
-read-only accessibility queries, and four explicitly unavailable categories. It exercised capture to
+The read-only native probe on macOS 15 discovered all 21 allowlisted capture/restore entries, read-only
+audio-format/display-mode/power-timer and accessibility observations, plus explicit manual/unavailable
+coverage. It exercised capture to
 isolated temporary app storage and no-op preview, then removed that test storage. Identities and actual
 values were not printed or committed. This verifies discovery, type checks, serialization, capability
 reporting, and no-change preview, **not native writes**.

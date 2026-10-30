@@ -248,16 +248,24 @@ Cloud calls come from activity checks, chat requests, opening uncached process d
 ## System settings baseline and rollback
 
 **Set Default** captures macOS audio and saved desktop/input preferences before optimization.
-Choose Audio, Desktop & Dock, Keyboard, and Pointer categories. The typed allowlist covers master
-volume/mute plus 12 saved preferences: Dock auto-hide, magnification, launch animation, minimizing
+Choose Audio, Desktop & Dock, Keyboard, Pointer, and Finder storage categories. The typed allowlist covers master
+volume/mute plus 19 saved preferences: Dock auto-hide, magnification, launch animation, minimizing
 into the application icon, recent apps, icon size; keyboard repeat interval/delay and accent menu;
-natural scrolling and mouse/trackpad speed. Preference storage support is limited to macOS 13–15.
+natural scrolling and mouse/trackpad tracking speed (not acceleration); spelling correction,
+capitalization, period/dash/quote substitution; and .DS_Store creation preferences on network/USB
+volumes. Existing files are never deleted. Preference storage support is limited to macOS 13–15.
 Each immutable capture retains prior history and includes per-setting coverage. Windows and other
 platforms remain unsupported.
 
-Coverage & access distinguishes supported, read-only, and unavailable settings and offers explicit
+Coverage & access distinguishes supported, read-only, manual, and unavailable settings and offers explicit
 System Settings links and Recheck access. Reduce motion/transparency are read-only public queries;
-Stage Manager, privileged sleep settings, and brightness are not falsely presented as restorable.
+CoreAudio nominal rate/full physical stream formats and CoreGraphics full display modes are observed
+with supported-range/mode and stable-identity checks, but **not restorable**: driver writability does
+not prove persistence, and display mode APIs can be application/session scoped. Saved power-source
+sleep/display-sleep timers are read using only `pmset -g custom`; no root writer is installed.
+Low/high power, login/background items, Time Machine scheduling, pointer acceleration, iCloud storage,
+microphone privacy, Spotlight exclusions, and Developer Tools access have precise manual coverage.
+Stage Manager and brightness are not falsely presented as restorable.
 There is no automatic permission request, password handling, sudo, or privileged helper.
 
 Audio is verified through live CoreAudio readback. Preferences are verified in saved CFPreferences
@@ -274,7 +282,9 @@ never replayed automatically. Capture and rollback share the supervisor action l
 
 This is not an OS upgrade/downgrade, disk backup, provider-configuration history, output-device
 switcher, or performance claim. It never changes credentials, privacy/security/network controls,
-processes, or arbitrary preferences. Legacy provider-history files remain untouched in their old
+processes, or arbitrary preferences. All one-time actions are excluded: purge/cache deletion, DNS
+flush, quarantine/sleepimage removal, process kills, temporary renice, session assertions, and
+security-disabling commands. Legacy provider-history files remain untouched in their old
 namespace but are no longer shown in Settings. See
 [system settings rollback](docs/system-settings-rollback.md) for native API scope and verification.
 

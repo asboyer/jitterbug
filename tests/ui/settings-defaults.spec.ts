@@ -168,6 +168,33 @@ async function mockDesktop(page: Page) {
     );
 }
 
+test('persistent-only scope distinguishes hardware observations from restorable values', async ({
+    page,
+}) => {
+    await mockDesktop(page);
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    const defaults = page.getByRole('region', { name: 'System settings baseline' });
+    await expect(
+        defaults.getByRole('checkbox', { name: 'Finder storage', exact: true })
+    ).toBeChecked();
+    await expect(
+        defaults.getByRole('checkbox', { name: /sample rate|display mode|sleep|microphone/i })
+    ).toHaveCount(0);
+    await expect(defaults).toContainText(
+        'Hardware observations are not restorable baseline values'
+    );
+    await expect(defaults).toContainText('all one-time');
+    const calls = await page
+        .locator('html')
+        .evaluate((el) => JSON.parse(el.dataset.settingsCalls ?? '[]'));
+    expect(
+        calls.filter((c: { command: string }) =>
+            /confirm_system_restore|open_system_settings_pane/.test(c.command)
+        )
+    ).toHaveLength(0);
+});
+
 test('capabilities explain authorization limits and open settings only on request', async ({
     page,
 }) => {
@@ -204,7 +231,7 @@ test('capture selection is explicit and saved preference previews disclose verif
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
-    for (const group of ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer']) {
+    for (const group of ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer', 'Finder storage']) {
         await defaults.getByRole('checkbox', { name: group, exact: true }).uncheck();
     }
     await expect(defaults.getByRole('button', { name: 'Set Default' })).toBeDisabled();

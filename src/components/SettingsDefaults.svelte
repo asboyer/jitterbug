@@ -12,7 +12,7 @@
     } from '../lib/types';
 
     const PAGE_SIZE = 20;
-    const captureGroups = ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer'];
+    const captureGroups = ['Audio', 'Desktop & Dock', 'Keyboard', 'Pointer', 'Finder storage'];
     let selectedGroups = $state([...captureGroups]);
 
     let { desktop }: { desktop: boolean } = $props();
@@ -348,7 +348,8 @@
         <div>
             <h2>System settings baseline</h2>
             <p class="muted">
-                Capture audio and saved macOS desktop, keyboard, and pointer preferences.
+                Capture audio and saved macOS desktop, keyboard/text, pointer, and Finder storage
+                preferences.
             </p>
         </div>
         <button
@@ -369,15 +370,18 @@
                 The current default output device’s settable master volume and mute values, when
                 CoreAudio reports those controls as supported. Also captures allowlisted Dock
                 behavior, keyboard repeat and accent-menu settings, natural scrolling, and
-                mouse/trackpad speed overrides on macOS 13–15. Inspect coverage below; this is not
-                every OS setting.
+                mouse/trackpad tracking speed (not acceleration), text correction/substitutions, and
+                Finder .DS_Store creation preferences on macOS 13–15. Inspect coverage below; this
+                is not every OS setting.
             </p>
         </div>
         <div>
             <h3>Never included</h3>
             <p>
                 Provider configuration, credentials, privacy/security/network controls, processes,
-                software or OS versions, device selection, and arbitrary commands.
+                software or OS versions, device selection, arbitrary commands, and all one-time
+                cleanup or session actions. No cache deletion, DNS flushing, quarantine removal,
+                process termination, temporary priority changes, or keep-awake assertions.
             </p>
         </div>
     </div>
@@ -401,7 +405,10 @@
         <p>
             No permission is requested automatically. Supported means the adapter can read a valid
             value; write access is rechecked during rollback. No password handling, sudo, or
-            persistent privileged helper.
+            persistent privileged helper. Hardware observations are not restorable baseline values:
+            sample rate/full audio formats and full display modes remain read-only until persistence
+            is validated. Sleep timers are read-only per power source; restoration requires native
+            privileged authorization that is not installed. Manual entries cannot be selected.
         </p>
         <button disabled={!desktop || busy || checkingAccess} onclick={recheckAccess}
             >{checkingAccess ? 'Checking access…' : 'Recheck access'}</button
