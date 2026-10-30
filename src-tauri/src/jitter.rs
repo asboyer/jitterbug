@@ -182,6 +182,14 @@ struct Load {
     sustained: usize,
     pid: Option<(u32, u64)>,
     pulse: bool,
+    /// For a command: the one process whose own spike explains it, when the command's total
+    /// was already busy (an agent session that started a hog).
+    via: Option<String>,
+}
+
+/// At least 3× its baseline, over a quarter of one core, and 25 points above it.
+fn spiked(base: f32, peak: f32) -> bool {
+    peak >= 25.0 && peak >= base.max(1.0) * 3.0 && peak - base >= 25.0
 }
 
 fn loads(capture: &Capture, snapshot: &Snapshot, w: &Windows) -> Vec<Load> {
@@ -219,6 +227,7 @@ fn loads(capture: &Capture, snapshot: &Snapshot, w: &Windows) -> Vec<Load> {
                 sustained: 0,
                 pid: None,
                 pulse: true,
+                via: None,
             },
         );
     }
@@ -257,6 +266,7 @@ fn loads(capture: &Capture, snapshot: &Snapshot, w: &Windows) -> Vec<Load> {
             sustained: 0,
             pid: None,
             pulse: false,
+            via: None,
         });
         // The longer, complete history is the safer baseline when the PID was not yet watched.
         entry.base = entry.base.max(base);
@@ -273,6 +283,44 @@ fn loads(capture: &Capture, snapshot: &Snapshot, w: &Windows) -> Vec<Load> {
                 .iter()
                 .filter(|t| series(t, &load.id) >= threshold)
                 .count();
+        }
+        // A busy command (a working agent session) can hide a process it just started: judge
+        // each member against its own baseline too, and let the clearest one speak for it.
+        if load.pulse && load.category == "command" && !spiked(load.base, load.peak) {
+            let cpu = |t: &Tick, pid: u32| {
+                t.processes
+                    .iter()
+                    .find(|(p, _)| *p == pid)
+                    .map_or(0.0, |(_, c)| *c)
+            };
+            let member = capture
+                .identities
+                .iter()
+                .filter(|i| i.workload_id == load.id)
+                .map(|i| {
+                    let base = mean(w.baseline.iter().map(|t| cpu(t, i.pid)));
+                    let (peak, at) = w
+                        .suspect
+                        .iter()
+                        .map(|t| (cpu(t, i.pid), (w.rel)(t.at_ms)))
+                        .fold((0.0_f32, 0), |a, b| if b.0 > a.0 { b } else { a });
+                    let threshold = (base.max(1.0) * 3.0).max(25.0);
+                    let sustained = w
+                        .suspect
+                        .iter()
+                        .filter(|t| cpu(t, i.pid) >= threshold)
+                        .count();
+                    (i, base, peak, at, sustained)
+                })
+                .filter(|(_, base, peak, _, _)| spiked(*base, *peak))
+                .max_by(|a, b| (a.2 - a.1).total_cmp(&(b.2 - b.1)));
+            if let Some((identity, base, peak, at, sustained)) = member {
+                load.base = base;
+                load.peak = peak;
+                load.peak_at = at;
+                load.sustained = sustained;
+                load.via = Some(identity.name.clone());
+            }
         }
         load.pid = capture
             .identities
@@ -506,10 +554,7 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
 
     // Process spikes: ≥3× baseline and over a quarter of one core.
     let loads = loads(capture, snapshot, &w);
-    for load in loads
-        .iter()
-        .filter(|l| l.peak >= 25.0 && l.peak >= l.base.max(1.0) * 3.0 && l.peak - l.base >= 25.0)
-    {
+    for load in loads.iter().filter(|l| spiked(l.base, l.peak)) {
         if findings
             .iter()
             .filter(|f| f.kind == FindingKind::ProcessSpike)
@@ -524,9 +569,15 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
             .pid
             .and_then(|(pid, _)| capture.identities.iter().find(|i| i.pid == pid))
             .filter(|i| {
-                load.category == "command" && !load.label.starts_with(&format!("{} ", i.name))
+                load.via.is_none()
+                    && load.category == "command"
+                    && !load.label.starts_with(&format!("{} ", i.name))
             })
             .map(|i| format!("Busiest process in it: {}.", i.name));
+        let subject = match &load.via {
+            Some(name) => format!("{name}, started by {},", load.label),
+            None => load.label.clone(),
+        };
         findings.push(Finding {
             kind: FindingKind::ProcessSpike,
             strength: if strong {
@@ -537,7 +588,7 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
             title: format!("{} spiked", load.label),
             observed: vec![format!(
                 "{} rose from {:.0}% to {:.0}% of one core (peak at {:+}s{}).",
-                load.label,
+                subject,
                 load.base,
                 load.peak,
                 load.peak_at,
@@ -1615,6 +1666,50 @@ pub(crate) mod tests {
         assert_eq!(r.culprit.as_ref().unwrap().label, "perl in Editor");
         assert!(r.findings.iter().all(|f| f.kind != FindingKind::VictimBusy));
         assert_eq!(r.victim.as_ref().unwrap().label, "Editor");
+    }
+
+    #[test]
+    fn a_hog_started_by_an_already_busy_session_is_still_named() {
+        // The session itself works at 80% of a core; the hog it starts adds 100%. The session's
+        // total (80 → 180) is under three times its baseline, the hog alone is not.
+        let mut c = capture(|o, t| {
+            t.processes.push((310, 80.0));
+            if (-6..=2).contains(&o) {
+                t.processes.push((311, 100.0));
+            }
+        });
+        for (pid, parent, name) in [(310, 210, "claude"), (311, 310, "perl")] {
+            c.identities.push(Identity {
+                pid,
+                start_time: 3,
+                name: name.into(),
+                workload_id: "editor".into(),
+                label: "Editor".into(),
+                category: "app".into(),
+                parent_pid: Some(parent),
+                bundle: None,
+            });
+        }
+        let mut s = snapshot();
+        editor_with_terminal(&mut s);
+        s.processes.push(ProcessRecord {
+            pid: 310,
+            start_time: 3,
+            parent_pid: Some(210),
+            name: "claude".into(),
+            workload_id: "editor".into(),
+            ..Default::default()
+        });
+        let r = analyze(&c, &s);
+        let spike = r
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::ProcessSpike)
+            .expect("the hog is found");
+        assert_eq!(spike.label.as_deref(), Some("claude in Editor"));
+        assert!(spike.observed[0].starts_with("perl, started by claude in Editor, rose from 0%"));
+        assert_eq!(spike.strength, Strength::Strong);
+        assert_eq!(r.culprit.as_ref().unwrap().label, "claude in Editor");
     }
 
     #[test]
