@@ -29,8 +29,12 @@ fn round(value: f32) -> f64 {
 }
 
 fn folder(path: &str) -> Option<String> {
-    std::path::Path::new(path)
-        .file_name()
+    let path = std::path::Path::new(path);
+    // The home folder's name is the account name, not a project.
+    if dirs::home_dir().as_deref() == Some(path) {
+        return None;
+    }
+    path.file_name()
         .map(|f| f.to_string_lossy().chars().take(60).collect())
 }
 
