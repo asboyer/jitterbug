@@ -5,13 +5,16 @@ pub mod automation;
 pub mod budget;
 mod capture;
 pub mod collector;
+pub mod control;
 mod desktop;
 pub mod details;
 pub mod diagnostics;
 mod floating;
 pub mod harness;
+pub mod inside;
 pub mod jitter;
 pub mod origins;
+pub mod pause;
 pub mod platform;
 mod popup;
 pub mod pressure;
@@ -220,6 +223,28 @@ fn get_workload_details(
         }
     }
     Ok(detail)
+}
+
+#[tauri::command]
+async fn get_inside_view(
+    state: State<'_, AppState>,
+    workload_id: String,
+) -> Result<inside::Inside, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || inside::inspect(&snapshot, &workload_id))
+        .await
+        .map_err(|_| "Inside view unavailable.")?
+}
+
+#[tauri::command]
+async fn tab_action(target_id: String, url: String, action: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || inside::chrome::act(&target_id, &url, &action))
+        .await
+        .map_err(|_| "Tab action unavailable.")?
 }
 
 #[tauri::command]
@@ -662,6 +687,39 @@ async fn approve_stop(state: State<'_, AppState>, id: u64) -> Result<(), String>
 }
 
 #[tauri::command]
+async fn resume_case(state: State<'_, AppState>, id: u64) -> Result<String, String> {
+    // Resuming scans the process table; keep it off the main thread.
+    let runtime = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.resume(id))
+        .await
+        .map_err(|_| "Resume unavailable.")?
+}
+
+/// Pause or resume one command session from the inside view. Pausing rechecks ownership.
+#[tauri::command]
+async fn session_control(
+    pid: u32,
+    start_time: u64,
+    action: String,
+    label: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || match action.as_str() {
+        "pause" => pause::pause(pid, start_time, &label).map(|p| {
+            format!(
+                "Paused {} ({} processes). It resumes automatically after {} minutes.",
+                p.label,
+                p.members.len(),
+                pause::LIMIT_SECONDS / 60
+            )
+        }),
+        "resume" => pause::resume(pid, start_time),
+        _ => Err("Unknown session action.".into()),
+    })
+    .await
+    .map_err(|_| "Session control unavailable.")?
+}
+
+#[tauri::command]
 async fn approve_optimization(
     state: State<'_, AppState>,
     id: u64,
@@ -726,6 +784,8 @@ pub fn run() {
             let directory = app.path().app_data_dir()?;
             let settings = storage::read::<settings::Settings>(&directory.join("settings.json"))?;
             settings.validate()?;
+            // Anything a previous run left paused (a crash or forced quit) resumes now.
+            pause::init(&directory);
             let jitter = capture::Service::new(directory.clone(), settings.automation.jitter_mode);
             app.manage(jitter.clone());
             app.manage(popup::Popups::default());
@@ -738,6 +798,19 @@ pub fn run() {
                 }),
             );
             app.manage(runtime.clone());
+            // Agent control is optional: a failure leaves monitoring and the app unaffected.
+            #[cfg(unix)]
+            if let Ok(path) = control::socket_path() {
+                let control = runtime.clone();
+                if let Err(error) = control::server::serve(
+                    &path,
+                    Arc::new(move |caller, method, params| {
+                        control::handlers::handle(&control, caller, method, params)
+                    }),
+                ) {
+                    eprintln!("Agent control unavailable: {error}");
+                }
+            }
             capture::install(app, runtime.clone(), jitter.clone());
             let handle = app.handle().clone();
             std::thread::Builder::new()
@@ -746,7 +819,12 @@ pub fn run() {
                     let mut collector = collector::Collector::default();
                     let mut last_workflow_notice = types::now();
                     loop {
-                        let sample = collector.sample();
+                        let mut sample = collector.sample();
+                        sample.frontmost_workload = crate::platform::frontmost()
+                            .filter(|(pid, _)| *pid != std::process::id())
+                            .and_then(|(pid, _)| sample.processes.iter().find(|p| p.pid == pid))
+                            .map(|p| p.workload_id.clone());
+                        pause::expire();
                         if let (Ok(directory), Ok(executable)) =
                             (queue::directory(), std::env::current_exe())
                         {
@@ -820,6 +898,8 @@ pub fn run() {
             search_workloads,
             get_workload_details,
             get_workload_icon,
+            get_inside_view,
+            tab_action,
             explain_application,
             summarize_agent_task,
             get_agent_task_summary,
@@ -853,6 +933,8 @@ pub fn run() {
             dismiss_automation_case,
             approve_optimization,
             approve_stop,
+            resume_case,
+            session_control,
             capture::report_jitter,
             capture::get_jitter_tally,
             capture::clear_jitter_tally,
@@ -864,6 +946,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")
         .run(|app, event| {
+            // Never leave a paused command frozen after Jitterbug exits.
+            if matches!(event, tauri::RunEvent::Exit) {
+                pause::resume_all();
+            }
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::RunEvent::Reopen { .. }) {
                 if let Some(window) = app.get_webview_window("main") {
@@ -872,6 +958,6 @@ pub fn run() {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
+            let _ = app;
         });
 }

@@ -62,6 +62,23 @@
     const canMutate = $derived(desktop && incident.source === 'live' && !busy);
     const success = $derived(['completed', 'resolved'].includes(incident.stage));
 
+    // A pause or tab close an agent asked for (or an incident offered): never applied
+    // without this explicit, two-step choice.
+    const granular = $derived(
+        incident.stage === 'awaiting_approval' &&
+            ['pause', 'close_tab'].includes(incident.alternative?.action ?? '')
+            ? incident.alternative
+            : null
+    );
+    let confirming = $state(false);
+    async function approveGranular() {
+        if (!confirming) {
+            confirming = true;
+            return;
+        }
+        confirming = false;
+        await perform('approve_stop', { id: incident.id });
+    }
     async function perform(command: string, args: Record<string, unknown>) {
         if (!canMutate) return false;
         busy = true;
@@ -145,6 +162,39 @@
                 <InsightCard reply={incident.diagnosis} />
             {:else}
                 <p class="observation">{incidentObservation(incident)}</p>
+            {/if}
+            {#if granular}
+                <section class="proposal-card" aria-label="Requested action">
+                    <div class="tip-heading">
+                        <Icon name="bulb" size={20} />
+                        <h3>
+                            {granular.action === 'pause'
+                                ? `Pause ${granular.unit?.title ?? granular.process.name}`
+                                : `Close the “${granular.unit?.title ?? granular.process.name}” tab`}
+                        </h3>
+                    </div>
+                    {#if incident.origin === 'agent'}<p class="muted">
+                            Requested by an agent: {incident.trigger.reason}
+                        </p>{/if}
+                    <p>{granular.rationale}</p>
+                    <button
+                        class:primary={!confirming}
+                        class:danger={confirming}
+                        disabled={busy || !canMutate}
+                        onclick={approveGranular}
+                        >{confirming
+                            ? 'Confirm'
+                            : granular.action === 'pause'
+                              ? 'Pause…'
+                              : 'Close tab…'}</button
+                    >
+                </section>
+            {/if}
+            {#if incident.report?.action === 'pause' && incident.stage === 'completed'}
+                <button
+                    disabled={busy || !canMutate}
+                    onclick={() => perform('resume_case', { id: incident.id })}>Resume now</button
+                >
             {/if}
             {#if incident.proposal && !incident.jitter}
                 <section class="proposal-card" data-tour="proposal">

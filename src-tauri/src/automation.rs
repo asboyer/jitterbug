@@ -35,6 +35,12 @@ pub struct Policy {
     /// Attach a snapshot to automatic incidents and open short-hitch cases. Off by default:
     /// snapshots are taken on demand unless the user turns this on.
     pub auto_snapshots: bool,
+    /// Agents connected through `jitterbug-run control-mcp` may ask for granular actions. Off
+    /// by default: any process running as this user can reach the socket, so the person opts in.
+    pub agent_control: bool,
+    /// Agent pause requests apply at once instead of waiting for approval. Pauses are
+    /// reversible and expire; closing a tab always asks.
+    pub agent_pause_without_asking: bool,
 }
 
 impl Default for Policy {
@@ -53,6 +59,8 @@ impl Default for Policy {
             jitter_mode: crate::pulse::Mode::Auto,
             action_popups: true,
             auto_snapshots: false,
+            agent_control: false,
+            agent_pause_without_asking: false,
         }
     }
 }
@@ -114,6 +122,8 @@ pub enum Kind {
     UserReported,
     /// Auto-mode pulse detector saw a sustained short hitch.
     ShortSpike,
+    /// An agent asked through MCP for one granular action (pause a session, close a tab).
+    AgentRequest,
 }
 
 /// Where a case came from. Snapshot and spike cases always wait for explicit approval.
@@ -124,6 +134,8 @@ pub enum Origin {
     Automatic,
     Snapshot,
     Spike,
+    /// Requested by an agent through the local MCP control server.
+    Agent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,6 +186,9 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default)]
     pub impact: Option<Impact>,
+    /// The tab or command session a granular action targets (pause, close_tab).
+    #[serde(default)]
+    pub unit: Option<crate::inside::Unit>,
 }
 
 /// The workload around a proposal, measured when it was made, so "now" and "after" can be
@@ -236,6 +251,7 @@ pub fn stop_option(s: &Snapshot, workload_id: &str) -> Option<Proposal> {
         process,
         action: "terminate".into(),
         rationale,
+        unit: None,
     })
 }
 
@@ -401,17 +417,35 @@ fn memory_growth(w: &Workload) -> Option<u64> {
 }
 
 /// Pure rule evaluation: no inference, file access, or process changes in the sampler.
+/// Total CPU below which the machine still has headroom for what you are doing.
+const CONTENTION_CPU_PERCENT: f32 = 60.0;
+
 pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
     if !s.sample_ready {
         return vec![];
     }
     let mut found = vec![];
-    let cpu_target = s
+    // The app in front is what you are doing: watching a video or building in it is the work,
+    // not a competitor. It is never singled out as a culprit, and a load that is mostly its own
+    // is not an alert either.
+    let front = s.frontmost_workload.as_deref();
+    let front_cpu = s
         .workloads
         .iter()
-        .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))
-        .map(target);
-    if s.cpu_percent >= policy.system_cpu_percent {
+        .find(|w| Some(w.id.as_str()) == front)
+        .map_or(0.0, |w| w.cpu_percent);
+    let busiest = |background: bool| {
+        s.workloads
+            .iter()
+            .filter(|w| !background || Some(w.id.as_str()) != front)
+            .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))
+            .map(target)
+    };
+    let cpu_target = busiest(true).or_else(|| busiest(false));
+    // A busy app with idle cores to spare slows nothing else down. Per-app CPU alerts wait
+    // until the machine as a whole is contended.
+    let contended = s.cpu_percent >= CONTENTION_CPU_PERCENT.min(policy.system_cpu_percent);
+    if s.cpu_percent >= policy.system_cpu_percent && front_cpu < s.cpu_percent * 0.5 {
         found.push(Trigger {
             cpu_floor_percent: None,
             memory_floor_bytes: None,
@@ -469,6 +503,9 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
                 reason: "The macOS window server repeatedly reports an unresponsive app. Low CPU does not rule out a blocked main thread or another stalled operation. This signal does not monitor individual web pages.".into(),
                 target: Some(target(w)), cpu_floor_percent: None, memory_floor_bytes: None,
             });
+        }
+        if !contended || Some(w.id.as_str()) == front {
+            continue;
         }
         let core_cpu = w.cpu_percent * s.logical_cpus.max(1) as f32;
         if w.cpu_percent >= policy.app_cpu_percent && core_cpu >= policy.app_cpu_core_percent {
@@ -742,7 +779,7 @@ pub fn proposal(s: &Snapshot, trigger: &Trigger) -> Option<Proposal> {
         })
         .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))?
         .clone();
-    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into() })
+    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into(), unit: None })
 }
 
 pub fn verify(
@@ -864,7 +901,8 @@ pub(crate) mod tests {
             captured_at: at,
             sample_ready: true,
             logical_cpus: 8,
-            cpu_percent: 20.0,
+            // Contended, so a busy background workload competes with other work.
+            cpu_percent: 70.0,
             memory_total_bytes: 16 << 30,
             memory_available_bytes: 8 << 30,
             workloads: vec![Workload {
@@ -1386,6 +1424,32 @@ pub(crate) mod tests {
         assert_eq!(migrated.app_cpu_percent, 10.0);
         assert_eq!(migrated.app_cpu_core_percent, 150.0);
         assert!(migrated.rules.is_empty());
+    }
+
+    #[test]
+    fn a_busy_app_with_headroom_or_in_front_is_not_an_alert() {
+        let p = Policy::default();
+        // A video in the browser: well over a core, but the machine has headroom.
+        let mut s = sample(100, 15.7);
+        s.cpu_percent = 25.0;
+        assert!(conditions(&s, &p).is_empty());
+        // Contended, but the busy app is the one you are using.
+        s.cpu_percent = 70.0;
+        s.frontmost_workload = Some("fixture".into());
+        assert!(conditions(&s, &p).is_empty());
+        // Saturated mostly by the app in front: that is your work, not an incident.
+        s.cpu_percent = 90.0;
+        s.workloads[0].cpu_percent = 80.0;
+        assert!(conditions(&s, &p).is_empty());
+        // The same load in the background competes with what you are doing.
+        s.frontmost_workload = Some("editor".into());
+        let kinds: Vec<_> = conditions(&s, &p).into_iter().map(|t| t.kind).collect();
+        assert!(kinds.contains(&Kind::SystemCpu) && kinds.contains(&Kind::AppCpu));
+        // A hung app is reported even in front and with headroom.
+        s.cpu_percent = 10.0;
+        s.frontmost_workload = Some("fixture".into());
+        s.workloads[0].unresponsive = Some(true);
+        assert_eq!(conditions(&s, &p)[0].kind, Kind::AppUnresponsive);
     }
 
     #[test]

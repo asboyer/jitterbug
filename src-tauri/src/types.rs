@@ -131,6 +131,9 @@ pub struct Snapshot {
     pub incident: Option<Incident>,
     pub history: Vec<MetricPoint>,
     pub collector_ms: f64,
+    /// Workload of the app in front when sampled: what you are using, not a competitor.
+    #[serde(default)]
+    pub frontmost_workload: Option<String>,
 }
 
 impl Snapshot {
@@ -176,6 +179,7 @@ impl Snapshot {
             incident: self.incident.clone(),
             history: self.history.clone(),
             collector_ms: self.collector_ms,
+            frontmost_workload: self.frontmost_workload.clone(),
         }
     }
 }

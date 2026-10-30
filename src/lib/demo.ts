@@ -3,7 +3,9 @@ import type {
     ActionPopupCase,
     AutomationCase,
     Bootstrap,
+    InsideView,
     Snapshot,
+    Workload,
     WorkloadDetails,
 } from './types';
 
@@ -95,6 +97,17 @@ export function demoSnapshot(pressure = false): Snapshot {
             history: [],
             process_count: 1,
         },
+        {
+            id: 'demo-editor',
+            label: 'Example Editor',
+            category: 'editor',
+            description: 'A simulated code editor with terminal sessions.',
+            attribution: 'Simulated application ancestry',
+            cpu_percent: 3,
+            memory_bytes: 1.6 * 1024 ** 3,
+            history: [],
+            process_count: 9,
+        },
     ];
     return {
         source: 'demo',
@@ -121,7 +134,7 @@ export function demoSnapshot(pressure = false): Snapshot {
             pid: 9000 + index,
             start_time: time - 60,
             parent_pid: null,
-            name: ['node', 'example-browser', 'ollama'][index],
+            name: ['node', 'example-browser', 'ollama', 'example-editor'][index],
             cpu_percent: w.cpu_percent,
             memory_bytes: w.memory_bytes,
             workload_id: w.id,
@@ -192,6 +205,8 @@ export const demoBootstrap: Bootstrap = {
             jitter_mode: 'auto',
             action_popups: true,
             auto_snapshots: false,
+            agent_control: false,
+            agent_pause_without_asking: false,
         },
     },
     automation_cases: [],
@@ -354,7 +369,7 @@ export function demoIncidents(): AutomationCase[] {
 }
 
 /** Synthetic out-of-app popup, trimmed exactly like the desktop payload. Nothing is applied. */
-export function demoActionPopup(): ActionPopupCase {
+export function demoActionPopup(example: string | null = null): ActionPopupCase {
     const incident = demoIncidents()[0];
     const label = incident.trigger.target?.label ?? 'the app';
     const source = incident.proposal?.process;
@@ -376,26 +391,169 @@ export function demoActionPopup(): ActionPopupCase {
         id: incident.id,
         source: 'demo',
         stage: 'awaiting_approval',
-        trigger: {
-            kind: incident.trigger.kind,
-            title: incident.trigger.title,
-            target: incident.trigger.target && { label: incident.trigger.target.label },
-        },
-        proposal: process
-            ? { action: 'lower_priority', process, impact: impact ?? null, closes: null }
-            : null,
-        alternative: process
-            ? {
-                  action: 'terminate',
-                  process,
-                  impact: impact ? { ...impact, whole_app: true } : null,
-                  closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
-              }
-            : null,
+        trigger:
+            example === 'agent'
+                ? {
+                      kind: 'agent_request',
+                      title: 'An agent in claude · fix-login asks to close the tab “Video call”',
+                      target: { label: 'Example Browser' },
+                      reason: '“The video call tab uses 640 MiB while the test run needs memory.”',
+                  }
+                : {
+                      kind: incident.trigger.kind,
+                      title: incident.trigger.title,
+                      target: incident.trigger.target && { label: incident.trigger.target.label },
+                  },
+        proposal:
+            process && example !== 'agent'
+                ? { action: 'lower_priority', process, impact: impact ?? null, closes: null }
+                : null,
+        alternative: !process
+            ? null
+            : example === 'tab' || example === 'agent'
+              ? {
+                    action: 'close_tab',
+                    process,
+                    impact: {
+                        label: 'Video call tab',
+                        workload_cpu_percent: 9.4,
+                        workload_memory_bytes: 640 * 1024 ** 2,
+                        process_count: 1,
+                        whole_app: false,
+                    },
+                    closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                    unit: { title: 'Video call', kind: 'tab' },
+                }
+              : example === 'pause'
+                ? {
+                      action: 'pause',
+                      process,
+                      impact: {
+                          label: 'claude · feat-search in Example Editor',
+                          workload_cpu_percent: 31,
+                          workload_memory_bytes: 2.1 * 1024 ** 3,
+                          process_count: 7,
+                          whole_app: false,
+                      },
+                      closes: 'Pause claude · feat-search in Example Editor: its 7 processes stop using CPU until you resume it (automatically after 15 minutes). Nothing is closed.',
+                      unit: { title: 'claude · feat-search in Example Editor', kind: 'session' },
+                  }
+                : {
+                      action: 'terminate',
+                      process,
+                      impact: impact ? { ...impact, whole_app: true } : null,
+                      closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
+                  },
         report: null,
         verification: null,
-        origin: 'automatic',
+        origin: example === 'agent' ? 'agent' : 'automatic',
         jitter: null,
-        more: 1,
+        more: example === 'agent' ? 0 : 1,
+    };
+}
+
+export function demoInside(workload: Workload): InsideView {
+    const mib = 1024 ** 2;
+    const tab = (
+        id: string,
+        title: string,
+        host: string,
+        cpu: number,
+        mem: number,
+        shared = 0
+    ) => ({
+        id,
+        kind: 'tab' as const,
+        title,
+        detail: `https://${host}/`,
+        host,
+        cpu_percent: cpu,
+        memory_bytes: mem * mib,
+        process_count: 1,
+        shared_with: shared,
+        pid: null,
+        start_time: null,
+        actions: ['focus_tab', 'close_tab'],
+        evidence: ['Synthetic example: no browser was contacted.'],
+        confidence: 'Matched by CPU time',
+        paused_until: null,
+    });
+    const session = (
+        id: string,
+        title: string,
+        host: string,
+        cpu: number,
+        mem: number,
+        detail: string,
+        actions: string[]
+    ) => ({
+        ...tab(id, title, host, cpu, mem),
+        kind: 'session' as const,
+        detail,
+        process_count: 4,
+        actions,
+        evidence: ['Synthetic example: no process was inspected.'],
+        confidence: 'Process tree and working directory',
+    });
+    const browser = workload.category === 'browser';
+    if (!browser && workload.category !== 'editor')
+        return {
+            workload_id: workload.id,
+            source: 'None',
+            status: 'unavailable',
+            message: 'No inside view for this app yet.',
+            setup: [],
+            units: [],
+            remainder: [],
+            measured_seconds: 0,
+            captured_at: Math.floor(Date.now() / 1000),
+            limits: '',
+        };
+    return {
+        workload_id: workload.id,
+        source: browser ? 'Browser DevTools' : 'Process tree',
+        status: 'ready',
+        message: browser
+            ? '4 tabs measured over one second.'
+            : '2 commands running inside the app.',
+        setup: [],
+        units: browser
+            ? [
+                  tab('d1', 'Video call', 'meet.example.com', 9.4, 640),
+                  tab('d2', 'Browser game', 'games.example.com', 6.1, 410),
+                  tab('d3', 'Docs', 'docs.example.com', 0.2, 180, 1),
+                  tab('d4', 'Mail', 'mail.example.com', 0.1, 150, 1),
+              ]
+            : [
+                  session(
+                      's2',
+                      'npm · sample-web-app',
+                      'npm',
+                      11.5,
+                      870,
+                      '~/example/sample-web-app',
+                      ['pause', 'lower_priority', 'terminate']
+                  ),
+                  session(
+                      's1',
+                      'claude · feat-search',
+                      'claude',
+                      3.2,
+                      520,
+                      '~/example/repo.worktrees/feat-search',
+                      ['pause']
+                  ),
+              ],
+        remainder: [
+            {
+                label: browser ? 'Graphics (GPU process, shared by all tabs)' : 'The app itself',
+                cpu_percent: 1.2,
+                memory_bytes: 300 * mib,
+                process_count: browser ? 1 : 6,
+            },
+        ],
+        measured_seconds: browser ? 1 : 0,
+        captured_at: Math.floor(Date.now() / 1000),
+        limits: 'Measurements are illustrative.',
     };
 }

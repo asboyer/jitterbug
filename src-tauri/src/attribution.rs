@@ -8,6 +8,9 @@ use sysinfo::{Process, System};
 #[derive(Default)]
 pub struct Attribution {
     projects: HashMap<PathBuf, Option<PathBuf>>,
+    /// Parents the process table could not read (root-owned launchers such as `login`),
+    /// filled from the kernel for this sample.
+    pub bridges: HashMap<u32, u32>,
 }
 
 pub struct Label {
@@ -146,10 +149,21 @@ impl Attribution {
                     };
                 }
             }
-            let Some(parent) = ancestor.parent().and_then(|id| system.process(id)) else {
+            let Some(parent) = ancestor
+                .parent()
+                .or_else(|| {
+                    self.bridges
+                        .get(&ancestor.pid().as_u32())
+                        .map(|id| sysinfo::Pid::from_u32(*id))
+                })
+                .and_then(|id| system.process(id))
+            else {
                 break;
             };
-            if parent.pid() == ancestor.pid() || parent.start_time() > ancestor.start_time() {
+            // A start time of zero is unreadable (another user's process), not "older".
+            if parent.pid() == ancestor.pid()
+                || (ancestor.start_time() != 0 && parent.start_time() > ancestor.start_time())
+            {
                 break;
             }
             ancestor = parent;

@@ -19,6 +19,14 @@ type Connection = unsafe extern "C" fn() -> i32;
 type Unresponsive = unsafe extern "C" fn(i32, *const ProcessSerialNumber) -> bool;
 
 pub fn app_unresponsive(pid: u32) -> Option<bool> {
+    // Only an app with a Dock icon and windows can visibly freeze. Background agents and helpers
+    // inside app bundles often never service a window event loop and would always look hung.
+    let app = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
+        i32::try_from(pid).ok()?,
+    )?;
+    if app.activationPolicy() != objc2_app_kit::NSApplicationActivationPolicy::Regular {
+        return None;
+    }
     static API: OnceLock<Option<(ProcessSerial, Connection, Unresponsive)>> = OnceLock::new();
     let (serial, connection, unresponsive) = API.get_or_init(|| unsafe {
         // Retain the system framework handle for the lifetime of its function pointers.
@@ -304,6 +312,24 @@ pub fn all_processes() -> Vec<super::NativeProcess> {
     *known = next;
     *unreadable = still_unreadable;
     out
+}
+
+/// Parent of any process, including root-owned launchers such as Terminal's `login`, whose
+/// full process information is unreadable without privileges.
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdshortinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+            size,
+        )
+    };
+    (read == size && info.pbsi_pid == pid && info.pbsi_ppid > 0 && info.pbsi_ppid != pid)
+        .then_some(info.pbsi_ppid)
 }
 
 /// Name of the outermost `.app` bundle holding this process's executable, if any.

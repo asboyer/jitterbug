@@ -28,6 +28,7 @@ sha2 = "0.10"
 getrandom = "0.3"
 toml_edit = "0.25"
 tauri-plugin-global-shortcut = "2"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
