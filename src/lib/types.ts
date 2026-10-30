@@ -486,3 +486,37 @@ export interface AgentWorkflow {
     suggestions: WorkflowSuggestion[];
     evidence: string[];
 }
+
+export interface InsideUnit {
+    id: string;
+    kind: 'tab' | 'session';
+    title: string;
+    detail: string;
+    host: string | null;
+    cpu_percent: number;
+    memory_bytes: number;
+    shared_with: number;
+    pid: number | null;
+    start_time: number | null;
+    actions: string[];
+    evidence: string[];
+    confidence: string;
+}
+
+export interface InsideView {
+    workload_id: string;
+    source: string;
+    status: 'ready' | 'setup' | 'unavailable';
+    message: string;
+    setup: string[];
+    units: InsideUnit[];
+    remainder: {
+        label: string;
+        cpu_percent: number;
+        memory_bytes: number;
+        process_count: number;
+    }[];
+    measured_seconds: number;
+    captured_at: number;
+    limits: string;
+}

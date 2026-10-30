@@ -94,6 +94,40 @@ changes. Reopening a detail page reuses the description without inference. Icons
 remain local; raw paths are omitted from normal telemetry, incident serialization, action reports,
 and model context. Demo origins are entirely synthetic and cannot call a provider or act on a process.
 
+## Inside an app
+
+A workload's detail page can split an app into the things you can actually act on.
+
+- **Browser tabs** (Chrome, Edge, Brave, Chromium, Vivaldi): choose **Show tabs** to measure each
+  tab for one second and see its CPU, memory, and host, plus what the browser itself, the GPU
+  process, and extensions use. **Show** brings a tab forward; **Close tab…** needs a second click
+  and first checks that the tab still shows the same address. This needs a one-time browser
+  setting: open `chrome://inspect/#remote-debugging` and allow remote debugging for the running
+  browser. The browser asks once to allow Jitterbug's connection, which stays local (loopback
+  only) and is kept open so you are not asked again. Turn the setting off to revoke access.
+- **How tab memory is found:** DevTools lists tabs but never says which renderer process hosts
+  each one. Each tab does report its renderer's cumulative CPU time, and the browser reports the
+  same counter per PID. Jitterbug reads both twice, a second apart and bracketed in time, so a
+  tab maps to exactly one renderer. Memory is that renderer's resident memory from the normal
+  sample. When several tabs share one renderer, the split is an estimate (JavaScript heap and
+  main-thread time) and is marked with ≈. Sleeping/discarded tabs have no renderer.
+- **Terminals, editors, and coding-agent apps** (Terminal, iTerm2, Ghostty, VS Code, Cursor,
+  Zed, Claude, JetBrains IDEs, …): each command started inside the app, such as an agent session,
+  a dev server, or a test run, becomes one row with its whole process subtree, working folder,
+  and busiest child. Sessions registered with `jitterbug-run` show their task. Rows reuse the
+  five-second inventory, so no extra sampling happens. Their actions are the existing
+  process actions, with the same identity checks and confirmation.
+
+Titles, addresses, and folders appear only in this local view. They are not added to
+telemetry events, incidents, or model prompts. No page content, history, or cookies are read.
+
+```sh
+# Opt-in check against an isolated headless Chrome profile: one busy and two idle tabs.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-inside-probe
+# Commands inside running terminal/editor apps, by command name only.
+cargo run --manifest-path src-tauri/Cargo.toml --example jitterbug-inside-probe -- --sessions
+```
+
 ## What is real
 
 - Live process CPU, resident memory, disk read/write counters, parent relationships, available memory, and swap usage through `sysinfo`. App/workload history retains the last 24 samples (about two minutes).
@@ -266,6 +300,7 @@ src-tauri/src/
   queue/                shared validation admission, private profiles/results, stdio MCP
   bin/jitterbug-run.rs   opt-in wrapper and harness hook event bridge
   diagnostics.rs        app/PID resolution and scoped investigation evidence
+  inside/               per-tab (browser DevTools) and per-command (process tree) app views
   details.rs            local process details and bounded, identity-checked parent chains
   applications.rs       installed app identity and bounded native icon cache
   profiles.rs           built-in app reference and private, versioned AI description cache

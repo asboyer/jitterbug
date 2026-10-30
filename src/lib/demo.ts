@@ -3,7 +3,9 @@ import type {
     ActionPopupCase,
     AutomationCase,
     Bootstrap,
+    InsideView,
     Snapshot,
+    Workload,
     WorkloadDetails,
 } from './types';
 
@@ -397,5 +399,73 @@ export function demoActionPopup(): ActionPopupCase {
         origin: 'automatic',
         jitter: null,
         more: 1,
+    };
+}
+
+export function demoInside(workload: Workload): InsideView {
+    const mib = 1024 ** 2;
+    const tab = (
+        id: string,
+        title: string,
+        host: string,
+        cpu: number,
+        mem: number,
+        shared = 0
+    ) => ({
+        id,
+        kind: 'tab' as const,
+        title,
+        detail: `https://${host}/`,
+        host,
+        cpu_percent: cpu,
+        memory_bytes: mem * mib,
+        shared_with: shared,
+        pid: null,
+        start_time: null,
+        actions: ['focus_tab', 'close_tab'],
+        evidence: ['Synthetic example: no browser was contacted.'],
+        confidence: 'Matched by CPU time',
+    });
+    const browser = workload.category === 'browser';
+    return {
+        workload_id: workload.id,
+        source: browser ? 'Browser DevTools' : 'Process tree',
+        status: 'ready',
+        message: browser
+            ? '4 tabs measured over one second.'
+            : '2 commands running inside the app.',
+        setup: [],
+        units: browser
+            ? [
+                  tab('d1', 'Video call', 'meet.example.com', 9.4, 640),
+                  tab('d2', 'Browser game', 'games.example.com', 6.1, 410),
+                  tab('d3', 'Docs', 'docs.example.com', 0.2, 180, 1),
+                  tab('d4', 'Mail', 'mail.example.com', 0.1, 150, 1),
+              ]
+            : [
+                  {
+                      ...tab('s1', 'claude · feat-search', 'claude', 3.2, 520),
+                      kind: 'session' as const,
+                      detail: '~/example/repo.worktrees/feat-search',
+                      actions: [],
+                  },
+                  {
+                      ...tab('s2', 'npm · sample-web-app', 'npm', 11.5, 870),
+                      kind: 'session' as const,
+                      detail: '~/example/sample-web-app',
+                      actions: ['lower_priority', 'terminate'],
+                  },
+              ],
+        remainder: [
+            {
+                label: browser ? 'Graphics (GPU process, shared by all tabs)' : 'The app itself',
+                cpu_percent: 1.2,
+                memory_bytes: 300 * mib,
+                process_count: browser ? 1 : 6,
+            },
+        ],
+        measured_seconds: browser ? 1 : 0,
+        captured_at: Math.floor(Date.now() / 1000),
+        limits: 'Measurements are illustrative.',
     };
 }

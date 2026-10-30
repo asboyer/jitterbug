@@ -10,6 +10,7 @@ pub mod details;
 pub mod diagnostics;
 mod floating;
 pub mod harness;
+pub mod inside;
 pub mod jitter;
 pub mod origins;
 pub mod platform;
@@ -218,6 +219,28 @@ fn get_workload_details(
         }
     }
     Ok(detail)
+}
+
+#[tauri::command]
+async fn get_inside_view(
+    state: State<'_, AppState>,
+    workload_id: String,
+) -> Result<inside::Inside, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || inside::inspect(&snapshot, &workload_id))
+        .await
+        .map_err(|_| "Inside view unavailable.")?
+}
+
+#[tauri::command]
+async fn tab_action(target_id: String, url: String, action: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || inside::chrome::act(&target_id, &url, &action))
+        .await
+        .map_err(|_| "Tab action unavailable.")?
 }
 
 #[tauri::command]
@@ -702,6 +725,8 @@ pub fn run() {
             search_workloads,
             get_workload_details,
             get_workload_icon,
+            get_inside_view,
+            tab_action,
             explain_application,
             summarize_agent_task,
             get_agent_task_summary,
