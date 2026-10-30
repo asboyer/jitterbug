@@ -157,10 +157,8 @@ pub fn vm_counters() -> Option<super::VmCounters> {
     })
 }
 
-/// Total CPU time of one process in nanoseconds, only while its start time still matches.
-/// Two `proc_pidinfo` calls; processes owned by other users are unavailable without privileges.
 #[allow(deprecated)] // Stable Mach timebase API; task times are in Mach ticks on Apple silicon.
-pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
+fn ticks_to_ns(ticks: u64) -> Option<u64> {
     static TIMEBASE: OnceLock<(u64, u64)> = OnceLock::new();
     let (numer, denom) = *TIMEBASE.get_or_init(|| {
         let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
@@ -171,6 +169,10 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
             (1, 1)
         }
     });
+    u64::try_from(ticks as u128 * numer as u128 / denom as u128).ok()
+}
+
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     let mut bsd: libc::proc_bsdinfo = unsafe { mem::zeroed() };
     let size = mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     let read = unsafe {
@@ -182,9 +184,10 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
             size,
         )
     };
-    if read != size || bsd.pbi_start_tvsec != start_time {
-        return None;
-    }
+    (read == size).then_some(bsd)
+}
+
+fn task_cpu_ns(pid: u32) -> Option<u64> {
     let mut task: libc::proc_taskinfo = unsafe { mem::zeroed() };
     let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
     let read = unsafe {
@@ -199,8 +202,128 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
     if read != size {
         return None;
     }
-    let ticks = task.pti_total_user.saturating_add(task.pti_total_system) as u128;
-    u64::try_from(ticks * numer as u128 / denom as u128).ok()
+    ticks_to_ns(task.pti_total_user.saturating_add(task.pti_total_system))
+}
+
+/// Total CPU time of one process in nanoseconds, only while its start time still matches.
+/// Two `proc_pidinfo` calls; processes owned by other users are unavailable without privileges.
+pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
+    if bsd_info(pid)?.pbi_start_tvsec != start_time {
+        return None;
+    }
+    task_cpu_ns(pid)
+}
+
+/// CPU time (ns) and launch timestamp (Mach absolute time) in one `proc_pid_rusage` call.
+fn usage(pid: u32) -> Option<(u64, u64)> {
+    let mut info: libc::rusage_info_v0 = unsafe { mem::zeroed() };
+    let read = unsafe {
+        libc::proc_pid_rusage(
+            pid as libc::c_int,
+            libc::RUSAGE_INFO_V0,
+            (&mut info as *mut libc::rusage_info_v0).cast(),
+        )
+    };
+    if read != 0 {
+        return None;
+    }
+    let cpu = ticks_to_ns(info.ri_user_time.saturating_add(info.ri_system_time))?;
+    Some((cpu, info.ri_proc_start_abstime))
+}
+
+/// Every readable process with its cumulative CPU time. Each tick costs one PID list and one
+/// `proc_pid_rusage` call per process; names, parents, and start times are read once per
+/// process launch and cached. No paths, arguments, or memory maps are read.
+pub fn all_processes() -> Vec<super::NativeProcess> {
+    static KNOWN: std::sync::Mutex<
+        Option<std::collections::HashMap<u32, (u64, super::NativeProcess)>>,
+    > = std::sync::Mutex::new(None);
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    // Headroom for processes that start between the two calls.
+    let mut pids = vec![0 as libc::pid_t; count as usize + 64];
+    let bytes = (pids.len() * mem::size_of::<libc::pid_t>()) as libc::c_int;
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(listed.max(0) as usize);
+    // Processes of other users are unreadable without privileges; retry them only now and then.
+    static UNREADABLE: std::sync::Mutex<Option<std::collections::HashMap<u32, u8>>> =
+        std::sync::Mutex::new(None);
+    let mut guard = KNOWN.lock().unwrap_or_else(|p| p.into_inner());
+    let known = guard.get_or_insert_with(Default::default);
+    let mut skip_guard = UNREADABLE.lock().unwrap_or_else(|p| p.into_inner());
+    let unreadable = skip_guard.get_or_insert_with(Default::default);
+    let mut still_unreadable = std::collections::HashMap::new();
+    let mut next = std::collections::HashMap::with_capacity(pids.len());
+    let mut out = Vec::with_capacity(pids.len());
+    for pid in pids
+        .into_iter()
+        .filter(|pid| *pid > 0)
+        .map(|pid| pid as u32)
+    {
+        if let Some(wait) = unreadable.get(&pid).filter(|w| **w > 0) {
+            still_unreadable.insert(pid, wait - 1);
+            continue;
+        }
+        let Some((cpu_ns, launched)) = usage(pid) else {
+            still_unreadable.insert(pid, 30);
+            continue;
+        };
+        // A reused PID has a different launch timestamp, so its identity is read again.
+        let meta = match known.remove(&pid) {
+            Some((at, meta)) if at == launched => meta,
+            _ => {
+                let Some(bsd) = bsd_info(pid) else { continue };
+                let raw = if bsd.pbi_name[0] != 0 {
+                    &bsd.pbi_name[..]
+                } else {
+                    &bsd.pbi_comm[..]
+                };
+                let name: Vec<u8> = raw
+                    .iter()
+                    .take_while(|c| **c != 0)
+                    .map(|c| *c as u8)
+                    .collect();
+                super::NativeProcess {
+                    pid,
+                    start_time: bsd.pbi_start_tvsec,
+                    start_us: bsd.pbi_start_tvsec * 1_000_000 + bsd.pbi_start_tvusec,
+                    parent_pid: Some(bsd.pbi_ppid).filter(|p| *p > 0),
+                    cpu_ns: 0,
+                    name: String::from_utf8_lossy(&name).into_owned(),
+                }
+            }
+        };
+        out.push(super::NativeProcess {
+            cpu_ns,
+            ..meta.clone()
+        });
+        next.insert(pid, (launched, meta));
+    }
+    *known = next;
+    *unreadable = still_unreadable;
+    out
+}
+
+/// Name of the outermost `.app` bundle holding this process's executable, if any.
+pub fn bundle_name(pid: u32) -> Option<String> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let read = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    if read <= 0 {
+        return None;
+    }
+    buffer.truncate(read as usize);
+    let path = std::path::PathBuf::from(String::from_utf8_lossy(&buffer).into_owned());
+    crate::attribution::application_bundle(&path)
+        .and_then(|b| b.file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
 }
 
 /// The app the user is looking at. NSRunningApplication properties are safe to read off-main.

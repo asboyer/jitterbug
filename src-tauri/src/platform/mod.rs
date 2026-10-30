@@ -78,6 +78,44 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
     macos::process_cpu_ns(pid, start_time)
 }
 
+/// One process from a native all-process scan.
+#[derive(Clone, Debug, Default)]
+pub struct NativeProcess {
+    pub pid: u32,
+    /// Seconds since the epoch, as sysinfo reports it.
+    pub start_time: u64,
+    /// Microseconds since the epoch, for rates of processes that started this tick.
+    pub start_us: u64,
+    pub parent_pid: Option<u32>,
+    pub cpu_ns: u64,
+    pub name: String,
+}
+
+/// Every readable process with cumulative CPU time. Empty when unsupported (non-macOS).
+pub fn all_processes() -> Vec<NativeProcess> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::all_processes()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Outermost application bundle name for a live process, when the OS exposes its path.
+pub fn bundle_name(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::bundle_name(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// PID and display name of the foreground application, when the OS exposes one.
 pub fn frontmost() -> Option<(u32, Option<String>)> {
     #[cfg(target_os = "macos")]

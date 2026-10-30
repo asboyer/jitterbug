@@ -126,18 +126,26 @@ to 10 seconds after the press. The case shows a one-second timeline with your pr
 suspect window (−15 s to +10 s against a −60 s to −15 s baseline), then **What happened**,
 **Likely cause**, **What you can do**, and **If it happens again**.
 
-- **Signals:** a separate one-second pulse sampler reads per-core CPU, the 16 busiest
-  processes from the last full sample, system swap/compressor/page-in counters, OS memory
+- **Signals:** a separate one-second pulse sampler reads per-core CPU, CPU time for every
+  process your user can read (macOS; elsewhere the 16 busiest from the last full sample),
+  keeping the 16 busiest each second, system swap/compressor/page-in counters, OS memory
   pressure, thermal state, and how late a 10 ms sleep wakes up (scheduler delay). It keeps
   120 samples in memory only. The five-second collector is unchanged. GPU, display, disk,
   and network activity are not measured, and processes owned by other users have no
-  per-process CPU without privileges.
+  per-process CPU without privileges. Because every process is read each second, a hog
+  that starts a few seconds before your press, or exits just before it, is still named. A
+  process that starts after the last five-second sample is rated over its own lifetime on
+  its first tick.
 - **Findings** are deterministic, labeled observed or inferred, and rated strong, possible,
   or unexplained: a process spike (at least 3× baseline and over 25% of one core), one
   saturated core even when total CPU is low, memory paging with rising pressure, thermal
   escalation, scheduler delay with no visible cause, or nothing found.
 - **Victim vs culprit:** actions target culprits only. If the app in front was itself busy,
-  the case says it was limited by its own work. CPU culprits can get **Lower priority**;
+  the case says it was limited by its own work. A command running _inside_ the app in front,
+  such as a script in an editor's terminal or a coding-agent session, is a separate suspect:
+  the case names it ("claude in Visual Studio Code") and its busiest process, not the editor.
+  A command is grouped from the outermost non-shell process below the app, so an agent
+  session and the tools it runs count together. Folder names in these labels stay local. CPU culprits can get **Lower priority**;
   strong memory findings can offer **Stop process** only where actions are already
   permitted. Priority is never suggested as a memory fix. The model only explains the
   findings and cannot add actions. Its request includes the victim and culprit app names and
@@ -157,9 +165,11 @@ suspect window (−15 s to +10 s against a −60 s to −15 s baseline), then **
   hourly cap as sustained incidents. **Snapshot only** runs no background sampler; a press
   records the next 15 seconds and compares against five-second workload history.
 
-Measured cost of Auto mode on an 8-core Apple silicon Mac (120 s, release build): about
-0.06% of one core (0.07% in a debug build), +0.4 MiB resident, about two wakeups per second
-(tick plus probe), and 0.5 ms of work per tick. While sampling, Jitterbug holds a macOS activity assertion so
+Measured cost of Auto mode on an Apple silicon Mac with about 830 processes (60 s, release
+build): about 0.27% of one core, +0.7 MiB resident, about two wakeups per second (tick plus
+probe), and under 3 ms of work per tick. Reading every process each second costs more than
+the earlier 16-process sampler (0.06%) but stays inside the 0.5% budget; names and parents
+are read once per process launch, and unreadable processes are retried every 30 seconds. While sampling, Jitterbug holds a macOS activity assertion so
 App Nap timer coalescing is not misread as scheduler delay; this keeps the process from
 napping (idle system sleep is still allowed). Snapshot only avoids that cost. The global
 shortcut is registered from Rust; the webview has no shortcut permission. Another app that

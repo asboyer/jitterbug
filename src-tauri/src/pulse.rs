@@ -1,5 +1,7 @@
 //! One-second pulse sampler for short hitches the five-second collector cannot see.
-//! It keeps the last 120 ticks in memory only and never refreshes the full process table.
+//! It keeps the last 120 ticks in memory only and never refreshes the full sysinfo table.
+//! On macOS each tick reads every process's CPU time natively, so a process that starts or
+//! peaks between five-second samples is still seen; elsewhere it follows the 16 busiest.
 use crate::{
     automation::Origin,
     jitter::{self, Capture, Victim},
@@ -18,6 +20,10 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
 pub const CAPACITY: usize = 120;
 pub const WATCHED: usize = 16;
+/// Busiest processes kept per tick from the all-process scan.
+pub const TOP: usize = 16;
+/// Ignore idle noise when ranking the all-process scan (percent of one core).
+const SCAN_FLOOR: f32 = 0.5;
 const INTERVAL: Duration = Duration::from_secs(1);
 /// Short sleep whose late wake-up approximates scheduler delay for ordinary threads.
 const PROBE: Duration = Duration::from_millis(10);
@@ -53,7 +59,7 @@ pub struct Tick {
     pub memory_pressure: Option<u8>,
     /// 0 nominal, 1 fair, 2 serious, 3 critical.
     pub thermal: Option<u8>,
-    /// Watched PIDs and their CPU over the tick, where 100 means one logical core.
+    /// Busiest PIDs and their CPU over the tick, where 100 means one logical core.
     pub processes: Vec<(u32, f32)>,
 }
 
@@ -83,6 +89,9 @@ pub struct Identity {
     pub workload_id: String,
     pub label: String,
     pub category: String,
+    pub parent_pid: Option<u32>,
+    /// Outermost app bundle holding the executable; `None` for commands an app launched.
+    pub bundle: Option<String>,
 }
 
 /// Bounded tick history. A gap or clock jump starts a new run, so deltas never span a sleep.
@@ -138,6 +147,9 @@ pub struct Stats {
     pub work_ns_max: u64,
 }
 
+/// Busiest PID rates for one tick, plus native details for naming them.
+type Scanned = (Vec<(u32, f32)>, Vec<platform::NativeProcess>);
+
 type SpikeHandler = Arc<dyn Fn(Capture) + Send + Sync>;
 
 #[derive(Default)]
@@ -146,6 +158,8 @@ struct State {
     ring: Ring,
     watched: Vec<(u32, u64)>,
     identities: HashMap<u32, Identity>,
+    /// Every process from the last full sample, for naming PIDs the scan finds busy.
+    known: HashMap<u32, Identity>,
     logical_cpus: usize,
     running: bool,
     generation: u64,
@@ -210,29 +224,42 @@ impl Pulse {
     }
     /// Refresh the watched PIDs from the latest full five-second sample.
     pub fn watch(&self, snapshot: &Snapshot) {
+        let identity = |p: &crate::types::ProcessRecord| {
+            let workload = snapshot.workloads.iter().find(|w| w.id == p.workload_id);
+            Identity {
+                pid: p.pid,
+                start_time: p.start_time,
+                name: p.name.clone(),
+                workload_id: p.workload_id.clone(),
+                label: workload.map_or_else(|| p.name.clone(), |w| w.label.clone()),
+                category: workload.map(|w| w.category.clone()).unwrap_or_default(),
+                parent_pid: p.parent_pid,
+                bundle: p
+                    .executable
+                    .as_deref()
+                    .and_then(crate::attribution::application_bundle)
+                    .and_then(|b| b.file_stem())
+                    .map(|s| s.to_string_lossy().into_owned()),
+            }
+        };
         let mut top: Vec<_> = snapshot
             .processes
             .iter()
             .filter(|p| p.pid != std::process::id())
             .collect();
         top.sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent));
+        let known: HashMap<u32, Identity> = if cfg!(target_os = "macos") {
+            top.iter().map(|p| (p.pid, identity(p))).collect()
+        } else {
+            HashMap::new()
+        };
         top.truncate(WATCHED);
         let mut state = self.lock();
         state.logical_cpus = snapshot.logical_cpus;
+        state.known = known;
         state.watched = top.iter().map(|p| (p.pid, p.start_time)).collect();
         for p in top {
-            let workload = snapshot.workloads.iter().find(|w| w.id == p.workload_id);
-            state.identities.insert(
-                p.pid,
-                Identity {
-                    pid: p.pid,
-                    start_time: p.start_time,
-                    name: p.name.clone(),
-                    workload_id: p.workload_id.clone(),
-                    label: workload.map_or_else(|| p.name.clone(), |w| w.label.clone()),
-                    category: workload.map(|w| w.category.clone()).unwrap_or_default(),
-                },
-            );
+            state.identities.insert(p.pid, identity(p));
         }
         let State {
             identities,
@@ -374,7 +401,7 @@ fn run(inner: Arc<Inner>, generation: u64) {
         };
         let late = next.elapsed();
         let started = Instant::now();
-        let mut tick = sampler.tick(&watched);
+        let (mut tick, found) = sampler.tick(&watched);
         let work = started.elapsed();
         tick.lag_ms = lateness(PROBE, late);
         next += INTERVAL;
@@ -383,6 +410,7 @@ fn run(inner: Arc<Inner>, generation: u64) {
         }
         let due = {
             let mut state = inner.state.lock().unwrap_or_else(|p| p.into_inner());
+            name(&mut state, &tick, found);
             state.ring.push(tick);
             state.stats.ticks += 1;
             let ns = work.as_nanos() as u64;
@@ -394,6 +422,74 @@ fn run(inner: Arc<Inner>, generation: u64) {
             handler(capture);
         }
     }
+}
+
+/// Give every PID in a tick an identity: the last full sample's when the start time matches,
+/// otherwise the native scan's own name and parent (a process newer than that sample).
+fn name(state: &mut State, tick: &Tick, found: Vec<platform::NativeProcess>) {
+    for (pid, _) in &tick.processes {
+        let start = found.iter().find(|n| n.pid == *pid).map(|n| n.start_time);
+        let current = state.identities.get(pid).map(|i| i.start_time);
+        if current.is_some() && (start.is_none() || current == start) {
+            continue;
+        }
+        let identity = match state.known.get(pid) {
+            Some(known) if start.is_none_or(|s| s == known.start_time) => known.clone(),
+            _ => {
+                let Some(native) = found.iter().find(|n| n.pid == *pid) else {
+                    continue;
+                };
+                Identity {
+                    pid: native.pid,
+                    start_time: native.start_time,
+                    name: native.name.clone(),
+                    workload_id: format!("p-{}-{}", native.pid, native.start_time),
+                    label: native.name.clone(),
+                    category: crate::attribution::category(&native.name).0.into(),
+                    parent_pid: native.parent_pid,
+                    bundle: platform::bundle_name(native.pid),
+                }
+            }
+        };
+        state.identities.insert(*pid, identity);
+    }
+}
+
+/// Rank one all-process scan against the previous one. A process that started after the
+/// previous scan is rated over its own lifetime, so a new hog shows up on its first tick.
+pub fn rank(
+    scan: &[platform::NativeProcess],
+    previous: &HashMap<(u32, u64), u64>,
+    previous_us: Option<u64>,
+    now_us: u64,
+    elapsed_ns: f64,
+    exclude: u32,
+) -> Vec<(u32, f32)> {
+    let mut rates: Vec<(u32, f32)> = scan
+        .iter()
+        .filter(|p| p.pid != exclude)
+        .filter_map(|p| {
+            let rate = match previous.get(&(p.pid, p.start_time)) {
+                Some(old) if elapsed_ns >= 1e8 => {
+                    p.cpu_ns.saturating_sub(*old) as f64 / elapsed_ns * 100.0
+                }
+                Some(_) => return None,
+                None => {
+                    let born = previous_us.is_some_and(|at| p.start_us > at);
+                    let age_ns = now_us.saturating_sub(p.start_us) as f64 * 1000.0;
+                    if !born || age_ns < 5e7 {
+                        return None;
+                    }
+                    p.cpu_ns as f64 / age_ns * 100.0
+                }
+            };
+            Some((p.pid, rate as f32))
+        })
+        .filter(|(_, rate)| *rate >= SCAN_FLOOR)
+        .collect();
+    rates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    rates.truncate(TOP);
+    rates
 }
 
 /// Sleep briefly and report how late the wake-up was, in milliseconds.
@@ -445,6 +541,9 @@ struct Sampler {
     processes: System,
     vm: Option<platform::VmCounters>,
     cpu_times: HashMap<(u32, u64), (u64, Instant)>,
+    /// Previous all-process scan: CPU time per identity and when it was read.
+    scan: HashMap<(u32, u64), u64>,
+    scanned: Option<(Instant, u64)>,
 }
 
 impl Sampler {
@@ -457,6 +556,8 @@ impl Sampler {
             processes: System::new(),
             vm: platform::vm_counters(),
             cpu_times: HashMap::new(),
+            scan: HashMap::new(),
+            scanned: None,
         }
     }
     /// Cumulative CPU time in nanoseconds per watched PID whose start time still matches.
@@ -492,9 +593,46 @@ impl Sampler {
             })
             .collect()
     }
-    fn tick(&mut self, watched: &[(u32, u64)]) -> Tick {
+    /// All-process scan (macOS). `None` when unsupported, so callers use the watched PIDs.
+    fn scan(&mut self, now: Instant) -> Option<Scanned> {
+        let scan = platform::all_processes();
+        if scan.is_empty() {
+            return None;
+        }
+        let now_us = now_ms() * 1000;
+        let elapsed = self
+            .scanned
+            .map(|(at, _)| now.duration_since(at).as_nanos() as f64)
+            .unwrap_or(0.0);
+        let top = rank(
+            &scan,
+            &self.scan,
+            self.scanned.map(|(_, us)| us),
+            now_us,
+            elapsed,
+            std::process::id(),
+        );
+        self.scan = scan
+            .iter()
+            .map(|p| ((p.pid, p.start_time), p.cpu_ns))
+            .collect();
+        self.scanned = Some((now, now_us));
+        let found = scan
+            .into_iter()
+            .filter(|p| top.iter().any(|(pid, _)| *pid == p.pid))
+            .collect();
+        Some((top, found))
+    }
+    fn tick(&mut self, watched: &[(u32, u64)]) -> (Tick, Vec<platform::NativeProcess>) {
         self.system.refresh_cpu_usage();
         let now = Instant::now();
+        let (processes, found) = match self.scan(now) {
+            Some(scanned) => scanned,
+            None => (self.watched_rates(watched, now), Vec::new()),
+        };
+        (self.reading(processes), found)
+    }
+    fn watched_rates(&mut self, watched: &[(u32, u64)], now: Instant) -> Vec<(u32, f32)> {
         let mut processes = Vec::with_capacity(watched.len());
         let mut times = HashMap::with_capacity(watched.len());
         // Accumulated CPU time avoids sysinfo keeping a stale rate for an idle process.
@@ -509,6 +647,9 @@ impl Sampler {
             times.insert((pid, start), (total, now));
         }
         self.cpu_times = times;
+        processes
+    }
+    fn reading(&mut self, processes: Vec<(u32, f32)>) -> Tick {
         let vm = platform::vm_counters();
         let previous = std::mem::replace(&mut self.vm, vm);
         let delta = |field: fn(&platform::VmCounters) -> u64| match (previous, vm) {
@@ -632,6 +773,53 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!pulse.is_running());
+    }
+
+    #[test]
+    fn scan_ranks_deltas_and_rates_new_processes_over_their_lifetime() {
+        let p = |pid: u32, start: u64, start_us: u64, cpu_ns: u64| platform::NativeProcess {
+            pid,
+            start_time: start,
+            start_us,
+            parent_pid: Some(1),
+            cpu_ns,
+            name: format!("p{pid}"),
+        };
+        let previous: HashMap<(u32, u64), u64> =
+            [((10, 5), 1_000_000_000), ((11, 5), 0), ((12, 5), 0)].into();
+        let now_us = 100_000_000;
+        let scan = vec![
+            // 0.5 s of CPU in a 1 s tick: half a core.
+            p(10, 5, 5_000_000, 1_500_000_000),
+            // Idle noise stays out.
+            p(11, 5, 5_000_000, 1_000_000),
+            // Started 400 ms ago, after the previous scan, and used 380 ms: a new hog.
+            p(20, 99, now_us - 400_000, 380_000_000),
+            // Unknown but older than the previous scan: needs a second reading.
+            p(21, 1, 1_000_000, 9_000_000_000),
+            // The sampler itself is never a suspect.
+            p(12, 5, 5_000_000, 900_000_000),
+        ];
+        let ranked = rank(&scan, &previous, Some(now_us - 1_000_000), now_us, 1e9, 12);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].0, 20);
+        assert!((ranked[0].1 - 95.0).abs() < 0.5);
+        assert_eq!(ranked[1].0, 10);
+        assert!((ranked[1].1 - 50.0).abs() < 0.5);
+        // The first scan has nothing to compare against.
+        assert!(rank(&scan, &HashMap::new(), None, now_us, 0.0, 0).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_scan_sees_this_process_and_its_cpu_time() {
+        let scan = platform::all_processes();
+        let me = scan
+            .iter()
+            .find(|p| p.pid == std::process::id())
+            .expect("own process readable");
+        assert!(me.cpu_ns > 0 && !me.name.is_empty() && me.parent_pid.is_some());
+        assert!(scan.len() > 10);
     }
 
     #[test]

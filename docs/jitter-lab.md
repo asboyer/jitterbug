@@ -46,6 +46,18 @@ stop the load afterwards with `kill %1` (or `killall yes`). The case should name
 editor as the app you were using and the load as the culprit. In **Auto** mode, sustained
 scheduler delay can also open a **Short hitch** case without a press.
 
+## A short-lived hog inside the app in front
+
+```sh
+cargo run --release --manifest-path src-tauri/Cargo.toml --example jitterbug-hog-probe -- --lead 4
+cargo run --release --manifest-path src-tauri/Cargo.toml --example jitterbug-hog-probe -- --lead 7 --exit-before 1
+```
+
+Run from a terminal inside an editor. A single-core `perl` loop starts a few seconds before
+a simulated press (and optionally exits just before it), with the hosting app as the app in
+front. The probe passes only when the loop is reported as a separate culprit, not as the
+editor's own work. It prints finding kinds and labels without folder names.
+
 ## Measuring the sampler itself
 
 ```sh

@@ -319,7 +319,159 @@ fn party(snapshot: &Snapshot, capture: &Capture) -> Option<Party> {
     }
 }
 
+/// Shells and launch plumbing between an app and the command running in it.
+const WRAPPERS: &[&str] = &[
+    "login",
+    "zsh",
+    "bash",
+    "fish",
+    "sh",
+    "dash",
+    "nu",
+    "tmux",
+    "screen",
+    "script",
+    "sudo",
+    "pwsh",
+    "powershell",
+    "cmd",
+];
+
+fn wrapper(name: &str) -> bool {
+    let name = name.trim_start_matches('-').to_lowercase();
+    WRAPPERS.contains(&name.strip_suffix(".exe").unwrap_or(&name))
+}
+
+fn bundle(p: &ProcessRecord) -> Option<String> {
+    p.executable
+        .as_deref()
+        .and_then(crate::attribution::application_bundle)
+        .and_then(|b| b.file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
+/// A command launched inside an app (a terminal command, an agent session, a script).
+#[derive(Clone, Debug, PartialEq)]
+struct Command {
+    id: String,
+    label: String,
+    /// The app workload the collector folded this command into.
+    app_workload: String,
+}
+
+/// Walk up through shells to the app that launched this process. The command's root is the
+/// outermost non-shell ancestor below the app, so a session's children group together.
+fn command(
+    by_pid: &HashMap<u32, &ProcessRecord>,
+    (pid, start, name): (u32, u64, &str),
+    parent: Option<u32>,
+    own_bundle: Option<&str>,
+) -> Option<Command> {
+    if own_bundle.is_some() {
+        return None;
+    }
+    let (mut root_pid, mut root_start, mut root_name) = (pid, start, name.to_string());
+    let mut child_start = start;
+    let mut current = parent;
+    for _ in 0..16 {
+        let p = by_pid.get(&current?)?;
+        // A reused parent PID must not adopt an unrelated process.
+        if p.start_time > child_start {
+            return None;
+        }
+        if let Some(app) = bundle(p) {
+            let folder = by_pid
+                .get(&root_pid)
+                .filter(|r| r.start_time == root_start)
+                .and_then(|r| r.working_directory.as_deref())
+                .and_then(|d| d.file_name())
+                .map(|f| f.to_string_lossy().chars().take(40).collect::<String>());
+            return Some(Command {
+                id: format!("cmd-{root_pid}-{root_start}"),
+                label: match folder {
+                    Some(folder) => format!("{root_name} ({folder}) in {app}"),
+                    None => format!("{root_name} in {app}"),
+                },
+                app_workload: p.workload_id.clone(),
+            });
+        }
+        if !wrapper(&p.name) {
+            (root_pid, root_start, root_name) = (p.pid, p.start_time, p.name.clone());
+        }
+        child_start = p.start_time;
+        current = p.parent_pid;
+    }
+    None
+}
+
+/// Commands that the collector folded into an app workload (or that started after the last
+/// full sample) become their own suspects, keyed by command. Returns the regrouped capture and
+/// the command of every current process that belongs to one.
+fn regroup(
+    capture: &Capture,
+    snapshot: &Snapshot,
+) -> (Capture, HashMap<u32, Command>, HashMap<String, String>) {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
+    let folded =
+        |workload: &str, cmd: &Command| workload == cmd.app_workload || workload.starts_with("p-");
+    let mut capture = capture.clone();
+    let mut apps = HashMap::new();
+    for identity in &mut capture.identities {
+        if let Some(cmd) = command(
+            &by_pid,
+            (identity.pid, identity.start_time, &identity.name),
+            identity.parent_pid,
+            identity.bundle.as_deref(),
+        )
+        .filter(|cmd| folded(&identity.workload_id, cmd))
+        {
+            apps.insert(cmd.id.clone(), cmd.app_workload);
+            identity.workload_id = cmd.id;
+            identity.label = cmd.label;
+            identity.category = "command".into();
+        }
+    }
+    let members: HashMap<u32, Command> = snapshot
+        .processes
+        .iter()
+        .filter_map(|p| {
+            let cmd = command(
+                &by_pid,
+                (p.pid, p.start_time, &p.name),
+                p.parent_pid,
+                bundle(p).as_deref(),
+            )?;
+            folded(&p.workload_id, &cmd).then_some((p.pid, cmd))
+        })
+        .collect();
+    for cmd in members.values() {
+        apps.insert(cmd.id.clone(), cmd.app_workload.clone());
+    }
+    (capture, members, apps)
+}
+
+/// The suspect key the analysis uses for a live process: its command inside an app when the
+/// collector folded it into that app, otherwise its workload.
+pub fn suspect_id(snapshot: &Snapshot, pid: u32) -> Option<String> {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
+    let p = by_pid.get(&pid)?;
+    Some(
+        command(
+            &by_pid,
+            (p.pid, p.start_time, &p.name),
+            p.parent_pid,
+            bundle(p).as_deref(),
+        )
+        .filter(|c| p.workload_id == c.app_workload || p.workload_id.starts_with("p-"))
+        .map_or_else(|| p.workload_id.clone(), |c| c.id),
+    )
+}
+
 pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
+    let (regrouped, commands, apps) = regroup(capture, snapshot);
+    let capture = &regrouped;
     let w = split(capture);
     let victim = party(snapshot, capture);
     let victim_id = victim.as_ref().and_then(|v| v.workload_id.clone());
@@ -340,6 +492,14 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
             break;
         }
         let strong = load.pulse && load.sustained >= 2;
+        // Inside a command (an agent session, a shell script), say which process did the work.
+        let busiest = load
+            .pid
+            .and_then(|(pid, _)| capture.identities.iter().find(|i| i.pid == pid))
+            .filter(|i| {
+                load.category == "command" && !load.label.starts_with(&format!("{} ", i.name))
+            })
+            .map(|i| format!("Busiest process in it: {}.", i.name));
         findings.push(Finding {
             kind: FindingKind::ProcessSpike,
             strength: if strong {
@@ -359,7 +519,10 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
                 } else {
                     ", from five-second samples".into()
                 }
-            )],
+            )]
+            .into_iter()
+            .chain(busiest)
+            .collect(),
             inferred: format!(
                 "{} competed for CPU at the moment you noticed the slowdown.",
                 load.label
@@ -554,6 +717,20 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
         "Jitterbug's own 10 ms timer woke {lag_peak:.0} ms late at {lag_at:+}s (baseline worst {lag_base:.0} ms)."
     );
 
+    // A command running inside the frontmost app (a terminal command, an agent session) is a
+    // separate suspect. When one spiked, the app's own folded-in total is that command's load.
+    let inside_victim = |f: &Finding| {
+        f.kind == FindingKind::ProcessSpike
+            && f.workload_id
+                .as_ref()
+                .and_then(|id| apps.get(id))
+                .is_some_and(|app| Some(app) == victim_id.as_ref())
+    };
+    if findings.iter().any(inside_victim) {
+        if let Some(vid) = &victim_id {
+            findings.retain(|f| f.workload_id.as_ref() != Some(vid));
+        }
+    }
     // The frontmost app is the victim: its own work is not a culprit to deprioritize.
     if let Some(vid) = &victim_id {
         for f in findings.iter_mut().filter(|f| {
@@ -617,7 +794,7 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
         label: f.label.clone().unwrap_or_default(),
         category: f.category.clone().unwrap_or_default(),
     });
-    let in_app = culprit_finding.and_then(|f| suggestion(snapshot, f, &loads));
+    let in_app = culprit_finding.and_then(|f| suggestion(snapshot, f, &loads, &commands));
     let top = &findings[0];
     let victim_name = victim.as_ref().map(|v| v.label.clone());
     let manual = Some(match top.kind {
@@ -700,9 +877,18 @@ pub fn analyze(capture: &Capture, snapshot: &Snapshot) -> Report {
     }
 }
 
-fn suggestion(snapshot: &Snapshot, finding: &Finding, loads: &[Load]) -> Option<Suggestion> {
+fn suggestion(
+    snapshot: &Snapshot,
+    finding: &Finding,
+    loads: &[Load],
+    commands: &HashMap<u32, Command>,
+) -> Option<Suggestion> {
     let id = finding.workload_id.as_ref()?;
-    let members = snapshot.processes.iter().filter(|p| &p.workload_id == id);
+    let members = snapshot.processes.iter().filter(|p| {
+        commands
+            .get(&p.pid)
+            .map_or(&p.workload_id == id, |c| &c.id == id)
+    });
     if finding.kind == FindingKind::MemoryThrash {
         // Priority does not free memory. Stopping is offered only where actions.rs allows it.
         if finding.strength != Strength::Strong {
@@ -796,7 +982,7 @@ impl Report {
     /// Bounded model context: findings and a five-second timeline summary. Project labels,
     /// paths, PIDs, and identifiers stay local.
     pub fn model_context(&self) -> Value {
-        let mut aliases: Vec<(String, &str)> = vec![];
+        let mut aliases: Vec<(String, String)> = vec![];
         for (label, category) in self
             .findings
             .iter()
@@ -809,7 +995,13 @@ impl Report {
             )
         {
             if category == "project" && !label.is_empty() {
-                aliases.push((label, "a development workload"));
+                aliases.push((label, "a development workload".into()));
+            } else if category == "command" {
+                // "claude (my-project) in Code" → "claude in Code": folder names stay local.
+                if let (Some(open), Some(close)) = (label.find(" ("), label.rfind(") in ")) {
+                    let alias = format!("{}{}", &label[..open], &label[close + 1..]);
+                    aliases.push((label, alias));
+                }
             }
         }
         let clean = |text: &str| {
@@ -992,6 +1184,8 @@ pub(crate) mod tests {
             ticks,
             identities: vec![
                 Identity {
+                    parent_pid: None,
+                    bundle: None,
                     pid: 100,
                     start_time: 1,
                     name: "builder".into(),
@@ -1000,6 +1194,8 @@ pub(crate) mod tests {
                     category: "app".into(),
                 },
                 Identity {
+                    parent_pid: None,
+                    bundle: None,
                     pid: 200,
                     start_time: 1,
                     name: "Editor".into(),
@@ -1343,6 +1539,101 @@ pub(crate) mod tests {
         r.apply_recurrence(&tally);
         assert!(r.offer_permission);
         assert!(r.if_again.contains("3 of your last 3"));
+    }
+
+    /// The editor (pid 200) is frontmost; a shell inside it runs `pid` from `parent`.
+    fn editor_with_terminal(snapshot: &mut Snapshot) {
+        let editor = &mut snapshot.processes[1];
+        editor.executable = Some("/Applications/Editor.app/Contents/MacOS/Editor".into());
+        snapshot.processes.push(ProcessRecord {
+            pid: 210,
+            start_time: 2,
+            parent_pid: Some(200),
+            name: "zsh".into(),
+            workload_id: "editor".into(),
+            executable: Some("/bin/zsh".into()),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn a_new_hog_in_the_frontmost_terminal_is_named_not_folded_into_the_victim() {
+        // perl started after the last full sample: only the per-second scan saw it.
+        let mut c = capture(|o, t| {
+            if (-6..=-1).contains(&o) {
+                t.processes.push((300, 100.0));
+            }
+        });
+        c.identities.push(Identity {
+            pid: 300,
+            start_time: 9,
+            name: "perl".into(),
+            workload_id: "p-300-9".into(),
+            label: "perl".into(),
+            category: "other".into(),
+            parent_pid: Some(210),
+            bundle: None,
+        });
+        let mut s = snapshot();
+        editor_with_terminal(&mut s);
+        let r = analyze(&c, &s);
+        assert_eq!(r.culprit.as_ref().unwrap().label, "perl in Editor");
+        assert!(r.findings.iter().all(|f| f.kind != FindingKind::VictimBusy));
+        assert_eq!(r.victim.as_ref().unwrap().label, "Editor");
+    }
+
+    #[test]
+    fn an_agent_session_inside_the_editor_groups_its_children_and_hides_the_folder() {
+        // The collector folded the session into the editor; its node child is the busy one.
+        let mut c = capture(|o, t| {
+            if (-8..=2).contains(&o) {
+                t.processes.push((310, 20.0));
+                t.processes.push((311, 90.0));
+            }
+        });
+        for (pid, parent, name) in [(310, 210, "claude"), (311, 310, "node")] {
+            c.identities.push(Identity {
+                pid,
+                start_time: 3,
+                name: name.into(),
+                workload_id: "editor".into(),
+                label: "Editor".into(),
+                category: "app".into(),
+                parent_pid: Some(parent),
+                bundle: None,
+            });
+        }
+        let mut s = snapshot();
+        editor_with_terminal(&mut s);
+        for (pid, parent, name) in [(310, 210, "claude"), (311, 310, "node")] {
+            s.processes.push(ProcessRecord {
+                pid,
+                start_time: 3,
+                parent_pid: Some(parent),
+                name: name.into(),
+                workload_id: "editor".into(),
+                working_directory: Some("/w/secret-repo".into()),
+                actions: if name == "node" {
+                    vec!["lower_priority".into(), "terminate".into()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            });
+        }
+        let r = analyze(&c, &s);
+        let culprit = r.culprit.as_ref().unwrap();
+        assert_eq!(culprit.label, "claude (secret-repo) in Editor");
+        assert!(r.findings[0]
+            .observed
+            .iter()
+            .any(|o| o == "Busiest process in it: node."));
+        // The suggestion targets the session's own busy child, never the editor app.
+        let action = r.in_app.as_ref().unwrap();
+        assert_eq!(action.process.pid, 311);
+        let context = r.model_context().to_string();
+        assert!(context.contains("claude in Editor"));
+        assert!(!context.contains("secret-repo"));
     }
 
     #[test]

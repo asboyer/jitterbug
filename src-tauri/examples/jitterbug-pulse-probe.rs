@@ -211,7 +211,7 @@ fn lab(scenario: &str) {
         .processes
         .iter()
         .filter(|p| load_pids.contains(&p.pid))
-        .map(|p| p.workload_id.clone())
+        .filter_map(|p| jitter::suspect_id(&snapshot, p.pid))
         .collect();
     drop(load);
     pulse.set_mode(Mode::SnapshotOnly);
