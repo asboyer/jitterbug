@@ -19,6 +19,7 @@ pub mod pause;
 pub mod platform;
 mod popup;
 pub mod pressure;
+pub mod priorities;
 pub mod probe;
 pub mod profiles;
 pub mod providers;
@@ -729,6 +730,44 @@ async fn approve_optimization(
     state.inner().apply(id, true, remember).await
 }
 
+/// What Jitterbug has lowered and is still lowered, plus the saved "always lower" permissions.
+#[tauri::command]
+async fn get_priority_changes(
+    state: State<'_, AppState>,
+) -> Result<supervisor::PriorityChanges, String> {
+    // Reading OS priority scans the process table; keep it off the main thread.
+    let runtime = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.priority_changes())
+        .await
+        .map_err(|_| "Priority history unavailable.")?
+}
+
+/// Undo one recorded priority change after rechecking it is still the same process.
+#[tauri::command]
+async fn restore_priority(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<String, String> {
+    let runtime = state.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || runtime.restore_priority(id))
+        .await
+        .map_err(|_| "Restore unavailable.")?;
+    popup::refresh(&app);
+    result
+}
+
+#[tauri::command]
+fn remove_automation_rule(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workload_id: String,
+) -> Result<(), String> {
+    state.remove_rule(&workload_id)?;
+    popup::refresh(&app);
+    Ok(())
+}
+
 #[tauri::command]
 fn simulate_pressure(app: tauri::AppHandle) -> Result<(), String> {
     publish_automation_case(
@@ -937,6 +976,9 @@ pub fn run() {
             approve_optimization,
             approve_stop,
             resume_case,
+            get_priority_changes,
+            restore_priority,
+            remove_automation_rule,
             session_control,
             capture::report_jitter,
             capture::get_jitter_tally,

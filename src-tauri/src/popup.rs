@@ -109,7 +109,8 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
 }
 
 /// Only what the in-app notice and review already show: no paths, PIDs, evidence, or diagnosis.
-pub fn view(case: &Case, more: usize) -> Value {
+/// `undo` is the opaque id of the priority change this case made, while it can be undone.
+pub fn view(case: &Case, more: usize, undo: Option<u64>) -> Value {
     let mut payload = json!({
         "kind": "case",
         "id": case.id,
@@ -137,6 +138,7 @@ pub fn view(case: &Case, more: usize) -> Value {
                 && case.proposal.as_ref().is_some_and(|p| {
                     crate::pause::is_paused(p.process.pid, p.process.start_time)
                 }),
+            "undo": undo.filter(|_| r.action == "lower_priority"),
         })),
         "verification": case.verification.as_ref().map(|v| json!({
             "priority_verified": v.priority_verified,
@@ -238,7 +240,7 @@ fn update(app: &tauri::AppHandle) {
     let shown = capture.or_else(|| {
         let choice = choice?;
         let case = cases.iter().find(|c| c.id == choice.id)?;
-        Some(view(case, choice.more))
+        Some(view(case, choice.more, state.priority_change_for(case.id)))
     });
     inner.current = shown.clone();
     drop(inner);
@@ -694,7 +696,7 @@ mod tests {
             proposal.process.executable = Some("/private/example/tool".into());
             proposal.process.working_directory = Some("/private/example".into());
         }
-        let text = view(&case, 2).to_string();
+        let text = view(&case, 2, Some(7)).to_string();
         for private in [
             "/private",
             "pid",
@@ -707,6 +709,24 @@ mod tests {
         }
         assert!(text.contains("\"more\":2"));
         assert!(text.contains("awaiting_approval"));
+        // A finished priority change offers Undo by an opaque id, never by process identity.
+        let process = case.proposal.as_ref().unwrap().process.clone();
+        case.report = Some(crate::types::ActionReport {
+            action: "lower_priority".into(),
+            message: String::new(),
+            before: process,
+            after: None,
+            measured_after_seconds: 6,
+            fresh: true,
+        });
+        let payload = view(&case, 0, Some(7));
+        assert_eq!(payload["report"]["undo"], 7);
+        let text = payload.to_string();
+        for private in ["/private", "pid", "start_time"] {
+            assert!(!text.contains(private), "{private} leaked");
+        }
+        case.report.as_mut().unwrap().action = "terminate".into();
+        assert!(view(&case, 0, Some(7))["report"]["undo"].is_null());
     }
 
     #[test]

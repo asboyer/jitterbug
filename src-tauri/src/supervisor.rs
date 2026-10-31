@@ -2,7 +2,7 @@
 use crate::{
     actions,
     automation::{self, Case, Monitor, Origin, Policy, Rule, Stage},
-    budget, details, jitter, profiles, providers, settings, settings_history, storage,
+    budget, details, jitter, priorities, profiles, providers, settings, settings_history, storage,
     system_settings,
     types::*,
 };
@@ -121,7 +121,15 @@ pub struct Runtime {
     settings_writer: SettingsWriter,
     pub directory: PathBuf,
     book: Mutex<Book>,
+    priorities: Mutex<priorities::Ledger>,
     publish: Publish,
+}
+
+/// What is lowered now, and the workloads with a saved "always lower" permission.
+#[derive(serde::Serialize)]
+pub struct PriorityChanges {
+    pub changes: Vec<priorities::View>,
+    pub rules: Vec<Rule>,
 }
 
 impl Runtime {
@@ -188,6 +196,7 @@ impl Runtime {
             settings_writer,
             directory,
             book: Mutex::new(Book::default()),
+            priorities: Mutex::new(priorities::Ledger::default()),
             publish,
         })
     }
@@ -1400,10 +1409,11 @@ impl Runtime {
             .ok_or("The process is no longer in the inventory.")?;
         let runtime = self.clone();
         let operation = action.to_string();
-        let message = tokio::task::spawn_blocking(move || {
+        let (message, lowered, source) = tokio::task::spawn_blocking(move || {
             // Serialize policy changes with the last authorization check and the OS action.
             let settings = runtime.settings.lock().map_err(|_| "Settings unavailable.")?;
             let book = runtime.book.lock().map_err(|_| "Incident state unavailable.")?;
+            let mut source = priorities::Source::Approval;
             if let Some((id, automatic)) = incident {
                 let case = book.cases.iter().find(|c| c.id == id).ok_or("Incident unavailable.")?;
                 let proposal = case.proposal.as_ref().ok_or("Proposal unavailable.")?;
@@ -1419,10 +1429,21 @@ impl Runtime {
                     || !snapshot.processes.iter().any(|p| p.pid == pid && p.start_time == start_time && p.workload_id == proposal.process.workload_id && busy_enough(p)) {
                     return Err("The trigger or process activity changed. No action was applied.".into());
                 }
+                source = if automatic {
+                    priorities::Source::Rule
+                } else if case.origin == Origin::Agent {
+                    priorities::Source::Agent
+                } else {
+                    priorities::Source::Approval
+                };
             }
             actions::execute(pid, start_time, &operation)
+                .map(|(message, lowered)| (message, lowered, source))
         }).await.map_err(|_| "The process action could not finish.")??;
         let applied_at = now();
+        if let Some(lowered) = lowered {
+            self.record_priority(&before, lowered, source, incident.map(|(id, _)| id))?;
+        }
         if let Some((id, _)) = incident {
             let sent = if action == "terminate" {
                 "Stop request sent."
@@ -1462,6 +1483,132 @@ impl Runtime {
             fresh,
         })
     }
+    fn record_priority(
+        &self,
+        process: &ProcessRecord,
+        lowered: actions::Lowered,
+        source: priorities::Source,
+        case: Option<u64>,
+    ) -> Result<(), String> {
+        let label = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .workloads
+            .iter()
+            .find(|w| w.id == process.workload_id)
+            .map_or_else(|| process.name.clone(), |w| w.label.clone());
+        self.priorities
+            .lock()
+            .map_err(|_| "Priority history unavailable.")?
+            .record(priorities::Change {
+                id: 0,
+                pid: process.pid,
+                start_time: process.start_time,
+                workload_id: process.workload_id.clone(),
+                label,
+                process: process.name.clone(),
+                previous: lowered.previous,
+                lowered_to: lowered.now,
+                at: now(),
+                source,
+                case,
+            });
+        Ok(())
+    }
+
+    /// The change an incident made, while it is still listed, so its result can offer Undo.
+    pub fn priority_change_for(&self, case: u64) -> Option<u64> {
+        self.priorities.lock().ok()?.for_case(case)
+    }
+
+    /// Lowered processes, newest first. Ones that exited or are back to normal are dropped.
+    pub fn priority_changes(&self) -> Result<PriorityChanges, String> {
+        let entries = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority history unavailable.")?
+            .entries();
+        // Reading OS priority scans processes; do it without holding the lock.
+        let current: Vec<u64> = entries
+            .iter()
+            .filter(|c| priorities::still_lowered(c))
+            .map(|c| c.id)
+            .collect();
+        let mut ledger = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority history unavailable.")?;
+        // Entries recorded meanwhile were not checked yet; keep them.
+        let mut keep = current;
+        keep.extend(
+            ledger
+                .entries()
+                .iter()
+                .filter(|c| !entries.iter().any(|e| e.id == c.id))
+                .map(|c| c.id),
+        );
+        ledger.keep(&keep);
+        Ok(PriorityChanges {
+            changes: ledger.views(),
+            rules: self.policy()?.rules,
+        })
+    }
+
+    /// Undo one recorded change, only for the same process (PID and start time) it was made to.
+    pub fn restore_priority(&self, id: u64) -> Result<String, String> {
+        let change = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority history unavailable.")?
+            .get(id)
+            .ok_or("This priority change is no longer listed. Its process may have exited.")?;
+        let result = actions::restore(change.pid, change.start_time, change.previous);
+        let mut ledger = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority history unavailable.")?;
+        match result {
+            Ok(()) => {
+                ledger.remove(id);
+                Ok(format!("{} is back to its usual priority.", change.label))
+            }
+            Err(actions::RestoreError::Gone) => {
+                ledger.remove(id);
+                Err(format!(
+                    "{} already quit or restarted, so it runs at its usual priority. Nothing was changed.",
+                    change.process
+                ))
+            }
+            Err(actions::RestoreError::Denied) => Err(format!(
+                "macOS lets only an administrator raise a priority again. {} returns to normal when it restarts.",
+                change.process
+            )),
+            Err(actions::RestoreError::Failed(message)) => Err(message),
+        }
+    }
+
+    /// Forget a saved "always lower" permission. Changes it already made stay listed.
+    pub fn remove_rule(&self, workload_id: &str) -> Result<(), String> {
+        let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.")?;
+        if !settings
+            .automation
+            .rules
+            .iter()
+            .any(|r| r.workload_id == workload_id)
+        {
+            return Err("This app has no saved permission.".into());
+        }
+        let mut next = settings.clone();
+        next.automation
+            .rules
+            .retain(|r| r.workload_id != workload_id);
+        next.validate()?;
+        storage::write(&self.directory.join("settings.json"), &next)?;
+        *settings = next;
+        Ok(())
+    }
+
     pub fn spending(&self) -> Result<budget::Ledger, String> {
         self.engine.spending()
     }
@@ -2998,5 +3145,97 @@ mod tests {
             .unwrap_err()
             .contains("Fresh telemetry"));
         assert!(f.runtime.policy().unwrap().rules.is_empty());
+    }
+
+    #[test]
+    fn priority_changes_are_listed_restored_by_identity_and_dropped_once_gone() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut system = sysinfo::System::new();
+        system.refresh_processes(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+            true,
+        );
+        let start = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .unwrap()
+            .start_time();
+        let f = Fixture::new();
+        let process = ProcessRecord {
+            pid,
+            start_time: start,
+            name: "cat".into(),
+            workload_id: "fixture".into(),
+            ..Default::default()
+        };
+        let record = |process: &ProcessRecord, previous: i32, case: Option<u64>| {
+            f.runtime
+                .record_priority(
+                    process,
+                    actions::Lowered { previous, now: 10 },
+                    priorities::Source::Rule,
+                    case,
+                )
+                .unwrap();
+        };
+        // Stands in for Jitterbug's own lowering, which only supported apps receive.
+        #[cfg(target_os = "macos")]
+        unsafe {
+            assert_eq!(libc::setpriority(libc::PRIO_PROCESS, pid, 10), 0);
+        }
+        record(&process, 0, Some(42));
+        let id = f.runtime.priority_change_for(42).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let listed = f.runtime.priority_changes().unwrap();
+            assert_eq!(listed.changes.len(), 1);
+            assert_eq!(listed.changes[0].source, priorities::Source::Rule);
+            assert_eq!(listed.changes[0].label, "cat");
+            // Raising a priority back needs an administrator; the change stays listed.
+            if unsafe { libc::geteuid() } != 0 {
+                let error = f.runtime.restore_priority(id).unwrap_err();
+                assert!(error.contains("administrator"), "{error}");
+                assert_eq!(f.runtime.priority_changes().unwrap().changes.len(), 1);
+            }
+        }
+        // A reused PID is another process: it is never touched and the entry is dropped.
+        let stranger = ProcessRecord {
+            start_time: start + 1,
+            ..process.clone()
+        };
+        record(&stranger, 0, Some(43));
+        let other = f.runtime.priority_change_for(43).unwrap();
+        assert_ne!(other, id);
+        let error = f.runtime.restore_priority(other).unwrap_err();
+        assert!(error.contains("Nothing was changed"), "{error}");
+        assert!(f.runtime.priority_change_for(43).is_none());
+        #[cfg(target_os = "macos")]
+        assert_eq!(actions::priority(pid, start), Ok(10));
+        let _ = child.kill();
+        let _ = child.wait();
+        // An exited process leaves the list.
+        assert!(f.runtime.priority_changes().unwrap().changes.is_empty());
+        assert!(f.runtime.restore_priority(id).is_err());
+    }
+
+    #[test]
+    fn a_saved_permission_can_be_removed() {
+        let f = Fixture::new();
+        let mut policy = f.runtime.policy().unwrap();
+        policy.rules.push(Rule {
+            workload_id: "w-1".into(),
+            label: "Example".into(),
+        });
+        f.runtime.save_policy(policy).unwrap();
+        assert_eq!(f.runtime.priority_changes().unwrap().rules.len(), 1);
+        f.runtime.remove_rule("w-1").unwrap();
+        assert!(f.runtime.policy().unwrap().rules.is_empty());
+        let saved: settings::Settings = storage::read(&f.directory.join("settings.json")).unwrap();
+        assert!(saved.automation.rules.is_empty());
+        assert!(f.runtime.remove_rule("w-1").is_err());
     }
 }

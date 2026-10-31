@@ -552,6 +552,8 @@ export interface ActionPopupCase {
         memory_before: number;
         memory_after: number | null;
         resumable?: boolean;
+        /** Opaque id of the priority change this case made, while it can be undone. */
+        undo?: number | null;
     } | null;
     verification: {
         priority_verified: boolean;
@@ -569,6 +571,24 @@ export interface ActionPopupCase {
         manual: string | null;
     } | null;
     more: number;
+}
+
+export type PriorityChangeSource = 'approval' | 'rule' | 'agent';
+
+/** A process Jitterbug lowered that is still lowered. Names only: no process identity. */
+export interface PriorityChange {
+    id: number;
+    label: string;
+    process: string;
+    previous: number;
+    lowered_to: number;
+    at: number;
+    source: PriorityChangeSource;
+}
+
+export interface PriorityChanges {
+    changes: PriorityChange[];
+    rules: AutomationPolicy['rules'];
 }
 
 /** A snapshot is recording; its case does not exist yet. */

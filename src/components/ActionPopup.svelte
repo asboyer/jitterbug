@@ -10,9 +10,10 @@
         helperNote,
         incidentObservation,
         incidentOutcome,
-        noticeTitle,
         nowLine,
+        popupTitle,
         priorityAfter,
+        priorityLabel,
         snapshotBadge,
         stopAfter,
         stopLabel,
@@ -38,6 +39,8 @@
     let hovering = $state(false);
     // A stop needs a second click within a few seconds.
     let confirming = $state(false);
+    // The priority change this result offered to undo was restored.
+    let restored = $state(false);
     let timers: ReturnType<typeof setTimeout>[] = [];
     const shown = $derived(example && example.id === popup?.id ? example : popup);
     const asking = $derived(shown?.stage === 'awaiting_approval');
@@ -53,6 +56,7 @@
             ? actionResult(shown.report, shown.verification, shown.proposal, victim)
             : null
     );
+    const undo = $derived(done && !restored ? (shown?.report?.undo ?? null) : null);
     // The option the numbers describe: the priority change if offered, else the stop.
     const subject = $derived(shown ? (shown.proposal ?? shown.alternative) : null);
     const stopping = $derived(
@@ -68,13 +72,15 @@
             case 'verifying':
                 return 'Checking the result…';
             case 'completed':
-                return result?.title ?? noticeTitle(shown);
+                if (restored)
+                    return `Restored ${shown.proposal?.impact?.label ?? shown.report?.process ?? 'the app'}`;
+                return result?.title ?? popupTitle(shown);
             case 'resolved':
                 return 'No change was needed';
             case 'blocked':
                 return 'Jitterbug couldn’t finish this step';
             default:
-                return noticeTitle(shown);
+                return popupTitle(shown);
         }
     });
 
@@ -112,6 +118,7 @@
             error = '';
             example = null;
             confirming = false;
+            restored = false;
             stopTimers();
         }
         payload = next;
@@ -147,7 +154,7 @@
             error = errorMessage(cause);
         }
     }
-    async function apply(remember: boolean) {
+    async function apply() {
         if (!shown || !asking || busy) return;
         error = '';
         if (shown.source !== 'live') {
@@ -157,7 +164,26 @@
         busy = true;
         try {
             // The stored proposal is rechecked against fresh process identity before acting.
-            await invoke('approve_optimization', { id: shown.id, remember });
+            // Saved "always lower" permissions are managed in Settings, never from here.
+            await invoke('approve_optimization', { id: shown.id, remember: false });
+        } catch (cause) {
+            error = errorMessage(cause);
+        } finally {
+            busy = false;
+        }
+    }
+    async function restore() {
+        if (undo === null || busy) return;
+        error = '';
+        if (shown?.source !== 'live') {
+            restored = true;
+            return;
+        }
+        busy = true;
+        try {
+            // The change is undone only for the same process, after a fresh identity check.
+            await invoke('restore_priority', { id: undo });
+            restored = true;
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
@@ -250,6 +276,7 @@
                         cpu_after: 12.4,
                         memory_before: base.proposal?.process.memory_bytes ?? 0,
                         memory_after: base.proposal?.process.memory_bytes ?? 0,
+                        undo: 1,
                     },
                     verification: {
                         priority_verified: true,
@@ -301,7 +328,12 @@
                 onclick={() => close()}>×</button
             >
         </header>
-        <h2>{title}</h2>
+        {#if undo !== null}<h2 class="with-undo">
+                <span>{title}</span> ·
+                <button class="text-button" disabled={busy} onclick={restore}
+                    >{busy ? 'Undoing…' : 'Undo'}</button
+                >
+            </h2>{:else}<h2>{title}</h2>{/if}
         {#if asking && shown.trigger.reason}<p class="note clamp">
                 Reason given: {shown.trigger.reason}
             </p>{/if}
@@ -312,10 +344,10 @@
             <ul class="options">
                 {#if shown.proposal}<li>
                         <div>
-                            <strong>Lower priority</strong>
-                            <span>{priorityAfter(victim)}</span>
+                            <strong>{priorityLabel(victim)}</strong>
+                            <span>{priorityAfter()}</span>
                         </div>
-                        <button class="primary" disabled={busy} onclick={() => apply(false)}
+                        <button class="primary" disabled={busy} onclick={apply}
                             >{busy ? 'Applying…' : 'Apply'}</button
                         >
                     </li>{/if}
@@ -344,6 +376,10 @@
                         >
                     </li>{/if}
             </ul>
+        {:else if restored}
+            <p class="reason outcome">
+                It is back to its usual priority and competes for CPU as before.
+            </p>
         {:else if result}
             <p class="proposal">{result.meaning}</p>
             <p class="measured">{result.measured}</p>
@@ -363,17 +399,12 @@
         {:else}
             <p class="reason outcome">{incidentOutcome(shown)}</p>
         {/if}
-        {#if error}<p class="error" role="alert">
+        {#if error}<p class="error" role="alert" title={error}>
                 {error}
             </p>{:else if asking && shown.source !== 'live'}<p class="note">
                 Example only. Nothing will be applied.
             </p>{/if}
         <div class="actions">
-            {#if asking && shown.proposal?.action === 'lower_priority'}<button
-                    class="text-button"
-                    disabled={busy}
-                    onclick={() => apply(true)}>Always lower for this app</button
-                >{/if}
             <span class="links">
                 <button class="text-button" disabled={!desktop || busy} onclick={details}
                     >{done && !shown.report ? 'Review' : 'Details'}</button
@@ -454,6 +485,21 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+    .with-undo {
+        display: flex;
+        align-items: baseline;
+        gap: 4px;
+    }
+    .with-undo span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .with-undo button {
+        font-size: 13px;
+        padding: 0 2px;
+        flex-shrink: 0;
     }
     p {
         margin: 0;
@@ -574,9 +620,11 @@
     }
     .error {
         color: var(--danger);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
     }
     .actions {
         display: flex;

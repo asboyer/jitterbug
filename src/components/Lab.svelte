@@ -8,7 +8,13 @@
     import InsidePanel from './InsidePanel.svelte';
     import { demoActionPopup } from '../lib/demo';
     import { errorMessage, memory, percent } from '../lib/format';
-    import type { AutomationPolicy, ProcessRecord, Snapshot } from '../lib/types';
+    import type {
+        AutomationPolicy,
+        PriorityChange,
+        PriorityChanges,
+        ProcessRecord,
+        Snapshot,
+    } from '../lib/types';
 
     type Unit = { unit_id: string; title: string; actions: string[]; is_your_session?: boolean };
     type Entry = { at: string; request: unknown; response: unknown; failed: boolean };
@@ -22,7 +28,13 @@
     let units = $state<Unit[]>([]);
     let requests = $state<number[]>([]);
     let reason = $state('Testing from the Jitterbug Lab.');
+    let lowered = $state<PriorityChanges | null>(null);
     let sequence = 0;
+    const sources: Record<PriorityChange['source'], string> = {
+        approval: 'you approved',
+        rule: 'saved rule',
+        agent: 'agent request',
+    };
 
     const workloads = $derived(
         [...(snapshot?.workloads ?? [])].sort((a, b) => b.cpu_percent - a.cpu_percent)
@@ -41,8 +53,49 @@
             workloadId ||= workloads.find((w) => w.category === 'browser')?.id ?? workloads[0]?.id;
             await loadPolicy();
         })().catch((cause) => (notice = errorMessage(cause)));
-        return () => stop?.();
+        void loadLowered();
+        // Processes that exit drop off the list on the next refresh.
+        const timer = setInterval(() => void loadLowered(), 5000);
+        return () => {
+            stop?.();
+            clearInterval(timer);
+        };
     });
+
+    async function loadLowered() {
+        try {
+            lowered = await invoke<PriorityChanges>('get_priority_changes');
+        } catch (cause) {
+            notice = errorMessage(cause);
+        }
+    }
+
+    async function restorePriority(change: PriorityChange) {
+        try {
+            notice = await invoke<string>('restore_priority', { id: change.id });
+        } catch (cause) {
+            notice = errorMessage(cause);
+        }
+        await loadLowered();
+    }
+
+    async function removeRule(rule: AutomationPolicy['rules'][number]) {
+        try {
+            await invoke('remove_automation_rule', { workloadId: rule.workload_id });
+            notice = `${rule.label} is no longer lowered automatically.`;
+            await loadPolicy();
+        } catch (cause) {
+            notice = errorMessage(cause);
+        }
+        await loadLowered();
+    }
+
+    function since(at: number): string {
+        const minutes = Math.floor((Date.now() / 1000 - at) / 60);
+        if (minutes < 1) return 'just now';
+        if (minutes < 60) return `${minutes} min ago`;
+        return `${Math.floor(minutes / 60)} h ${minutes % 60} min ago`;
+    }
 
     async function loadPolicy() {
         policy = (await invoke<{ settings: { automation: AutomationPolicy } }>('get_bootstrap'))
@@ -75,6 +128,7 @@
         } finally {
             actionBusy = false;
         }
+        await loadLowered();
     }
 
     async function previewPopup() {
@@ -192,6 +246,43 @@
                 <h4>{example.name}</h4>
                 <div class="frame"><ActionPopup preset={example.payload} /></div>
             {/each}
+        </div>
+        <div class="lowered" aria-label="Currently lowered">
+            <h3>Currently lowered</h3>
+            {#if lowered?.changes.length}
+                <ul>
+                    {#each lowered.changes as change (change.id)}
+                        <li>
+                            <span class="title">
+                                <span>{change.label}</span>
+                                <small class="muted">
+                                    {change.process} · {since(change.at)} · {sources[change.source]} ·
+                                    nice
+                                    {change.previous} → {change.lowered_to}
+                                </small>
+                            </span>
+                            <button class="small" onclick={() => restorePriority(change)}
+                                >Restore</button
+                            >
+                        </li>
+                    {/each}
+                </ul>
+            {:else}
+                <p class="muted small">Nothing Jitterbug lowered is still running.</p>
+            {/if}
+            <h3>Always lower</h3>
+            {#if lowered?.rules.length}
+                <ul>
+                    {#each lowered.rules as rule (rule.workload_id)}
+                        <li>
+                            <span class="title">{rule.label}</span>
+                            <button class="small" onclick={() => removeRule(rule)}>Remove</button>
+                        </li>
+                    {/each}
+                </ul>
+            {:else}
+                <p class="muted small">No saved rules.</p>
+            {/if}
         </div>
     </section>
 
@@ -377,6 +468,33 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+    .lowered {
+        max-height: 220px;
+        overflow: auto;
+        border-top: 1px solid var(--border);
+        padding-top: 6px;
+    }
+    .lowered ul {
+        list-style: none;
+        margin: 0 0 6px;
+        padding: 0;
+        font-size: 12px;
+    }
+    .lowered li {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .lowered .title {
+        flex: 1;
+        min-width: 0;
+        display: grid;
+    }
+    .lowered small {
+        font-size: 11px;
     }
     .log details {
         border-bottom: 1px solid var(--border);

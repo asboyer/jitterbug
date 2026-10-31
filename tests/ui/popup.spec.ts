@@ -6,20 +6,22 @@ test('action popup fits its window, plays the example, and hides the result', as
     await page.clock.install();
     await page.goto('/?view=popup');
     const popup = page.getByRole('region', { name: 'Jitterbug needs you' });
-    await expect(popup).toContainText('Hey, sample-web-app has stayed busy.');
+    await expect(popup.getByRole('heading')).toHaveText('sample-web-app has stayed busy');
     await expect(popup).toContainText('EXAMPLE');
     await expect(popup).toContainText('+1 more');
-    // Current use, then each option with what it would leave you with.
-    await expect(popup).toContainText(
-        /Now: sample-web-app uses [\d.]+% CPU · [\d.]+ \w+ · \d+ processes/
-    );
-    await expect(popup).toContainText('After: same usage; your other apps go first');
+    // Current use, then each option as its consequence.
+    await expect(popup).toContainText(/Now: [\d.]+% CPU · [\d.]+ \w+(?! ·)/);
+    await expect(popup).not.toContainText('processes');
+    await expect(popup).toContainText('Let other apps go first');
+    await expect(popup).toContainText('After: keeps running, waits its turn');
     await expect(popup).toContainText(/Quit sample-web-app\s*After: frees about [\d.]+% CPU/);
-    await expect(popup).toContainText('Every sample-web-app window closes');
+    await expect(popup).toContainText('Every window closes; unsaved work is lost.');
+    // A permanent rule is never one click away in the popup.
+    await expect(popup).not.toContainText('Always lower');
     await expect(popup).toContainText('Example only. Nothing will be applied.');
     await expect(popup).not.toContainText('/example');
     await expect(popup.getByRole('button', { name: 'Details' })).toBeDisabled();
-    for (const name of ['Apply', 'Quit…', 'Always lower for this app', 'Later']) {
+    for (const name of ['Apply', 'Quit…', 'Later']) {
         const box = await popup.getByRole('button', { name, exact: true }).boundingBox();
         expect(box).not.toBeNull();
         expect(box!.x + box!.width).toBeLessThanOrEqual(360);
@@ -34,7 +36,7 @@ test('action popup fits its window, plays the example, and hides the result', as
     await expect(popup).toContainText('Checking the result…');
     await page.clock.fastForward(1500);
     // The result says what changed, what it means, and what was measured.
-    await expect(popup.getByRole('heading')).toContainText('Lowered');
+    await expect(popup.getByRole('heading')).toContainText('Lowered sample-web-app · Undo');
     await expect(popup).toContainText('keeps running');
     await expect(popup).toContainText(/→ [\d.]+% · whole Mac CPU [\d.]+% → [\d.]+%/);
     await expect(popup).toContainText('doesn’t cap CPU');
@@ -47,6 +49,18 @@ test('action popup fits its window, plays the example, and hides the result', as
     await popup.dispatchEvent('pointerleave');
     await page.clock.fastForward(12000);
     await expect(popup).toHaveCount(0);
+});
+
+test('a lowered priority can be undone from the result', async ({ page }) => {
+    await page.clock.install();
+    await page.goto('/?view=popup');
+    const popup = page.getByRole('region', { name: 'Jitterbug needs you' });
+    await popup.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.clock.fastForward(2500);
+    await popup.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(popup.getByRole('heading')).toHaveText('Restored sample-web-app');
+    await expect(popup).toContainText('back to its usual priority');
+    await expect(popup.getByRole('button', { name: 'Undo', exact: true })).toHaveCount(0);
 });
 
 test('Later and Escape close the popup without applying anything', async ({ page }) => {

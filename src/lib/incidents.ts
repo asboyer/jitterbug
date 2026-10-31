@@ -148,6 +148,33 @@ export function noticeTitle(incident: IncidentSummary): string {
     }
 }
 
+/** The popup's headline: the same news as the in-app notice, without the greeting. */
+export function popupTitle(incident: IncidentSummary): string {
+    const subject = incident.trigger.target?.label ?? 'An app';
+    switch (incident.trigger.kind) {
+        case 'app_unresponsive':
+            return `${subject} has stopped responding`;
+        case 'system_cpu':
+            return 'Your computer has stayed busy';
+        case 'memory_pressure':
+            return 'Your computer is short on memory';
+        case 'thermal_pressure':
+            return 'Your computer is running warm';
+        case 'memory_growth':
+            return `${subject}’s memory use has grown`;
+        case 'cpu_anomaly':
+            return `${subject} is busier than usual`;
+        case 'user_reported':
+            return 'Here’s that moment';
+        case 'short_spike':
+            return 'Caught a short hitch';
+        case 'agent_request':
+            return incident.trigger.title;
+        default:
+            return `${subject} has stayed busy`;
+    }
+}
+
 /** What approving does, in plain words. */
 export function proposalSummary(processName: string, victim?: string | null): string {
     return `Lower ${processName}’s CPU priority so ${victim ?? 'your other apps'} get the CPU first when they compete. ${processName} keeps running.`;
@@ -158,15 +185,13 @@ function change(before: string, after: string | null): string {
     return after === null ? `${before} before` : `${before} → ${after}`;
 }
 
-/** Current use of the workload an option belongs to. */
+/** Current use of the workload an option belongs to; the title already names it. */
 export function nowLine(option: ActionPopupOption): string {
     const impact = option.impact;
-    if (!impact) {
-        return `Now: ${option.process.name} uses ${percent(option.process.cpu_percent)} CPU · ${memory(option.process.memory_bytes)}`;
-    }
-    const processes =
-        impact.process_count === 1 ? '1 process' : `${impact.process_count} processes`;
-    return `Now: ${impact.label} uses ${percent(impact.workload_cpu_percent)} CPU · ${memory(impact.workload_memory_bytes)} · ${processes}`;
+    const [cpu, bytes] = impact
+        ? [impact.workload_cpu_percent, impact.workload_memory_bytes]
+        : [option.process.cpu_percent, option.process.memory_bytes];
+    return `Now: ${percent(cpu)} CPU · ${memory(bytes)}`;
 }
 
 /** A helper's name rarely says what it is; say so instead of implying it can be identified. */
@@ -180,8 +205,13 @@ export function helperNote(option: ActionPopupOption): string | null {
     return `Busiest part: ${name}, a tab, extension, or background part of ${label}. macOS doesn’t say which.${manager}`;
 }
 
-export function priorityAfter(victim?: string | null): string {
-    return `After: same usage; ${victim ?? 'your other apps'} go first when they compete.`;
+/** The priority option as its consequence: who goes first. */
+export function priorityLabel(victim?: string | null): string {
+    return victim ? `Let ${victim} go first` : 'Let other apps go first';
+}
+
+export function priorityAfter(): string {
+    return 'After: keeps running, waits its turn for CPU';
 }
 
 /** A stop frees what ends: the whole app for its main executable, else that one process. */
@@ -206,6 +236,9 @@ export function stopLabel(option: ActionPopupOption): string {
 
 /** What an option ends, without repeating its label: "Pause X: its 7 processes…" → "Its 7 processes…". */
 export function stopWarning(option: ActionPopupOption): string {
+    // The label already says "Quit <app>"; the warning only adds what is lost.
+    if (option.action === 'terminate' && option.impact?.whole_app)
+        return 'Every window closes; unsaved work is lost.';
     const text = option.closes ?? '';
     const label = stopLabel(option);
     if (!text.startsWith(label)) return text;
@@ -289,7 +322,7 @@ export function actionResult(
     const dropped = report.cpu_after !== null && report.cpu_after < report.cpu_before - 1;
     return {
         title: verified
-            ? `Lowered ${name}’s priority`
+            ? `Lowered ${option?.impact?.label ?? name}`
             : `Priority change for ${name} not confirmed`,
         meaning: verified
             ? `${name} keeps running. When apps compete for CPU, macOS now runs ${victim ?? 'your other apps'} first.`
