@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 
-const INSTRUCTIONS: &str = "Jitterbug sees which app, browser tab, or command session (such as another coding-agent session in a terminal) is using this computer's CPU and memory, and can pause a session, pause a background tab, or close a tab. Call jitterbug_overview first; call jitterbug_inspect_app for one app's tabs or sessions. When the machine is under pressure, prefer pausing the session or tab using the most resources that is least urgent: pausing freezes it without losing work, and it resumes when asked or after 15 minutes. Prefer pausing a tab over closing it: closing ends what runs in it, and only closing frees a tab's memory. Never pause your own session (marked is_your_session). Every action is a request the person approves in Jitterbug unless they allowed agents to pause without asking; follow it with jitterbug_request_status, and resume the sessions and tabs you paused once the pressure clears. Results are measurements, not proof of what a session is doing.";
+const INSTRUCTIONS: &str = "Jitterbug sees which app, browser tab, or command session (such as another coding-agent session in a terminal) is using this computer's CPU and memory, and can pause a session, pause a background tab, or close a tab. Call jitterbug_overview first; call jitterbug_inspect_app for one app's tabs or sessions. When the machine is under pressure, prefer pausing the session or tab using the most resources that is least urgent: pausing freezes it without losing work, and it resumes when asked or after 15 minutes. Prefer pausing a tab over closing it: closing ends what runs in it, and only closing frees a tab's memory. Never pause your own session (marked is_your_session). Every action is a request the person approves in Jitterbug unless they allowed agents to pause without asking; follow it with jitterbug_request_status, and resume the sessions and tabs you paused once the pressure clears. Results are measurements, not proof of what a session is doing. To let an app wait for others for longer, ask with jitterbug_request_background; apps the person marked Protected are off limits.";
 
 fn tool(
     name: &str,
@@ -31,6 +31,7 @@ pub fn tools() -> Value {
         tool("jitterbug_pause_tab", "Ask to pause one background browser tab (a unit with the pause_tab action). Its scripts, timers, and media stop until resumed (automatically after 15 minutes); nothing is closed and its memory stays allocated. Prefer this over closing a tab. Usually waits for the person's approval.", json!({"unit_id": unit.clone(), "reason": reason.clone()}), &["unit_id", "reason"], false),
         tool("jitterbug_resume_tab", "Resume a tab that an agent's pause request paused. Tabs the person paused stay paused.", json!({"unit_id": unit.clone()}), &["unit_id"], false),
         tool("jitterbug_close_tab", "Ask the person to close one browser tab. Whatever runs in it ends, such as a call or unsaved input. Always waits for approval.", json!({"unit_id": unit, "reason": reason}), &["unit_id", "reason"], false),
+        tool("jitterbug_request_background", "Ask the person to move one app to Background: macOS keeps it running but gives other apps CPU, disk, and network first, including processes it starts later, until the person moves it back. Never for Protected apps. Always waits for approval.", json!({"workload_id": {"type": "string", "description": "workload_id from jitterbug_overview"}, "reason": {"type": "string", "description": "One sentence shown to the person, e.g. why this app should wait"}}), &["workload_id", "reason"], false),
         tool("jitterbug_request_status", "Whether a pause or close request is still waiting for the person, applied, or declined, with the measured result and, while paused, resumes_at.", json!({"request_id": {"type": "integer"}}), &["request_id"], true),
     ]})
 }
@@ -45,6 +46,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
         "jitterbug_pause_tab" => "pause_tab",
         "jitterbug_resume_tab" => "resume_tab",
         "jitterbug_close_tab" => "close_tab",
+        "jitterbug_request_background" => "request_background",
         "jitterbug_request_status" => "request_status",
         _ => return Err("Unknown tool.".into()),
     };
@@ -168,6 +170,7 @@ mod tests {
             json!(["unit_id"])
         );
         assert!(INSTRUCTIONS.contains("Prefer pausing a tab over closing it"));
+        assert!(names.contains(&"jitterbug_request_background".to_string()));
         let unknown = respond(
             &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "rm"}}),
         )

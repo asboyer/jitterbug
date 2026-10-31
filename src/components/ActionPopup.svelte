@@ -7,13 +7,13 @@
     import { errorMessage } from '../lib/format';
     import {
         actionResult,
+        backgroundAfter,
+        backgroundLabel,
         helperNote,
         incidentObservation,
         incidentOutcome,
         nowLine,
         popupTitle,
-        priorityAfter,
-        priorityLabel,
         snapshotBadge,
         stopAfter,
         stopLabel,
@@ -46,7 +46,7 @@
     let confirming = $state(false);
     // Closing a tab offered after pausing it needs its own second click.
     let confirmingFallback = $state(false);
-    // The priority change this result offered to undo was restored.
+    // Undo moved the app this result put in Background back to Normal.
     let restored = $state(false);
     let timers: ReturnType<typeof setTimeout>[] = [];
     const shown = $derived(example && example.id === popup?.id ? example : popup);
@@ -63,7 +63,10 @@
             ? actionResult(shown.report, shown.verification, shown.proposal, victim)
             : null
     );
-    const undo = $derived(done && !restored ? (shown?.report?.undo ?? null) : null);
+    const undo = $derived(done && !restored && !!shown?.report?.undo);
+    const app = $derived(
+        shown?.proposal?.impact?.label ?? shown?.report?.process ?? shown?.proposal?.process.name
+    );
     // The option the numbers describe: the priority change if offered, else the stop.
     const subject = $derived(shown ? (shown.proposal ?? shown.alternative) : null);
     const stopping = $derived(
@@ -75,12 +78,11 @@
             case 'applying':
                 return stopping
                     ? `${stopLabel(shown.proposal!).replace(/^(Quit|Stop|Pause|Close)/, (verb) => ({ Quit: 'Quitting', Stop: 'Stopping', Pause: 'Pausing', Close: 'Closing' })[verb] ?? verb)}…`
-                    : 'Applying the priority change…';
+                    : `Moving ${app ?? 'the app'} to Background…`;
             case 'verifying':
                 return 'Checking the result…';
             case 'completed':
-                if (restored)
-                    return `Restored ${shown.proposal?.impact?.label ?? shown.report?.process ?? 'the app'}`;
+                if (restored) return `Moved ${app ?? 'the app'} back to Normal`;
                 return result?.title ?? popupTitle(shown);
             case 'resolved':
                 return 'No change was needed';
@@ -170,9 +172,9 @@
         }
         busy = true;
         try {
-            // The stored proposal is rechecked against fresh process identity before acting.
-            // Saved "always lower" permissions are managed in Settings, never from here.
-            await invoke('approve_optimization', { id: shown.id, remember: false });
+            // The stored proposal is rechecked against fresh process identity before acting;
+            // approving moves the app to Background.
+            await invoke('approve_optimization', { id: shown.id });
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
@@ -180,7 +182,7 @@
         }
     }
     async function restore() {
-        if (undo === null || busy) return;
+        if (!undo || !shown || busy) return;
         error = '';
         if (shown?.source !== 'live') {
             restored = true;
@@ -188,8 +190,8 @@
         }
         busy = true;
         try {
-            // The change is undone only for the same process, after a fresh identity check.
-            await invoke('restore_priority', { id: undo });
+            // Moves the app back to Normal; each process is rechecked before it changes.
+            await invoke('undo_background', { id: shown.id });
             restored = true;
         } catch (cause) {
             error = errorMessage(cause);
@@ -284,7 +286,7 @@
                         cpu_after: 12.4,
                         memory_before: base.proposal?.process.memory_bytes ?? 0,
                         memory_after: base.proposal?.process.memory_bytes ?? 0,
-                        undo: 1,
+                        undo: true,
                     },
                     verification: {
                         priority_verified: true,
@@ -336,7 +338,7 @@
                 onclick={() => close()}>×</button
             >
         </header>
-        {#if undo !== null}<h2 class="with-undo">
+        {#if undo}<h2 class="with-undo">
                 <span>{title}</span> ·
                 <button class="text-button" disabled={busy} onclick={restore}
                     >{busy ? 'Undoing…' : 'Undo'}</button
@@ -352,8 +354,10 @@
             <ul class="options">
                 {#if shown.proposal}<li>
                         <div>
-                            <strong>{priorityLabel(victim)}</strong>
-                            <span>{priorityAfter()}</span>
+                            <strong title={backgroundLabel(shown.proposal)}
+                                >{backgroundLabel(shown.proposal)}</strong
+                            >
+                            <span>{backgroundAfter(victim)}</span>
                         </div>
                         <button class="primary" disabled={busy} onclick={apply}
                             >{busy ? 'Applying…' : 'Apply'}</button
@@ -395,9 +399,7 @@
                     </li>{/if}
             </ul>
         {:else if restored}
-            <p class="reason outcome">
-                It is back to its usual priority and competes for CPU as before.
-            </p>
+            <p class="reason outcome">It competes for CPU and disk as before.</p>
         {:else if result}
             <p class="proposal">{result.meaning}</p>
             <p class="measured">{result.measured}</p>

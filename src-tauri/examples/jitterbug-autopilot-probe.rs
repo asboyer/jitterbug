@@ -4,8 +4,7 @@
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     use jitterbug_lib::{
-        actions,
-        automation::{Rule, Stage},
+        automation::{AssignedBy, Assignment, Bucket, Stage},
         collector::Collector,
         settings::Settings,
         supervisor::Runtime,
@@ -73,12 +72,20 @@ async fn main() {
         {
             if !permission {
                 assert!(process.actions.iter().any(|a| a == "lower_priority"));
-                let mut policy = runtime.settings.lock().unwrap().automation.clone();
-                policy.rules = vec![Rule {
-                    workload_id: process.workload_id.clone(),
-                    label: "Example".into(),
-                }];
-                runtime.save_policy(policy).unwrap();
+                // Background bucket in memory only: this probe runs no bucket enforcement, so
+                // only the incident's own automatic change touches the fixture.
+                runtime
+                    .settings
+                    .lock()
+                    .unwrap()
+                    .automation
+                    .assign(Assignment {
+                        workload_id: process.workload_id.clone(),
+                        label: "Example".into(),
+                        bucket: Bucket::Background,
+                        since: 0,
+                        source: AssignedBy::You,
+                    });
                 permission = true;
             }
             // Scope the real inventory to our child. Do not mutate unrelated applications or
@@ -105,7 +112,10 @@ async fn main() {
                     assert_eq!(case.proposal.as_ref().unwrap().process.pid, fixture.0.id());
                     assert!(case.verification.as_ref().unwrap().priority_verified);
                     assert!(case.report.as_ref().unwrap().fresh);
-                    assert!(actions::priority(process.pid, process.start_time).unwrap() >= 10);
+                    assert_eq!(
+                        jitterbug_lib::platform::in_background(process.pid, process.start_time),
+                        Some(true)
+                    );
                     assert_eq!(runtime.spending().unwrap().requests, 0);
                     let stages: Vec<_> = case.steps.iter().map(|s| s.stage.clone()).collect();
                     for stage in [
@@ -119,11 +129,11 @@ async fn main() {
                         assert!(stages.contains(&stage));
                     }
                     assert!(
-                        runtime.apply(case.id, true, false).await.is_err(),
+                        runtime.apply(case.id, true).await.is_err(),
                         "Completed actions cannot repeat"
                     );
                     jitterbug_lib::storage::write(&directory.join("result.json"), case).unwrap();
-                    println!("PASS: sustained real workload detected, investigated with rules, allowed priority change applied automatically, OS priority verified, fresh follow-up measured, duplicate action rejected. No cloud calls. Private evidence stays ignored.");
+                    println!("PASS: sustained real workload detected, investigated with rules, allowed priority change applied automatically, background mode verified, fresh follow-up measured, duplicate action rejected. No cloud calls. Private evidence stays ignored.");
                     break;
                 }
             }

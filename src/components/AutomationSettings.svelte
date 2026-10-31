@@ -4,7 +4,7 @@
     import Icon from './Icon.svelte';
     import SettingSwitch from './SettingSwitch.svelte';
     import { errorMessage } from '../lib/format';
-    import type { Bootstrap, JitterTally } from '../lib/types';
+    import type { AutomationPolicy, Bootstrap, JitterTally } from '../lib/types';
     let {
         bootstrap,
         desktop,
@@ -18,9 +18,11 @@
         section: 'assistance' | 'connections';
         visible: boolean;
     } = $props();
+    // App priorities save on their own (`move_to_bucket`), so they never make the form dirty.
+    const comparable = (p: AutomationPolicy) => JSON.stringify({ ...p, buckets: undefined });
     let policy = $state(untrack(() => $state.snapshot(bootstrap.settings.automation)));
-    let savedPolicy = $state(untrack(() => JSON.stringify(bootstrap.settings.automation)));
-    let dirty = $derived(JSON.stringify(policy) !== savedPolicy);
+    let savedPolicy = $state(untrack(() => comparable(bootstrap.settings.automation)));
+    let dirty = $derived(comparable(policy) !== savedPolicy);
     let busy = $state(false);
     let status = $state('');
     let error = $state('');
@@ -59,12 +61,22 @@
             await invoke('save_automation_policy', { policy: submitted });
             await onrefresh();
             await loadTally();
-            savedPolicy = JSON.stringify(submitted);
+            savedPolicy = comparable(submitted);
             status = 'Preferences saved.';
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
             busy = false;
+        }
+    }
+    async function moveToNormal(workloadId: string) {
+        if (!desktop) return;
+        try {
+            status = await invoke<string>('move_to_bucket', { workloadId, bucket: 'normal' });
+            policy.buckets = policy.buckets.filter((b) => b.workload_id !== workloadId);
+            await onrefresh();
+        } catch (cause) {
+            error = errorMessage(cause);
         }
     }
     async function resume() {
@@ -174,37 +186,34 @@
             </details>
             <details class="preference-detail">
                 <summary>
-                    <span class="detail-name"
-                        ><Icon name="settings" /> Automatic priority changes</span
-                    >
+                    <span class="detail-name"><Icon name="settings" /> App priorities</span>
                     <span class="detail-value"
-                        >{policy.rules.length
-                            ? `${policy.rules.length} approved`
-                            : 'None allowed'}</span
+                        >{policy.buckets.length
+                            ? `${policy.buckets.length} not Normal`
+                            : 'All Normal'}</span
                     >
                 </summary>
                 <div class="detail-body">
                     <p class="muted">
-                        Approve individual workloads from a suggestion. Automatic priority changes
-                        never stop an app.
+                        Approving a priority suggestion moves an app to Background. Protected apps
+                        are never offered for changes or agent requests.
                     </p>
-                    {#each policy.rules as rule}
+                    {#each policy.buckets as entry (entry.workload_id)}
                         <div class="local-model">
-                            <span>{rule.label} · lower priority</span><button
-                                onclick={() => {
-                                    policy.rules = policy.rules.filter(
-                                        (r) => r.workload_id !== rule.workload_id
-                                    );
-                                }}>Remove permission</button
+                            <span
+                                >{entry.label} · {entry.bucket === 'background'
+                                    ? 'Background'
+                                    : 'Protected'}</span
+                            ><button onclick={() => moveToNormal(entry.workload_id)}
+                                >Move to Normal</button
                             >
                         </div>
                     {:else}
-                        <p class="muted">No workloads have permission yet.</p>
+                        <p class="muted">Every app is Normal.</p>
                     {/each}
                     <p class="muted">
-                        Lower priority gives competing work more CPU time. It does not cap CPU or
-                        free memory. Restoring priority may need OS privileges; automatic rollback
-                        is not guaranteed.
+                        Background mode gives other apps CPU and disk first. It does not cap CPU or
+                        free memory, and the app in front always runs at full speed.
                     </p>
                 </div>
             </details>

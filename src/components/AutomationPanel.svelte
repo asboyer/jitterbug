@@ -418,9 +418,9 @@
         {error}
         canApply={canMutate}
         onclose={closeReview}
-        onapply={async (remember) => {
+        onapply={async () => {
             if (!reviewCurrent || !canMutate) return;
-            if (await perform('approve_optimization', { id: incident.id, remember })) closeReview();
+            if (await perform('approve_optimization', { id: incident.id })) closeReview();
         }}
     />
 {/if}

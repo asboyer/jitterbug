@@ -11,9 +11,11 @@
     import { demoActionPopup } from '../lib/demo';
     import { errorMessage, memory, percent } from '../lib/format';
     import type {
+        AppPriority,
         AutomationPolicy,
-        PriorityChange,
-        PriorityChanges,
+        BucketSource,
+        Priorities,
+        PriorityBucket,
         ProcessRecord,
         Snapshot,
     } from '../lib/types';
@@ -30,12 +32,23 @@
     let units = $state<Unit[]>([]);
     let requests = $state<number[]>([]);
     let reason = $state('Testing from the Jitterbug Lab.');
-    let lowered = $state<PriorityChanges | null>(null);
+    let priorities = $state<Priorities | null>(null);
     let sequence = 0;
-    const sources: Record<PriorityChange['source'], string> = {
-        approval: 'you approved',
-        rule: 'saved rule',
+    const buckets: PriorityBucket[] = ['protected', 'normal', 'background'];
+    const bucketNames: Record<PriorityBucket, string> = {
+        protected: 'Protected',
+        normal: 'Normal',
+        background: 'Background',
+    };
+    const bucketEmpty: Record<PriorityBucket, string> = {
+        protected: 'Nothing protected.',
+        normal: 'No running apps to move.',
+        background: 'Nothing in Background.',
+    };
+    const sources: Record<BucketSource, string> = {
+        you: 'you',
         agent: 'agent request',
+        migrated_rule: 'migrated rule',
     };
     let area = $state<'inside' | 'sessions'>('inside');
 
@@ -56,41 +69,45 @@
             workloadId ||= workloads.find((w) => w.category === 'browser')?.id ?? workloads[0]?.id;
             await loadPolicy();
         })().catch((cause) => (notice = errorMessage(cause)));
-        void loadLowered();
-        // Processes that exit drop off the list on the next refresh.
-        const timer = setInterval(() => void loadLowered(), 5000);
+        void loadPriorities();
+        // Counts follow new and exited processes on the next refresh.
+        const timer = setInterval(() => void loadPriorities(), 5000);
         return () => {
             stop?.();
             clearInterval(timer);
         };
     });
 
-    async function loadLowered() {
+    async function loadPriorities() {
         try {
-            lowered = await invoke<PriorityChanges>('get_priority_changes');
+            priorities = await invoke<Priorities>('get_priority_buckets');
         } catch (cause) {
             notice = errorMessage(cause);
         }
     }
 
-    async function restorePriority(change: PriorityChange) {
+    async function move(app: AppPriority, bucket: PriorityBucket) {
         try {
-            notice = await invoke<string>('restore_priority', { id: change.id });
+            notice = await invoke<string>('move_to_bucket', {
+                workloadId: app.workload_id,
+                bucket,
+            });
         } catch (cause) {
             notice = errorMessage(cause);
         }
-        await loadLowered();
+        await loadPriorities();
     }
 
-    async function removeRule(rule: AutomationPolicy['rules'][number]) {
-        try {
-            await invoke('remove_automation_rule', { workloadId: rule.workload_id });
-            notice = `${rule.label} is no longer lowered automatically.`;
-            await loadPolicy();
-        } catch (cause) {
-            notice = errorMessage(cause);
-        }
-        await loadLowered();
+    function details(app: AppPriority): string {
+        return [
+            app.source && sources[app.source],
+            app.since && since(app.since),
+            app.affected && `${app.affected} in background mode`,
+            app.frontmost && 'in front',
+            !app.running && 'not running',
+        ]
+            .filter(Boolean)
+            .join(' · ');
     }
 
     function since(at: number): string {
@@ -131,7 +148,7 @@
         } finally {
             actionBusy = false;
         }
-        await loadLowered();
+        await loadPriorities();
     }
 
     async function previewPopup() {
@@ -262,45 +279,38 @@
                 Exactly what the floating popup shows now. Empty while nothing needs you.
             </p>
             <div class="frame live"><ActionPopup /></div>
-            <div class="lowered" aria-label="Currently lowered">
-                <h3>Currently lowered</h3>
-                {#if lowered?.changes.length}
-                    <ul>
-                        {#each lowered.changes as change (change.id)}
-                            <li>
-                                <span class="title">
-                                    <span>{change.label}</span>
-                                    <small class="muted">
-                                        {change.process} · {since(change.at)} · {sources[
-                                            change.source
-                                        ]} · nice
-                                        {change.previous} → {change.lowered_to}
-                                    </small>
-                                </span>
-                                <button class="small" onclick={() => restorePriority(change)}
-                                    >Restore</button
-                                >
-                            </li>
-                        {/each}
-                    </ul>
-                {:else}
-                    <p class="muted small">Nothing Jitterbug lowered is still running.</p>
-                {/if}
-                <h3>Always lower</h3>
-                {#if lowered?.rules.length}
-                    <ul>
-                        {#each lowered.rules as rule (rule.workload_id)}
-                            <li>
-                                <span class="title">{rule.label}</span>
-                                <button class="small" onclick={() => removeRule(rule)}
-                                    >Remove</button
-                                >
-                            </li>
-                        {/each}
-                    </ul>
-                {:else}
-                    <p class="muted small">No saved rules.</p>
-                {/if}
+            <div class="priorities" aria-label="Priorities">
+                <h3>Priorities</h3>
+                {#each buckets as bucket (bucket)}
+                    <h5>{bucketNames[bucket]}</h5>
+                    {#if priorities?.[bucket].length}
+                        <ul>
+                            {#each priorities[bucket] as app (app.workload_id)}
+                                <li>
+                                    <span class="title">
+                                        <span>{app.label}</span>
+                                        {#if details(app)}<small class="muted">{details(app)}</small
+                                            >{/if}
+                                    </span>
+                                    <select
+                                        class="small"
+                                        aria-label={`Move ${app.label} to`}
+                                        value=""
+                                        onchange={(event) =>
+                                            move(app, event.currentTarget.value as PriorityBucket)}
+                                    >
+                                        <option value="" disabled>Move to…</option>
+                                        {#each buckets.filter((b) => b !== bucket) as target (target)}
+                                            <option value={target}>{bucketNames[target]}</option>
+                                        {/each}
+                                    </select>
+                                </li>
+                            {/each}
+                        </ul>
+                    {:else}
+                        <p class="muted small">{bucketEmpty[bucket]}</p>
+                    {/if}
+                {/each}
             </div>
             <h3>Examples</h3>
             <p class="muted small">Played locally; nothing is applied.</p>
@@ -509,32 +519,46 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    .lowered {
-        max-height: 220px;
+    .priorities {
+        max-height: 260px;
         overflow: auto;
         border-top: 1px solid var(--border);
         padding-top: 6px;
     }
-    .lowered ul {
+    .priorities h5 {
+        margin: 6px 0 2px;
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .priorities p {
+        margin: 0 0 4px;
+    }
+    .priorities ul {
         list-style: none;
         margin: 0 0 6px;
         padding: 0;
         font-size: 12px;
     }
-    .lowered li {
+    .priorities li {
         display: flex;
         align-items: center;
         gap: 6px;
         padding: 3px 0;
         border-bottom: 1px solid var(--border);
     }
-    .lowered .title {
+    .priorities .title {
         flex: 1;
         min-width: 0;
         display: grid;
     }
-    .lowered small {
+    .priorities small {
         font-size: 11px;
+    }
+    .priorities select {
+        width: auto;
+        padding: 2px 4px;
     }
     .log details {
         border-bottom: 1px solid var(--border);

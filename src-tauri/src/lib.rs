@@ -767,51 +767,47 @@ async fn session_control(
     .map_err(|_| "Session control unavailable.")?
 }
 
+/// Approving a priority change moves the app to the Background bucket.
 #[tauri::command]
-async fn approve_optimization(
-    state: State<'_, AppState>,
-    id: u64,
-    remember: bool,
-) -> Result<(), String> {
-    state.inner().apply(id, true, remember).await
+async fn approve_optimization(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state.inner().apply(id, true).await
 }
 
-/// What Jitterbug has lowered and is still lowered, plus the saved "always lower" permissions.
+/// Apps per priority bucket, with when and by whom they were moved. No process identity.
 #[tauri::command]
-async fn get_priority_changes(
-    state: State<'_, AppState>,
-) -> Result<supervisor::PriorityChanges, String> {
-    // Reading OS priority scans the process table; keep it off the main thread.
-    let runtime = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || runtime.priority_changes())
-        .await
-        .map_err(|_| "Priority history unavailable.")?
+fn get_priority_buckets(state: State<'_, AppState>) -> Result<supervisor::Priorities, String> {
+    state.priorities()
 }
 
-/// Undo one recorded priority change after rechecking it is still the same process.
+/// Move an app to Protected, Normal, or Background, applied at once.
 #[tauri::command]
-async fn restore_priority(
+async fn move_to_bucket(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workload_id: String,
+    bucket: automation::Bucket,
+) -> Result<String, String> {
+    let result = state
+        .inner()
+        .move_blocking(&workload_id, bucket, automation::AssignedBy::You)
+        .await;
+    popup::refresh(&app);
+    result
+}
+
+/// Popup Undo: the app this incident moved to Background goes back to Normal.
+#[tauri::command]
+async fn undo_background(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: u64,
 ) -> Result<String, String> {
     let runtime = state.inner().clone();
-    let result = tauri::async_runtime::spawn_blocking(move || runtime.restore_priority(id))
+    let result = tauri::async_runtime::spawn_blocking(move || runtime.undo_background(id))
         .await
-        .map_err(|_| "Restore unavailable.")?;
+        .map_err(|_| "Undo unavailable.")?;
     popup::refresh(&app);
     result
-}
-
-#[tauri::command]
-fn remove_automation_rule(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    workload_id: String,
-) -> Result<(), String> {
-    state.remove_rule(&workload_id)?;
-    popup::refresh(&app);
-    Ok(())
 }
 
 #[tauri::command]
@@ -943,6 +939,8 @@ pub fn run() {
                         if let Ok(Some(id)) = runtime.observe(&sample) {
                             capture::automatic(&handle, id);
                         }
+                        // Background apps' new processes, and the app now in front.
+                        let _ = runtime.enforce_buckets(&sample);
                         desktop::publish(&handle, &sample);
                         std::thread::sleep(Duration::from_secs(5));
                     }
@@ -1026,9 +1024,9 @@ pub fn run() {
             approve_optimization,
             approve_stop,
             resume_case,
-            get_priority_changes,
-            restore_priority,
-            remove_automation_rule,
+            get_priority_buckets,
+            move_to_bucket,
+            undo_background,
             session_control,
             capture::report_jitter,
             capture::get_jitter_tally,

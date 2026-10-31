@@ -397,12 +397,24 @@ export interface AutomationPolicy {
     sustained_samples: number;
     cooldown_seconds: number;
     max_investigations_per_hour: number;
-    rules: { workload_id: string; label: string }[];
+    /** Apps in the Protected or Background bucket; changed only with `move_to_bucket`. */
+    buckets: BucketAssignment[];
     jitter_mode: JitterMode;
     action_popups: boolean;
     auto_snapshots: boolean;
     agent_control: boolean;
     agent_pause_without_asking: boolean;
+}
+
+export type PriorityBucket = 'protected' | 'normal' | 'background';
+export type BucketSource = 'you' | 'agent' | 'migrated_rule';
+
+export interface BucketAssignment {
+    workload_id: string;
+    label: string;
+    bucket: PriorityBucket;
+    since: number;
+    source: BucketSource;
 }
 
 export type JitterMode = 'auto' | 'snapshot_only';
@@ -561,8 +573,8 @@ export interface ActionPopupCase {
         memory_before: number;
         memory_after: number | null;
         resumable?: boolean;
-        /** Opaque id of the priority change this case made, while it can be undone. */
-        undo?: number | null;
+        /** The app this case moved to Background is still there: Undo moves it to Normal. */
+        undo?: boolean;
     } | null;
     verification: {
         priority_verified: boolean;
@@ -582,23 +594,20 @@ export interface ActionPopupCase {
     more: number;
 }
 
-export type PriorityChangeSource = 'approval' | 'rule' | 'agent';
-
-/** A process Jitterbug lowered that is still lowered. Names only: no process identity. */
-export interface PriorityChange {
-    id: number;
+/** One app in the priorities view. Names and counts only: no process identity. */
+export interface AppPriority {
+    workload_id: string;
     label: string;
-    process: string;
-    previous: number;
-    lowered_to: number;
-    at: number;
-    source: PriorityChangeSource;
+    bucket: PriorityBucket;
+    since: number | null;
+    source: BucketSource | null;
+    running: boolean;
+    frontmost: boolean;
+    /** Its processes Jitterbug keeps in background mode right now. */
+    affected: number;
 }
 
-export interface PriorityChanges {
-    changes: PriorityChange[];
-    rules: AutomationPolicy['rules'];
-}
+export type Priorities = Record<PriorityBucket, AppPriority[]>;
 
 /** A snapshot is recording; its case does not exist yet. */
 export interface ActionPopupCapture {
