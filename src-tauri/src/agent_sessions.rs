@@ -667,6 +667,8 @@ mod tests {
         );
     }
 
+    // Windows forbids quotes and backslashes in folder names, and the launch is macOS-only.
+    #[cfg(unix)]
     #[test]
     fn the_launch_command_quotes_an_injection_attempt_in_the_folder_name() {
         let folder = temp_folder("x'; rm -rf ~; echo '\"$(id)\\");
