@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod agent_sessions;
 pub mod applications;
 pub mod attribution;
 pub mod automation;
@@ -245,6 +246,36 @@ async fn get_inside_view(
     })
     .await
     .map_err(|_| "Inside view unavailable.")?
+}
+
+/// Every command session inside terminals, editors, and agent apps, agents first.
+#[tauri::command]
+async fn get_agent_sessions(
+    state: State<'_, AppState>,
+) -> Result<agent_sessions::Overview, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || agent_sessions::overview(&snapshot))
+        .await
+        .map_err(|_| "Agent sessions unavailable.".into())
+}
+
+/// Open a new terminal window running an allowlisted agent in a folder.
+#[tauri::command]
+async fn launch_agent_session(request: agent_sessions::LaunchRequest) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_sessions::launch(&request))
+        .await
+        .map_err(|_| "Launching is unavailable.")?
+}
+
+#[tauri::command]
+async fn open_folder_in_vscode(folder: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_sessions::open_in_vscode(&folder))
+        .await
+        .map_err(|_| "VS Code is unavailable.")?
 }
 
 #[tauri::command]
@@ -946,6 +977,9 @@ pub fn run() {
             get_workload_details,
             get_workload_icon,
             get_inside_view,
+            get_agent_sessions,
+            launch_agent_session,
+            open_folder_in_vscode,
             tab_action,
             explain_application,
             summarize_agent_task,
