@@ -796,18 +796,41 @@ fn learned_checks_overlap_real_commands_but_never_exceed_two_slots() {
     })
     .unwrap();
     f.submit("parallel-a", "third-check");
-    f.tick(false);
+    // Do not capture coordinator pipes: Windows descendants can keep inherited
+    // pipe handles open until the waiting fixture exits. Wait for the coordinator
+    // process itself, so we can observe and release the still-running command.
+    assert!(f
+        .tick_command(false)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .unwrap()
+        .success());
     let start = Instant::now();
     loop {
         let state = queue::inspect(&f.queue()).unwrap();
         if state.jobs.iter().any(|j| j.stage == Stage::Running) {
             break;
         }
-        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "first command did not start: {:?}",
+            state
+                .jobs
+                .iter()
+                .map(|j| (&j.id, &j.stage, &j.message))
+                .collect::<Vec<_>>()
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     // Warm-up must use a new sample after the first command has been running.
-    f.tick(false);
+    assert!(f
+        .tick_command(false)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .unwrap()
+        .success());
     assert_eq!(
         queue::inspect(&f.queue())
             .unwrap()
