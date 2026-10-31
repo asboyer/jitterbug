@@ -229,6 +229,21 @@ export function demoSnapshot(pressure = false): Snapshot {
             memory_percent: pressure && index > 48 ? 91 : 50,
         })),
         collector_ms: 0,
+        governor: {
+            enabled: true,
+            held: [
+                {
+                    pid: 4242,
+                    start_time: time - 600,
+                    title: 'refactor-auth · Claude Code · api',
+                    reason: 'memory was running out',
+                    paused_at: time - 90,
+                    until: time - 90 + 15 * 60,
+                    cpu_percent: 24,
+                },
+            ],
+            note: '',
+        },
     };
 }
 
@@ -256,6 +271,7 @@ export const demoBootstrap: Bootstrap = {
             auto_snapshots: false,
             agent_control: false,
             agent_pause_without_asking: false,
+            hold_agents: false,
         },
     },
     automation_cases: [],

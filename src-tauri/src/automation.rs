@@ -78,6 +78,9 @@ pub struct Policy {
     /// Agent pause requests apply at once instead of waiting for approval. Pauses are
     /// reversible and expire; closing a tab always asks.
     pub agent_pause_without_asking: bool,
+    /// Pause the busiest working agent session while memory or CPU stays tight, and resume
+    /// held sessions one at a time once there is room. Off by default.
+    pub hold_agents: bool,
 }
 
 impl Default for Policy {
@@ -99,6 +102,7 @@ impl Default for Policy {
             auto_snapshots: false,
             agent_control: false,
             agent_pause_without_asking: false,
+            hold_agents: false,
         }
     }
 }

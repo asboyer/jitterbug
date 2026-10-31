@@ -12,6 +12,7 @@ mod desktop;
 pub mod details;
 pub mod diagnostics;
 mod floating;
+pub mod governor;
 pub mod harness;
 pub mod inside;
 pub mod jitter;
@@ -936,6 +937,9 @@ pub fn run() {
                         }
                         // The one-second pulse watches the busiest PIDs of each full sample.
                         jitter.pulse.watch(&sample);
+                        if let Ok(view) = runtime.govern(&sample) {
+                            sample.governor = view;
+                        }
                         if let Ok(Some(id)) = runtime.observe(&sample) {
                             capture::automatic(&handle, id);
                         }

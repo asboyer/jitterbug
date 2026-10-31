@@ -134,6 +134,9 @@ pub struct Snapshot {
     /// Workload of the app in front when sampled: what you are using, not a competitor.
     #[serde(default)]
     pub frontmost_workload: Option<String>,
+    /// Agent sessions held to keep the computer responsive, and the last thing done.
+    #[serde(default)]
+    pub governor: crate::governor::View,
 }
 
 impl Snapshot {
@@ -180,6 +183,7 @@ impl Snapshot {
             history: self.history.clone(),
             collector_ms: self.collector_ms,
             frontmost_workload: self.frontmost_workload.clone(),
+            governor: self.governor.clone(),
         }
     }
 }

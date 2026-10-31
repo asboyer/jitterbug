@@ -310,6 +310,22 @@ export interface Snapshot {
     incident: Incident | null;
     history: { time: number; cpu_percent: number; memory_percent: number }[];
     collector_ms: number;
+    governor: Governor;
+}
+
+/** Agent sessions held to keep the computer responsive. */
+export interface Governor {
+    enabled: boolean;
+    held: {
+        pid: number;
+        start_time: number;
+        title: string;
+        reason: string;
+        paused_at: number;
+        until: number;
+        cpu_percent: number;
+    }[];
+    note: string;
 }
 
 export interface ChatMessage {
@@ -404,6 +420,7 @@ export interface AutomationPolicy {
     auto_snapshots: boolean;
     agent_control: boolean;
     agent_pause_without_asking: boolean;
+    hold_agents: boolean;
 }
 
 export type PriorityBucket = 'protected' | 'normal' | 'background';

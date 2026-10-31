@@ -127,6 +127,7 @@ pub struct Runtime {
     pub directory: PathBuf,
     book: Mutex<Book>,
     priorities: Mutex<priorities::Ledger>,
+    governor: Mutex<crate::governor::Governor>,
     publish: Publish,
 }
 
@@ -235,6 +236,7 @@ impl Runtime {
             directory,
             book: Mutex::new(Book::default()),
             priorities: Mutex::new(priorities::Ledger::default()),
+            governor: Mutex::new(crate::governor::Governor::default()),
             publish,
         })
     }
@@ -441,6 +443,15 @@ impl Runtime {
             let Some(trigger) = book.monitor.observe(sample, &policy, busy) else {
                 return Ok(None);
             };
+            // Machine-wide strain the governor is already relieving needs no decision.
+            if matches!(
+                trigger.kind,
+                automation::Kind::SystemCpu | automation::Kind::MemoryPressure
+            ) && policy.hold_agents
+                && !sample.governor.held.is_empty()
+            {
+                return Ok(None);
+            }
             let workload = trigger.target.as_ref().map(|t| t.workload_id.as_str());
             if let Some(id) = related(&book.cases, workload, sample.captured_at) {
                 // Same workload, same incident: add to the existing card instead of a second one.
@@ -1603,6 +1614,38 @@ impl Runtime {
             fresh,
         })
     }
+    /// One governor step for this sample: pause the busiest working agent session under
+    /// sustained strain, or resume a held one once there is room. Returns what to show.
+    pub fn govern(&self, sample: &Snapshot) -> Result<crate::governor::View, String> {
+        let policy = self.policy()?;
+        let enabled = policy.enabled && policy.hold_agents;
+        let snoozed = self.snoozed_until()? > now();
+        let mut governor = self.governor.lock().map_err(|_| "Governor unavailable.")?;
+        let mut sessions = if enabled && governor.wants_sessions(sample) {
+            crate::agent_sessions::discover(sample)
+        } else {
+            vec![]
+        };
+        crate::governor::measure_footprints(sample, &mut sessions);
+        let paused = crate::pause::list();
+        match governor.decide(sample, &sessions, &paused, enabled, snoozed, now()) {
+            crate::governor::Step::Idle => {}
+            crate::governor::Step::Pause(held) => {
+                match crate::pause::pause(held.pid, held.start_time, &held.title) {
+                    Ok(record) => governor.paused(&record, held),
+                    Err(_) => governor.refused(held.pid, held.start_time, now()),
+                }
+            }
+            crate::governor::Step::Resume(held) => {
+                for h in held {
+                    // Gone or already resumed is fine: either way it is no longer held.
+                    let _ = crate::pause::resume(h.pid, h.start_time);
+                }
+            }
+        }
+        Ok(governor.view(enabled))
+    }
+
     /// Keeps each app's bucket true for one sample: new processes of Background apps enter
     /// background mode; the app in front and Protected apps leave it. Cheap when nothing
     /// changed: no OS calls unless the plan has work.
