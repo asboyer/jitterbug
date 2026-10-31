@@ -64,6 +64,7 @@ pub struct Settings {
     pub intelligent: Tier,
     pub decision_enabled: bool,
     pub budget_usd: f64,
+    #[serde(deserialize_with = "crate::automation::load_policy")]
     pub automation: crate::automation::Policy,
 }
 

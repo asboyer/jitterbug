@@ -397,12 +397,24 @@ export interface AutomationPolicy {
     sustained_samples: number;
     cooldown_seconds: number;
     max_investigations_per_hour: number;
-    rules: { workload_id: string; label: string }[];
+    /** Apps in the Protected or Background bucket; changed only with `move_to_bucket`. */
+    buckets: BucketAssignment[];
     jitter_mode: JitterMode;
     action_popups: boolean;
     auto_snapshots: boolean;
     agent_control: boolean;
     agent_pause_without_asking: boolean;
+}
+
+export type PriorityBucket = 'protected' | 'normal' | 'background';
+export type BucketSource = 'you' | 'agent' | 'migrated_rule';
+
+export interface BucketAssignment {
+    workload_id: string;
+    label: string;
+    bucket: PriorityBucket;
+    since: number;
+    source: BucketSource;
 }
 
 export type JitterMode = 'auto' | 'snapshot_only';
@@ -492,6 +504,13 @@ export interface AutomationCase {
         rationale: string;
         unit?: { title: string; kind: 'tab' | 'session' } | null;
     } | null;
+    /** A firmer option offered after the alternative: closing a tab it would pause. */
+    fallback?: {
+        process: ProcessRecord;
+        action: string;
+        rationale: string;
+        unit?: { title: string; kind: 'tab' | 'session' } | null;
+    } | null;
     report: ActionReport | null;
     verification: {
         summary: string;
@@ -518,7 +537,7 @@ export interface ActionImpact {
 }
 
 export interface ActionPopupOption {
-    action: 'lower_priority' | 'terminate' | 'pause' | 'close_tab';
+    action: 'lower_priority' | 'terminate' | 'pause' | 'pause_tab' | 'close_tab';
     process: { name: string; cpu_percent: number; memory_bytes: number };
     impact: ActionImpact | null;
     /** For a stop, pause, or tab close: what it does, in plain words. */
@@ -542,6 +561,8 @@ export interface ActionPopupCase {
     };
     proposal: ActionPopupOption | null;
     alternative: ActionPopupOption | null;
+    /** Offered after the alternative: closing the tab it would pause. */
+    fallback?: ActionPopupOption | null;
     report: {
         fresh: boolean;
         after: true | null;
@@ -552,6 +573,8 @@ export interface ActionPopupCase {
         memory_before: number;
         memory_after: number | null;
         resumable?: boolean;
+        /** The app this case moved to Background is still there: Undo moves it to Normal. */
+        undo?: boolean;
     } | null;
     verification: {
         priority_verified: boolean;
@@ -570,6 +593,21 @@ export interface ActionPopupCase {
     } | null;
     more: number;
 }
+
+/** One app in the priorities view. Names and counts only: no process identity. */
+export interface AppPriority {
+    workload_id: string;
+    label: string;
+    bucket: PriorityBucket;
+    since: number | null;
+    source: BucketSource | null;
+    running: boolean;
+    frontmost: boolean;
+    /** Its processes Jitterbug keeps in background mode right now. */
+    affected: number;
+}
+
+export type Priorities = Record<PriorityBucket, AppPriority[]>;
 
 /** A snapshot is recording; its case does not exist yet. */
 export interface ActionPopupCapture {
@@ -676,6 +714,15 @@ export interface InsideUnit {
     evidence: string[];
     confidence: string;
     paused_until: number | null;
+    /** A coding agent's own state, e.g. Claude Code's `working` or `idle`. */
+    agent_status?: string | null;
+}
+
+export interface ProcessLabel {
+    pid: number;
+    start_time: number;
+    title: string;
+    subtitle: string;
 }
 
 export interface InsideView {
@@ -694,4 +741,5 @@ export interface InsideView {
     measured_seconds: number;
     captured_at: number;
     limits: string;
+    labels: ProcessLabel[];
 }

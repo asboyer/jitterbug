@@ -4,14 +4,21 @@
 //! report its renderer's cumulative CPU time (`Performance.getMetrics` → `ProcessTime`), and
 //! `SystemInfo.getProcessInfo` reports the same counter per PID. Reading both twice, bracketed in
 //! time, identifies the tab's PID; its memory then comes from the normal collector inventory.
-use super::{host, Inside, Remainder, Unit};
+//!
+//! A background tab can also be paused: `Page.setWebLifecycleState` freezes its scripts and
+//! timers, but only while the DevTools session that froze it stays attached. Jitterbug keeps
+//! that session open on the browser connection; when the connection closes (Jitterbug quits or
+//! the browser restarts), the tab wakes up by itself. Pauses also expire after
+//! `pause::LIMIT_SECONDS`. Freezing frees no memory; only closing a tab does.
+use super::{host, Inside, ProcessLabel, Remainder, Unit};
 use crate::types::*;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     net::TcpStream,
     path::PathBuf,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant},
 };
 use tungstenite::{Message, WebSocket};
@@ -27,7 +34,7 @@ pub const BROWSERS: &[&str] = &[
     "vivaldi",
 ];
 
-const SOURCE: &str = "Browser DevTools";
+pub const SOURCE: &str = "Browser DevTools";
 const WINDOW: Duration = Duration::from_secs(1);
 /// Counter granularity: one tab's reading must fall inside its process's bracket.
 const EPSILON: f64 = 0.000_2;
@@ -36,12 +43,73 @@ const TAB_LIMIT: usize = 100;
 const DETAIL_LIMIT: usize = 400;
 
 /// Kept open: a browser that asks before allowing a debugging client asks once per connection.
+/// Paused tabs stay frozen only while their connection is open. Lock order: this, then `PAUSED`.
 static CONNECTIONS: Mutex<Vec<Cdp>> = Mutex::new(Vec::new());
+/// Tabs paused through an open connection. Held only briefly, so readers never wait on a
+/// browser measurement or permission prompt.
+static PAUSED: Mutex<Vec<PausedTab>> = Mutex::new(Vec::new());
 
 struct Cdp {
     endpoint: String,
     socket: WebSocket<TcpStream>,
     next: u64,
+    /// The socket failed; dropping the connection wakes every tab it paused.
+    broken: bool,
+    /// Sessions the browser ended, such as a paused tab the person closed.
+    detached: Vec<String>,
+}
+
+/// One tab Jitterbug froze. Title and host are for display; the session keeps it frozen.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PausedTab {
+    pub target_id: String,
+    pub title: String,
+    pub host: Option<String>,
+    pub paused_at: u64,
+    /// When it resumes by itself.
+    pub until: u64,
+    #[serde(skip)]
+    endpoint: String,
+    #[serde(skip)]
+    session: String,
+}
+
+fn connections() -> MutexGuard<'static, Vec<Cdp>> {
+    CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn ledger() -> MutexGuard<'static, Vec<PausedTab>> {
+    PAUSED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Forget pauses that no longer hold: their connection closed (the browser woke the tab when
+/// the session ended) or the browser ended their session (the tab closed). Returns them.
+fn settle(paused: &mut Vec<PausedTab>, connected: &[&str], detached: &[String]) -> Vec<PausedTab> {
+    let (gone, kept) = std::mem::take(paused)
+        .into_iter()
+        .partition(|p| !connected.contains(&p.endpoint.as_str()) || detached.contains(&p.session));
+    *paused = kept;
+    gone
+}
+
+/// Take the pauses that reached their limit.
+fn due(paused: &mut Vec<PausedTab>, at: u64) -> Vec<PausedTab> {
+    let (due, kept) = std::mem::take(paused)
+        .into_iter()
+        .partition(|p| p.until <= at);
+    *paused = kept;
+    due
+}
+
+/// Drop failed connections and reconcile the paused list with what is still open.
+fn tidy(open: &mut Vec<Cdp>) {
+    open.retain(|c| !c.broken);
+    let detached: Vec<String> = open
+        .iter_mut()
+        .flat_map(|c| std::mem::take(&mut c.detached))
+        .collect();
+    let connected: Vec<&str> = open.iter().map(|c| c.endpoint.as_str()).collect();
+    settle(&mut ledger(), &connected, &detached);
 }
 
 impl Cdp {
@@ -73,6 +141,8 @@ impl Cdp {
             endpoint: endpoint.into(),
             socket,
             next: 0,
+            broken: false,
+            detached: Vec::new(),
         })
     }
 
@@ -87,14 +157,21 @@ impl Cdp {
         if let Some(session) = session {
             message["sessionId"] = session.into();
         }
-        self.socket
-            .send(Message::text(message.to_string()))
-            .map_err(|_| "The browser closed the debugging connection.")?;
+        if self.broken
+            || self
+                .socket
+                .send(Message::text(message.to_string()))
+                .is_err()
+        {
+            self.broken = true;
+            return Err("The browser closed the debugging connection.".into());
+        }
         loop {
             let text = match self.socket.read() {
                 Ok(Message::Text(text)) => text,
                 Ok(Message::Close(_)) | Err(_) => {
-                    return Err("The browser closed the debugging connection.".into())
+                    self.broken = true;
+                    return Err("The browser closed the debugging connection.".into());
                 }
                 Ok(_) => continue,
             };
@@ -102,6 +179,12 @@ impl Cdp {
             let Ok(reply) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
+            if reply.get("method").and_then(Value::as_str) == Some("Target.detachedFromTarget") {
+                if let Some(session) = reply["params"]["sessionId"].as_str() {
+                    self.detached.push(session.into());
+                }
+                continue;
+            }
             if reply.get("id").and_then(Value::as_u64) != Some(self.next) {
                 continue;
             }
@@ -186,10 +269,20 @@ fn endpoints() -> Vec<String> {
 
 /// Whether a browser connection the person allowed is already open.
 pub fn connected() -> bool {
-    !CONNECTIONS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_empty()
+    !connections().is_empty()
+}
+
+/// Tabs paused now, oldest first.
+pub fn paused() -> Vec<PausedTab> {
+    ledger().clone()
+}
+
+/// When a paused tab resumes by itself, if it is paused.
+pub fn paused_until(target_id: &str) -> Option<u64> {
+    ledger()
+        .iter()
+        .find(|p| p.target_id == target_id)
+        .map(|p| p.until)
 }
 
 fn detail(url: &str) -> String {
@@ -202,9 +295,10 @@ fn with_browsers<T>(
     connect: bool,
     mut f: impl FnMut(&mut Cdp) -> Result<T, String>,
 ) -> (Vec<T>, Vec<String>) {
-    let mut open = CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut open = connections();
     let wanted = endpoints();
     open.retain(|c| wanted.contains(&c.endpoint));
+    tidy(&mut open);
     let (mut results, mut errors) = (Vec::new(), Vec::new());
     for endpoint in wanted {
         let index = match open.iter().position(|c| c.endpoint == endpoint) {
@@ -223,13 +317,15 @@ fn with_browsers<T>(
         };
         match f(&mut open[index]) {
             Ok(r) => results.push(r),
-            Err(e) => {
-                // A stale socket is dropped; the next request reconnects.
-                open.remove(index);
-                errors.push(e);
-            }
+            Err(e) => errors.push(e),
+        }
+        // A stale socket is dropped below; the next request reconnects. A refused request on
+        // a working connection keeps it, so tabs paused through it stay paused.
+        if open[index].broken {
+            open.remove(index);
         }
     }
+    tidy(&mut open);
     (results, errors)
 }
 
@@ -317,6 +413,8 @@ struct Tab {
     second: Metrics,
     pid: Option<u32>,
     ambiguous: bool,
+    /// On screen (or its visibility could not be read): never offered for pausing.
+    visible: bool,
 }
 
 struct Measurement {
@@ -349,6 +447,7 @@ fn measure(cdp: &mut Cdp) -> Result<Measurement, String> {
             second: Metrics::default(),
             pid: None,
             ambiguous: false,
+            visible: true,
         })
         .collect();
     let started = Instant::now();
@@ -378,6 +477,7 @@ fn measure(cdp: &mut Cdp) -> Result<Measurement, String> {
     let d = processes(cdp);
     for tab in &mut tabs {
         if let Some(session) = tab.session.take() {
+            tab.visible = visible(cdp, &session);
             let _ = cdp.call(
                 "Target.detachFromTarget",
                 json!({"sessionId": session}),
@@ -399,6 +499,30 @@ fn measure(cdp: &mut Cdp) -> Result<Measurement, String> {
         before: a,
         after: d,
     })
+}
+
+/// Whether the page is on screen. A page whose visibility cannot be read counts as visible, so
+/// it is never paused. Works on a frozen page too.
+fn visible(cdp: &mut Cdp, session: &str) -> bool {
+    cdp.call(
+        "Runtime.evaluate",
+        json!({"expression": "document.visibilityState", "returnByValue": true}),
+        Some(session),
+    )
+    .ok()
+    .and_then(|r| r["result"]["value"].as_str().map(|v| v != "hidden"))
+    .unwrap_or(true)
+}
+
+/// What can be done with a tab: a paused tab can only be resumed or closed; a tab on screen is
+/// never paused (a frozen page would stop drawing in front of the person).
+fn tab_actions(paused: bool, visible: bool) -> Vec<String> {
+    let actions: &[&str] = match (paused, visible) {
+        (true, _) => &["resume_tab", "close_tab"],
+        (false, true) => &["focus_tab", "close_tab"],
+        (false, false) => &["focus_tab", "pause_tab", "close_tab"],
+    };
+    actions.iter().map(|a| a.to_string()).collect()
 }
 
 /// Fraction of one core between two process readings.
@@ -453,6 +577,7 @@ fn measure_tabs(
         return inside;
     }
     let (measured, errors) = with_browsers(connect, measure);
+    let paused = self::paused();
     if measured.is_empty() {
         let mut inside = Inside::status(
             workload_id,
@@ -476,6 +601,7 @@ fn measure_tabs(
     let mut units = Vec::new();
     let mut attributed: std::collections::HashSet<u32> = Default::default();
     let mut remainder: HashMap<&'static str, Remainder> = HashMap::new();
+    let mut roles: Vec<(u32, &str)> = Vec::new();
     let mut verified = 0;
     for m in &measured {
         // The endpoint must belong to this workload, not another browser or profile.
@@ -539,6 +665,17 @@ fn measure_tabs(
                         super::size(tab.second.heap_bytes as u64)
                     ));
                 }
+                let paused_until = paused
+                    .iter()
+                    .find(|p| p.target_id == tab.id)
+                    .map(|p| p.until);
+                if paused_until.is_some() {
+                    evidence.push(
+                        "Paused by Jitterbug: its scripts and timers are frozen until it resumes. Its memory stays allocated.".into(),
+                    );
+                } else if tab.visible {
+                    evidence.push("On screen now, so it is not offered for pausing.".into());
+                }
                 units.push(Unit {
                     id: tab.id.clone(),
                     kind: "tab".into(),
@@ -559,14 +696,15 @@ fn measure_tabs(
                     shared_with: if shared { tabs.len() - 1 } else { 0 },
                     pid: *pid,
                     start_time: process.map(|p| p.start_time),
-                    actions: vec!["focus_tab".into(), "close_tab".into()],
+                    actions: tab_actions(paused_until.is_some(), tab.visible),
                     evidence,
                     confidence: match (pid, tab.ambiguous) {
                         (None, _) => "Process not identified".into(),
                         (Some(_), true) => "Probable process match".into(),
                         (Some(_), false) => "Matched by CPU time".into(),
                     },
-                    paused_until: None,
+                    paused_until,
+                    agent_status: None,
                 });
             }
         }
@@ -575,12 +713,8 @@ fn measure_tabs(
                 if attributed.contains(pid) {
                     continue;
                 }
-                let label = match kind.as_str() {
-                    "browser" => "Browser window, tab strip, and downloads",
-                    "GPU" => "Graphics (GPU process, shared by all tabs)",
-                    "renderer" => "Extensions, background pages, and workers",
-                    _ => "Network, storage, audio, and utility services",
-                };
+                let label = role(kind).0;
+                roles.push((*pid, kind));
                 let entry = remainder.entry(label).or_default();
                 entry.cpu_percent += core_share(*pid, a, d)
                     .map(|s| s * 100.0 / cores)
@@ -636,6 +770,7 @@ fn measure_tabs(
             if units.len() == 1 { "" } else { "s" }
         ),
     );
+    inside.labels = labels(snapshot, &units, &roles);
     inside.units = units;
     inside.remainder = remainder;
     inside.measured_seconds = WINDOW.as_secs_f32();
@@ -643,11 +778,109 @@ fn measure_tabs(
     inside
 }
 
-/// Focus or close a tab after confirming it still shows the address the person reviewed.
+/// A browser process kind as (summary row label, (process title, subtitle)).
+pub fn role(kind: &str) -> (&'static str, (&'static str, &'static str)) {
+    match kind {
+        "browser" => (
+            "Browser window, tab strip, and downloads",
+            ("Browser window", "Windows, tab strip, and downloads"),
+        ),
+        "GPU" => (
+            "Graphics (GPU process, shared by all tabs)",
+            ("Graphics (shared by all tabs)", "Draws every tab on screen"),
+        ),
+        "renderer" => (
+            "Extensions, background pages, and workers",
+            ("Extensions", "Extensions, background pages, and workers"),
+        ),
+        _ => (
+            "Network, storage, audio, and utility services",
+            (
+                "Network & storage",
+                "Network, storage, audio, and utility services",
+            ),
+        ),
+    }
+}
+
+/// Name each measured process: a renderer by the tab(s) it runs, the rest by their role.
+fn labels(snapshot: &Snapshot, units: &[Unit], roles: &[(u32, &str)]) -> Vec<ProcessLabel> {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
+    let mut tabs: Vec<(u32, Vec<&Unit>)> = Vec::new();
+    for unit in units.iter().filter(|u| u.kind == "tab") {
+        let Some(pid) = unit.pid else { continue };
+        match tabs.iter_mut().find(|(p, _)| *p == pid) {
+            Some((_, group)) => group.push(unit),
+            None => tabs.push((pid, vec![unit])),
+        }
+    }
+    let mut out = Vec::new();
+    for (pid, mut group) in tabs {
+        let Some(process) = by_pid.get(&pid) else {
+            continue;
+        };
+        // The tab holding most of the process's memory names it first.
+        group.sort_by_key(|u| std::cmp::Reverse(u.memory_bytes));
+        let mut hosts: Vec<&str> = Vec::new();
+        // An extension page's "host" is an opaque extension ID, not a site.
+        for host in group
+            .iter()
+            .filter(|u| !u.detail.starts_with("chrome-extension://"))
+            .filter_map(|u| u.host.as_deref())
+        {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+        let title = match group.as_slice() {
+            [one] => one.title.clone(),
+            many => {
+                let names: Vec<String> = many.iter().take(2).map(|u| short(&u.title)).collect();
+                format!(
+                    "{} tabs: {}{}",
+                    many.len(),
+                    names.join(", "),
+                    if many.len() > 2 { ", …" } else { "" }
+                )
+            }
+        };
+        let subtitle = match hosts.len() {
+            0..=3 => hosts.join(", "),
+            n => format!("{} and {} more", hosts[..2].join(", "), n - 2),
+        };
+        out.push(ProcessLabel::new(process, title, subtitle));
+    }
+    for (pid, kind) in roles {
+        if let Some(process) = by_pid.get(pid) {
+            let (title, subtitle) = role(kind).1;
+            out.push(ProcessLabel::new(process, title, subtitle));
+        }
+    }
+    out
+}
+
+fn short(title: &str) -> String {
+    if title.chars().count() <= 32 {
+        return title.into();
+    }
+    let cut: String = title.chars().take(31).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// Focus, pause, or close a tab after confirming it still shows the address the person
+/// reviewed; resume a tab Jitterbug paused.
 pub fn act(target_id: &str, expected_url: &str, action: &str) -> Result<String, String> {
-    if !matches!(action, "close_tab" | "focus_tab") {
+    if action == "resume_tab" {
+        return resume(target_id);
+    }
+    if !matches!(action, "close_tab" | "focus_tab" | "pause_tab") {
         return Err("Unsupported tab action.".into());
     }
+    if action == "pause_tab" && paused_until(target_id).is_some() {
+        return Err("This tab is already paused.".into());
+    }
+    // A refusal is an answer on a working connection, not a failed one.
     let (results, errors) = with_browsers(true, |cdp| {
         let targets = cdp.call("Target.getTargets", json!({}), None)?;
         let Some(target) = targets
@@ -661,14 +894,15 @@ pub fn act(target_id: &str, expected_url: &str, action: &str) -> Result<String, 
             return Ok(None);
         };
         // The address was shortened for display; compare it the same way.
-        if target
-            .get("url")
-            .and_then(Value::as_str)
-            .map(detail)
-            .as_deref()
-            != Some(expected_url)
-        {
-            return Err("This tab navigated since you looked. Refresh the tab list first.".into());
+        let url = target.get("url").and_then(Value::as_str).unwrap_or("");
+        if detail(url) != expected_url {
+            return Ok(Some(Err(
+                "This tab navigated since you looked. Refresh the tab list first.".to_string(),
+            )));
+        }
+        if action == "pause_tab" {
+            let title = target.get("title").and_then(Value::as_str).unwrap_or("");
+            return freeze(cdp, target_id, title, url).map(Some);
         }
         let method = if action == "close_tab" {
             "Target.closeTarget"
@@ -676,19 +910,138 @@ pub fn act(target_id: &str, expected_url: &str, action: &str) -> Result<String, 
             "Target.activateTarget"
         };
         cdp.call(method, json!({"targetId": target_id}), None)?;
-        Ok(Some(()))
+        if action == "close_tab" {
+            ledger().retain(|p| p.target_id != target_id);
+        }
+        Ok(Some(Ok(match action {
+            "close_tab" => "Tab closed. Its memory is released once the browser tears down the renderer; the next sample shows the change.".into(),
+            _ => "Tab brought to the front in its browser window.".into(),
+        })))
     });
-    if results.iter().any(Option::is_some) {
-        return Ok(if action == "close_tab" {
-            "Tab closed. Its memory is released once the browser tears down the renderer; the next sample shows the change.".into()
-        } else {
-            "Tab brought to the front in its browser window.".into()
-        });
+    if let Some(outcome) = results.into_iter().flatten().next() {
+        return outcome;
     }
     Err(errors
         .into_iter()
-        .find(|e| e.contains("navigated"))
+        .next()
         .unwrap_or_else(|| "That tab is no longer open.".into()))
+}
+
+/// Attach to a background tab and freeze it, keeping the session attached. The tab must still
+/// be off screen: a frozen page in front of the person would stop drawing.
+fn freeze(
+    cdp: &mut Cdp,
+    target_id: &str,
+    title: &str,
+    url: &str,
+) -> Result<Result<String, String>, String> {
+    let reply = cdp.call(
+        "Target.attachToTarget",
+        json!({"targetId": target_id, "flatten": true}),
+        None,
+    )?;
+    let session = reply
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or("The browser did not attach to the tab.")?
+        .to_string();
+    let refused = if visible(cdp, &session) {
+        Some("This tab is on screen. Jitterbug only pauses tabs in the background; switch to another tab first.")
+    } else if cdp
+        .call(
+            "Page.setWebLifecycleState",
+            json!({"state": "frozen"}),
+            Some(&session),
+        )
+        .is_err()
+    {
+        Some("The browser did not pause this tab.")
+    } else {
+        None
+    };
+    if let Some(refused) = refused {
+        let _ = cdp.call(
+            "Target.detachFromTarget",
+            json!({"sessionId": session}),
+            None,
+        );
+        return Ok(Err(refused.into()));
+    }
+    let at = now();
+    let title: String = title.chars().take(120).collect();
+    ledger().push(PausedTab {
+        target_id: target_id.into(),
+        // An untitled tab shows its address as the title; keep only the host.
+        title: if title.is_empty() || url.starts_with(&title) {
+            host(url).unwrap_or_else(|| "Untitled tab".into())
+        } else {
+            title
+        },
+        host: host(url),
+        paused_at: at,
+        until: at + crate::pause::LIMIT_SECONDS,
+        endpoint: cdp.endpoint.clone(),
+        session,
+    });
+    Ok(Ok(format!(
+        "Tab paused. Its scripts and timers stop until you resume it, or by themselves in {} minutes. Its memory stays allocated; close the tab to free it.",
+        crate::pause::LIMIT_SECONDS / 60
+    )))
+}
+
+/// Unfreeze and let go of the tab. Errors are ignored: a failed connection is dropped, and
+/// closing it wakes the tab anyway.
+fn wake(cdp: &mut Cdp, session: &str) {
+    let _ = cdp.call(
+        "Page.setWebLifecycleState",
+        json!({"state": "active"}),
+        Some(session),
+    );
+    let _ = cdp.call(
+        "Target.detachFromTarget",
+        json!({"sessionId": session}),
+        None,
+    );
+}
+
+fn wake_all(open: &mut Vec<Cdp>, tabs: &[PausedTab]) {
+    for tab in tabs {
+        if let Some(cdp) = open.iter_mut().find(|c| c.endpoint == tab.endpoint) {
+            wake(cdp, &tab.session);
+        }
+    }
+    tidy(open);
+}
+
+/// Resume one paused tab.
+pub fn resume(target_id: &str) -> Result<String, String> {
+    let mut open = connections();
+    let tab = {
+        let mut paused = ledger();
+        let index = paused.iter().position(|p| p.target_id == target_id);
+        index.map(|i| paused.remove(i))
+    };
+    let Some(tab) = tab else {
+        return Err("This tab is not paused. It may have resumed by itself or been closed.".into());
+    };
+    wake_all(&mut open, std::slice::from_ref(&tab));
+    Ok(format!("Resumed “{}”.", tab.title))
+}
+
+/// Resume tabs whose pause reached its limit. Called every sample tick; skipped while a browser
+/// is being measured or asked for permission, so monitoring never waits. Returns their titles.
+pub fn expire() -> Vec<String> {
+    let mut open = match CONNECTIONS.try_lock() {
+        Ok(open) => open,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => return Vec::new(),
+    };
+    let due = due(&mut ledger(), now());
+    if due.is_empty() {
+        return Vec::new();
+    }
+    wake_all(&mut open, &due);
+    due.into_iter().map(|p| p.title).collect()
 }
 
 #[cfg(test)]
@@ -734,6 +1087,136 @@ mod tests {
         let url = format!("https://meet.google.com/abc?{}", "x".repeat(500));
         assert_eq!(detail(&url).chars().count(), DETAIL_LIMIT);
         assert_eq!(detail(&detail(&url)), detail(&url));
+    }
+
+    #[test]
+    fn renderers_are_named_by_their_tabs_and_the_rest_by_role() {
+        let process = |pid: u32| ProcessRecord {
+            pid,
+            start_time: 100 + pid as u64,
+            name: "Google Chrome Helper (Renderer)".into(),
+            ..Default::default()
+        };
+        let snapshot = Snapshot {
+            processes: (1..=6).map(process).collect(),
+            ..Default::default()
+        };
+        let tab = |title: &str, url: &str, pid: Option<u32>, memory: u64| Unit {
+            kind: "tab".into(),
+            title: title.into(),
+            detail: url.into(),
+            host: host(url),
+            pid,
+            memory_bytes: memory,
+            ..Default::default()
+        };
+        let units = vec![
+            tab(
+                "lofi hip hop radio",
+                "https://www.youtube.com/watch?v=x",
+                Some(1),
+                400,
+            ),
+            tab("Docs", "https://docs.example.com/d/1", Some(2), 300),
+            tab("Mail", "https://mail.example.com/", Some(2), 200),
+            tab("Calendar", "https://calendar.example.com/", Some(2), 100),
+            tab("Sleeping", "https://example.org/", None, 0),
+            // A tab whose renderer exited since the inventory sample is not labeled.
+            tab("Gone", "https://gone.example.com/", Some(9), 50),
+            tab(
+                "Viewer",
+                "chrome-extension://abcdef/viewer.html",
+                Some(6),
+                10,
+            ),
+        ];
+        let labels = labels(
+            &snapshot,
+            &units,
+            &[(3, "GPU"), (4, "renderer"), (5, "utility")],
+        );
+        let titled = |pid: u32| labels.iter().find(|l| l.pid == pid).unwrap();
+        assert_eq!(labels.len(), 6);
+        assert_eq!(titled(1).title, "lofi hip hop radio");
+        assert_eq!(titled(1).subtitle, "www.youtube.com");
+        assert_eq!(titled(1).start_time, 101);
+        assert_eq!(titled(2).title, "3 tabs: Docs, Mail, …");
+        assert_eq!(
+            titled(2).subtitle,
+            "docs.example.com, mail.example.com, calendar.example.com"
+        );
+        assert_eq!(titled(3).title, "Graphics (shared by all tabs)");
+        assert_eq!(titled(4).title, "Extensions");
+        assert_eq!(titled(5).title, "Network & storage");
+        assert_eq!(titled(6).subtitle, "");
+        assert!(short(&"x".repeat(80)).ends_with('…'));
+    }
+
+    fn paused(id: &str, endpoint: &str, session: &str, until: u64) -> PausedTab {
+        PausedTab {
+            target_id: id.into(),
+            title: id.into(),
+            host: None,
+            paused_at: until - 900,
+            until,
+            endpoint: endpoint.into(),
+            session: session.into(),
+        }
+    }
+
+    #[test]
+    fn pauses_expire_at_their_limit() {
+        let mut list = vec![
+            paused("a", "ws://x", "s1", 1000),
+            paused("b", "ws://x", "s2", 2000),
+        ];
+        assert!(due(&mut list, 999).is_empty());
+        let gone = due(&mut list, 1000);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].target_id, "a");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].target_id, "b");
+    }
+
+    #[test]
+    fn a_closed_connection_or_ended_session_counts_as_resumed() {
+        let mut list = vec![
+            paused("a", "ws://one", "s1", 5000),
+            paused("b", "ws://two", "s2", 5000),
+            paused("c", "ws://one", "s3", 5000),
+        ];
+        // The browser woke every tab of the dropped connection when its sessions ended.
+        let gone = settle(&mut list, &["ws://one"], &[]);
+        assert_eq!(
+            gone.iter()
+                .map(|p| p.target_id.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+        // A tab the person closed ends its session.
+        let gone = settle(&mut list, &["ws://one"], &["s3".to_string()]);
+        assert_eq!(gone[0].target_id, "c");
+        assert_eq!(list.len(), 1);
+        assert!(settle(&mut list, &[], &[]).len() == 1 && list.is_empty());
+    }
+
+    #[test]
+    fn only_background_tabs_offer_a_pause_and_paused_tabs_only_resume_or_close() {
+        assert_eq!(
+            tab_actions(false, false),
+            ["focus_tab", "pause_tab", "close_tab"]
+        );
+        assert_eq!(tab_actions(false, true), ["focus_tab", "close_tab"]);
+        assert_eq!(tab_actions(true, false), ["resume_tab", "close_tab"]);
+        assert_eq!(tab_actions(true, true), ["resume_tab", "close_tab"]);
+    }
+
+    #[test]
+    fn nothing_paused_means_nothing_to_resume_or_expire() {
+        assert!(resume("no-such-tab").is_err());
+        assert!(expire().is_empty());
+        assert_eq!(paused_until("no-such-tab"), None);
+        assert!(act("x", "", "reload").is_err());
     }
 
     #[test]

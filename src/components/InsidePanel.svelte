@@ -1,8 +1,10 @@
 <script lang="ts">
+    import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory, percent } from '../lib/format';
     import { demoInside } from '../lib/demo';
     import type { InsideUnit, InsideView, ProcessRecord, Snapshot, Workload } from '../lib/types';
+    import InfoTip from './InfoTip.svelte';
 
     let {
         snapshot,
@@ -10,54 +12,94 @@
         demo,
         actionBusy,
         onaction,
+        onview,
     }: {
         snapshot: Snapshot;
         workload: Workload;
         demo: boolean;
         actionBusy: boolean;
         onaction: (process: ProcessRecord, action: string) => void;
+        /** Every loaded view, including one only used to name the workload's processes. */
+        onview?: (view: InsideView) => void;
     } = $props();
-    let view: InsideView | null = $state(null);
+    let view = $state<InsideView | null>(null);
     let loading = $state(false);
+    let asking = $state(false);
     let error = $state('');
     let notice = $state('');
     let confirming: string | null = $state(null);
     let tabBusy = $state(false);
+    let showAll = $state(false);
+    let sleepingOpen = $state(false);
     let sequence = 0;
-    // A browser view samples for a second and may ask the browser for permission: on request only.
+    let measured = 0;
+    // Rows shown before "Show all"; a browser re-measures at most this often by itself.
+    const TOP = 8;
+    const BROWSER_REFRESH_MS = 30_000;
+    // The workload object is replaced every sample; only a different workload resets the view.
+    const workloadId = $derived(workload.id);
     const browser = $derived(workload.category === 'browser');
     const noun = $derived(browser ? 'tabs' : 'commands');
+    // Tabs without a renderer of their own are discarded (sleeping) or not yet loaded. A tab
+    // Jitterbug paused stays in the main list, where it can be resumed.
+    const isSleeping = (u: InsideUnit) => u.kind === 'tab' && u.pid === null && !u.paused_until;
+    const sleeping = $derived(view?.units.filter(isSleeping) ?? []);
+    const active = $derived(view?.units.filter((u) => !isSleeping(u)) ?? []);
+    const shown = $derived(showAll ? active : active.slice(0, TOP));
 
-    async function load() {
+    /** `connect` is only true for the person's own request: it may make the browser ask once. */
+    async function load(connect: boolean) {
         const request = ++sequence;
         loading = true;
+        asking = connect && browser;
+        if (browser) measured = Date.now();
         try {
             const next = demo
-                ? demoInside(workload)
-                : await invoke<InsideView>('get_inside_view', { workloadId: workload.id });
+                ? demoInside(workload, snapshot)
+                : await invoke<InsideView>('get_inside_view', {
+                      workloadId: workload.id,
+                      connect,
+                  });
             if (request !== sequence) return;
-            view = next;
+            onview?.(next);
+            // Without an allowed browser connection, keep offering Show tabs.
+            if (connect || !browser || next.status === 'ready') view = next;
             error = '';
         } catch (cause) {
-            if (request === sequence) error = errorMessage(cause);
+            if (request === sequence && (connect || !browser)) error = errorMessage(cause);
         } finally {
-            if (request === sequence) loading = false;
+            if (request === sequence) loading = asking = false;
         }
     }
 
     $effect(() => {
-        // Sessions reuse the five-second inventory; browsers refresh only when asked.
-        workload.id;
-        if (!browser) {
-            snapshot.captured_at;
-            void load();
-        }
+        workloadId;
+        untrack(() => {
+            view = null;
+            loading = false;
+            showAll = sleepingOpen = false;
+            measured = 0;
+        });
         return () => {
             sequence++;
         };
     });
 
-    async function tab(unit: InsideUnit, action: 'focus_tab' | 'close_tab') {
+    $effect(() => {
+        // Sessions reuse the five-second inventory. A browser is measured automatically only
+        // through a connection the person already allowed, so it never asks by itself.
+        snapshot.captured_at;
+        workloadId;
+        untrack(() => {
+            if (loading || (browser && Date.now() - measured < BROWSER_REFRESH_MS)) return;
+            void load(false);
+        });
+    });
+
+    async function tab(
+        unit: InsideUnit,
+        action: 'focus_tab' | 'pause_tab' | 'resume_tab' | 'close_tab'
+    ) {
         if (demo || tabBusy) return;
         if (action === 'close_tab' && confirming !== unit.id) {
             confirming = unit.id;
@@ -73,6 +115,7 @@
             });
             if (action === 'close_tab' && view)
                 view = { ...view, units: view.units.filter((u) => u.id !== unit.id) };
+            if (action === 'pause_tab' || action === 'resume_tab') await load(false);
         } catch (cause) {
             notice = errorMessage(cause);
         } finally {
@@ -90,7 +133,7 @@
                 action,
                 label: unit.title,
             });
-            await load();
+            await load(false);
         } catch (cause) {
             notice = errorMessage(cause);
         } finally {
@@ -123,6 +166,72 @@
     }
 </script>
 
+{#snippet row(unit: InsideUnit)}
+    <div class="unit" role="listitem">
+        <div class="unit-name">
+            <strong title={unit.title}>{unit.title}</strong>
+            <small title={unit.detail}
+                >{unit.kind === 'tab'
+                    ? (unit.host ?? unit.detail)
+                    : unit.detail || unit.confidence}{unit.agent_status && !unit.paused_until
+                    ? ` · ${unit.agent_status}`
+                    : ''}{unit.paused_until
+                    ? unit.kind === 'tab'
+                        ? ` · Paused · resumes ${until(unit.paused_until)}`
+                        : ` · paused, resumes by ${until(unit.paused_until)}`
+                    : ''}{unit.shared_with
+                    ? ` · shares a process with ${unit.shared_with} other tab${unit.shared_with === 1 ? '' : 's'}`
+                    : ''}</small
+            >
+        </div>
+        <span class="numeric">{percent(unit.cpu_percent)}<small>CPU</small></span>
+        <span class="numeric"
+            >{unit.shared_with ? '≈' : ''}{memory(unit.memory_bytes)}<small>Memory</small></span
+        >
+        <div class="unit-actions">
+            <InfoTip label={`${unit.confidence}: how this was measured`}>
+                <p><strong>{unit.confidence}</strong></p>
+                {#each unit.evidence as line}<p>{line}</p>{/each}
+            </InfoTip>
+            {#if unit.kind === 'tab'}
+                {#if unit.actions.includes('resume_tab')}<button
+                        class="primary"
+                        disabled={demo || tabBusy}
+                        onclick={() => tab(unit, 'resume_tab')}>Resume</button
+                    >{:else}<button
+                        disabled={demo || tabBusy}
+                        onclick={() => tab(unit, 'focus_tab')}>Show</button
+                    >{/if}{#if unit.actions.includes('pause_tab')}<button
+                        disabled={demo || tabBusy}
+                        title="Freeze this tab's scripts and timers. Nothing is closed; it resumes by itself after 15 minutes. Its memory stays allocated."
+                        onclick={() => tab(unit, 'pause_tab')}>Pause</button
+                    >{/if}<button
+                    class="danger-text"
+                    disabled={demo || tabBusy}
+                    onclick={() => tab(unit, 'close_tab')}
+                    >{confirming === unit.id ? 'Confirm close' : 'Close tab…'}</button
+                >
+            {:else}
+                {#each unit.actions.filter((a) => a === 'pause' || a === 'resume') as action}<button
+                        class:primary={action === 'resume'}
+                        disabled={demo || tabBusy}
+                        title={action === 'pause'
+                            ? 'Freeze this command and everything it started. Nothing is closed; it resumes by itself after 15 minutes.'
+                            : ''}
+                        onclick={() => session(unit, action as 'pause' | 'resume')}
+                        >{action === 'pause' ? 'Pause' : 'Resume'}</button
+                    >{/each}
+                {#each unit.actions.filter((a) => a !== 'pause' && a !== 'resume') as action}<button
+                        class:danger-text={action === 'terminate'}
+                        disabled={demo || actionBusy}
+                        onclick={() => processAction(unit, action)}
+                        >{action === 'terminate' ? 'Stop…' : 'Lower priority…'}</button
+                    >{/each}
+            {/if}
+        </div>
+    </div>
+{/snippet}
+
 {#if !(view?.status === 'unavailable' && view.source === 'None')}
     <section class="panel inside" aria-label={`Inside ${workload.label}`}>
         <div class="section-title">
@@ -132,18 +241,18 @@
                     >{view?.status === 'ready'
                         ? view.message
                         : browser
-                          ? 'See which tabs use the CPU and memory, then focus or close one.'
+                          ? 'See which tabs use the CPU and memory, then pause or close one.'
                           : 'Agent sessions, dev servers, and other commands started in this app.'}</span
                 >
             </div>
             {#if browser || view?.status !== 'ready'}<button
                     class:primary={!view}
                     disabled={loading}
-                    onclick={load}
-                    >{loading ? `Measuring ${noun}…` : view ? 'Refresh' : `Show ${noun}`}</button
+                    onclick={() => load(true)}
+                    >{asking ? `Measuring ${noun}…` : view ? 'Refresh' : `Show ${noun}`}</button
                 >{/if}
         </div>
-        {#if loading && browser && !view}<p class="muted">
+        {#if asking && !view}<p class="muted">
                 Measuring for about a second. If the browser asks to allow a debugging connection,
                 choose Allow.
             </p>{/if}
@@ -156,67 +265,47 @@
                 </ol>{/if}
         {:else if view}
             <div class="units" role="list">
-                {#each view.units as unit (unit.id)}
-                    <div class="unit" role="listitem">
+                {#each shown as unit (unit.id)}
+                    {@render row(unit)}
+                {:else}{#if !sleeping.length}<p class="muted empty">Nothing to show.</p>{/if}{/each}
+                {#if active.length > TOP}<div class="more" role="listitem">
+                        <button class="text-button" onclick={() => (showAll = !showAll)}
+                            >{showAll ? 'Show fewer' : `Show all ${active.length}`}</button
+                        >
+                    </div>{/if}
+                {#if sleeping.length}
+                    <div class="unit remainder" role="listitem">
                         <div class="unit-name">
-                            <strong title={unit.title}>{unit.title}</strong>
-                            <small title={unit.detail}
-                                >{unit.kind === 'tab'
-                                    ? (unit.host ?? unit.detail)
-                                    : unit.detail || unit.confidence}{unit.paused_until
-                                    ? ` · paused, resumes by ${until(unit.paused_until)}`
-                                    : ''}{unit.shared_with
-                                    ? ` · shares a process with ${unit.shared_with} other tab${unit.shared_with === 1 ? '' : 's'}`
-                                    : ''}</small
+                            <strong
+                                >{sleeping.length} sleeping tab{sleeping.length === 1
+                                    ? ''
+                                    : 's'}</strong
                             >
+                            <small>No process of their own; they reload when you open them</small>
                         </div>
-                        <span class="numeric">{percent(unit.cpu_percent)}<small>CPU</small></span>
                         <span class="numeric"
-                            >{unit.shared_with ? '≈' : ''}{memory(unit.memory_bytes)}<small
+                            >{percent(sleeping.reduce((sum, u) => sum + u.cpu_percent, 0))}<small
+                                >CPU</small
+                            ></span
+                        >
+                        <span class="numeric"
+                            >{memory(sleeping.reduce((sum, u) => sum + u.memory_bytes, 0))}<small
                                 >Memory</small
                             ></span
                         >
                         <div class="unit-actions">
-                            {#if unit.kind === 'tab'}
-                                <button
-                                    disabled={demo || tabBusy}
-                                    onclick={() => tab(unit, 'focus_tab')}>Show</button
-                                ><button
-                                    class="danger-text"
-                                    disabled={demo || tabBusy}
-                                    onclick={() => tab(unit, 'close_tab')}
-                                    >{confirming === unit.id
-                                        ? 'Confirm close'
-                                        : 'Close tab…'}</button
-                                >
-                            {:else}
-                                {#each unit.actions.filter((a) => a === 'pause' || a === 'resume') as action}<button
-                                        class:primary={action === 'resume'}
-                                        disabled={demo || tabBusy}
-                                        title={action === 'pause'
-                                            ? 'Freeze this command and everything it started. Nothing is closed; it resumes by itself after 15 minutes.'
-                                            : ''}
-                                        onclick={() => session(unit, action as 'pause' | 'resume')}
-                                        >{action === 'pause' ? 'Pause' : 'Resume'}</button
-                                    >{/each}
-                                {#each unit.actions.filter((a) => a !== 'pause' && a !== 'resume') as action}<button
-                                        class:danger-text={action === 'terminate'}
-                                        disabled={demo || actionBusy}
-                                        onclick={() => processAction(unit, action)}
-                                        >{action === 'terminate'
-                                            ? 'Stop…'
-                                            : 'Lower priority…'}</button
-                                    >{/each}
-                            {/if}
+                            <button
+                                class="text-button"
+                                aria-expanded={sleepingOpen}
+                                onclick={() => (sleepingOpen = !sleepingOpen)}
+                                >{sleepingOpen ? 'Hide' : 'List'}</button
+                            >
                         </div>
-                        <details class="evidence">
-                            <summary>{unit.confidence}</summary>
-                            <ul>
-                                {#each unit.evidence as line}<li>{line}</li>{/each}
-                            </ul>
-                        </details>
                     </div>
-                {:else}<p class="muted empty">Nothing to show.</p>{/each}
+                    {#if sleepingOpen}{#each sleeping as unit (unit.id)}{@render row(
+                                unit
+                            )}{/each}{/if}
+                {/if}
                 {#each view.remainder as rest}
                     <div class="unit remainder" role="listitem">
                         <div class="unit-name">
@@ -262,8 +351,6 @@
         font-size: 12px;
     }
     .units {
-        max-height: 420px;
-        overflow: auto;
         margin-top: 12px;
     }
     .unit {
@@ -280,7 +367,7 @@
     .unit-name {
         min-width: 0;
     }
-    .unit strong {
+    .unit-name strong {
         display: block;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -298,17 +385,17 @@
     }
     .unit-actions {
         display: flex;
+        align-items: center;
         gap: 6px;
         justify-content: flex-end;
     }
-    .evidence {
-        grid-column: 1 / -1;
-        font-size: 11px;
-        color: var(--muted);
+    .unit-actions :global(.info-button) {
+        width: 22px;
+        height: 22px;
+        opacity: 0.6;
     }
-    .evidence ul {
-        margin: 6px 0 0;
-        padding-left: 18px;
+    .more {
+        padding: 4px 8px;
     }
     .remainder strong {
         color: var(--muted);

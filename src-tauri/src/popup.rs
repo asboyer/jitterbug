@@ -109,7 +109,8 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
 }
 
 /// Only what the in-app notice and review already show: no paths, PIDs, evidence, or diagnosis.
-pub fn view(case: &Case, more: usize) -> Value {
+/// `undo` says the app this case moved to Background is still there, so Undo can move it back.
+pub fn view(case: &Case, more: usize, undo: bool) -> Value {
     let mut payload = json!({
         "kind": "case",
         "id": case.id,
@@ -122,6 +123,7 @@ pub fn view(case: &Case, more: usize) -> Value {
         },
         "proposal": case.proposal.as_ref().map(option),
         "alternative": case.alternative.as_ref().map(option),
+        "fallback": case.fallback.as_ref().map(option),
         // Shares of total CPU capacity, as everywhere in the app.
         "report": case.report.as_ref().map(|r| json!({
             "fresh": r.fresh,
@@ -132,11 +134,16 @@ pub fn view(case: &Case, more: usize) -> Value {
             "cpu_after": r.after.as_ref().map(|a| a.cpu_percent),
             "memory_before": r.before.memory_bytes,
             "memory_after": r.after.as_ref().map(|a| a.memory_bytes),
-            // A paused command can be resumed from the popup until it resumes by itself.
-            "resumable": r.action == "pause"
-                && case.proposal.as_ref().is_some_and(|p| {
-                    crate::pause::is_paused(p.process.pid, p.process.start_time)
-                }),
+            // A paused command or tab can be resumed from the popup until it resumes by itself.
+            "resumable": case.proposal.as_ref().is_some_and(|p| match r.action.as_str() {
+                "pause" => crate::pause::is_paused(p.process.pid, p.process.start_time),
+                "pause_tab" => p
+                    .unit
+                    .as_ref()
+                    .is_some_and(|u| crate::inside::chrome::paused_until(&u.id).is_some()),
+                _ => false,
+            }),
+            "undo": undo && r.action == "lower_priority",
         })),
         "verification": case.verification.as_ref().map(|v| json!({
             "priority_verified": v.priority_verified,
@@ -173,7 +180,7 @@ fn option(p: &Proposal) -> Value {
             "memory_bytes": p.process.memory_bytes,
         },
         "impact": p.impact,
-        "closes": matches!(p.action.as_str(), "terminate" | "pause" | "close_tab")
+        "closes": matches!(p.action.as_str(), "terminate" | "pause" | "pause_tab" | "close_tab")
             .then_some(&p.rationale),
         // A tab or command session: its title and kind only.
         "unit": p.unit.as_ref().map(|u| json!({ "title": u.title, "kind": u.kind })),
@@ -238,7 +245,7 @@ fn update(app: &tauri::AppHandle) {
     let shown = capture.or_else(|| {
         let choice = choice?;
         let case = cases.iter().find(|c| c.id == choice.id)?;
-        Some(view(case, choice.more))
+        Some(view(case, choice.more, state.undoable(case).is_some()))
     });
     inner.current = shown.clone();
     drop(inner);
@@ -543,7 +550,6 @@ fn demo_case(at: u64) -> Result<Case, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation::Rule;
 
     fn waiting(id: u64, detected_at: u64) -> Case {
         let mut case = demo_case(detected_at).unwrap();
@@ -650,14 +656,15 @@ mod tests {
         manual.origin = Origin::Snapshot;
         assert!(choose(&[manual.clone()], &disabled, &open(200), &[]).is_some());
         assert!(choose(&[manual], &policy, &snoozed, &[]).is_some());
-        // A saved permission applies automatically without asking.
-        let permitted = Policy {
-            rules: vec![Rule {
-                workload_id: case.proposal.unwrap().process.workload_id,
-                label: "Example".into(),
-            }],
-            ..Default::default()
-        };
+        // An app in Background is moved automatically without asking.
+        let mut permitted = Policy::default();
+        permitted.assign(crate::automation::Assignment {
+            workload_id: case.proposal.unwrap().process.workload_id,
+            label: "Example".into(),
+            bucket: crate::automation::Bucket::Background,
+            since: 1,
+            source: crate::automation::AssignedBy::You,
+        });
         assert_eq!(choose(&cases, &permitted, &open(200), &[]), None);
     }
 
@@ -694,7 +701,7 @@ mod tests {
             proposal.process.executable = Some("/private/example/tool".into());
             proposal.process.working_directory = Some("/private/example".into());
         }
-        let text = view(&case, 2).to_string();
+        let text = view(&case, 2, true).to_string();
         for private in [
             "/private",
             "pid",
@@ -707,6 +714,65 @@ mod tests {
         }
         assert!(text.contains("\"more\":2"));
         assert!(text.contains("awaiting_approval"));
+        // A finished priority change offers Undo, never by process identity.
+        let process = case.proposal.as_ref().unwrap().process.clone();
+        case.report = Some(crate::types::ActionReport {
+            action: "lower_priority".into(),
+            message: String::new(),
+            before: process,
+            after: None,
+            measured_after_seconds: 6,
+            fresh: true,
+        });
+        let payload = view(&case, 0, true);
+        assert_eq!(payload["report"]["undo"], true);
+        let text = payload.to_string();
+        for private in ["/private", "pid", "start_time"] {
+            assert!(!text.contains(private), "{private} leaked");
+        }
+        case.report.as_mut().unwrap().action = "terminate".into();
+        assert_eq!(view(&case, 0, true)["report"]["undo"], false);
+    }
+
+    #[test]
+    fn a_tab_case_offers_pausing_first_and_closing_second_without_identity() {
+        let mut case = waiting(1, 100);
+        let process = case.proposal.as_ref().unwrap().process.clone();
+        let tab = |action: &str| Proposal {
+            process: crate::types::ProcessRecord {
+                executable: Some("/private/example/Chrome Helper".into()),
+                ..process.clone()
+            },
+            action: action.into(),
+            rationale: format!("{action} the “Live blog” tab."),
+            impact: None,
+            unit: Some(crate::inside::Unit {
+                id: "TARGET-1".into(),
+                kind: "tab".into(),
+                title: "Live blog".into(),
+                detail: "https://news.example.com/private-path".into(),
+                pid: Some(4242),
+                ..Default::default()
+            }),
+        };
+        case.alternative = Some(tab("pause_tab"));
+        case.fallback = Some(tab("close_tab"));
+        let payload = view(&case, 0, false);
+        assert_eq!(payload["alternative"]["action"], "pause_tab");
+        assert_eq!(payload["fallback"]["action"], "close_tab");
+        assert_eq!(payload["alternative"]["unit"]["title"], "Live blog");
+        assert!(payload["alternative"]["closes"].is_string());
+        let text = payload.to_string();
+        for private in [
+            "/private",
+            "pid",
+            "start_time",
+            "4242",
+            "TARGET-1",
+            "private-path",
+        ] {
+            assert!(!text.contains(private), "{private} leaked");
+        }
     }
 
     #[test]

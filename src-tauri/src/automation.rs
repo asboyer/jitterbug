@@ -7,10 +7,43 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
+/// A saved "always lower" permission from older settings. Loading moves it to the Background
+/// bucket; it is never written back.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rule {
     pub workload_id: String,
     pub label: String,
+}
+
+/// How Jitterbug treats an app's CPU priority. Normal is the default and is not stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Bucket {
+    /// Never proposed for lowering or quitting, never targeted by agent requests.
+    Protected,
+    Normal,
+    /// Kept in macOS background mode, including processes it starts later, except while in front.
+    Background,
+}
+
+/// Who put an app in its bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignedBy {
+    You,
+    /// An agent asked and you approved.
+    Agent,
+    /// An "always lower" permission saved by an earlier version.
+    MigratedRule,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Assignment {
+    pub workload_id: String,
+    pub label: String,
+    pub bucket: Bucket,
+    pub since: u64,
+    pub source: AssignedBy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,7 +60,11 @@ pub struct Policy {
     pub sustained_samples: u32,
     pub cooldown_seconds: u64,
     pub max_investigations_per_hour: usize,
+    /// Legacy permissions, moved to `buckets` on load and never saved again.
+    #[serde(skip_serializing)]
     pub rules: Vec<Rule>,
+    /// Apps in the Protected or Background bucket; every other app is Normal.
+    pub buckets: Vec<Assignment>,
     /// Jitter Snapshot sampling: always-on pulse, or recording only after a press.
     pub jitter_mode: crate::pulse::Mode,
     /// Out-of-app prompts for cases that need the user. Older settings files default to on.
@@ -56,6 +93,7 @@ impl Default for Policy {
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,
             rules: vec![],
+            buckets: vec![],
             jitter_mode: crate::pulse::Mode::Auto,
             action_popups: true,
             auto_snapshots: false,
@@ -79,6 +117,7 @@ impl Policy {
             || !(60..=3600).contains(&self.cooldown_seconds)
             || !(1..=12).contains(&self.max_investigations_per_hour)
             || self.rules.len() > 64
+            || self.buckets.len() > 128
         {
             return Err("Invalid automation limits. Use 3–12 sustained samples, a 60–3600 second cooldown, and 1–12 investigations per hour.".into());
         }
@@ -96,16 +135,85 @@ impl Policy {
                 );
             }
         }
+        let mut ids = std::collections::HashSet::new();
+        for entry in &self.buckets {
+            if entry.workload_id.is_empty()
+                || entry.workload_id.len() > 100
+                || entry.label.len() > 80
+                || entry.label.chars().any(char::is_control)
+                || entry.bucket == Bucket::Normal
+                || !ids.insert(&entry.workload_id)
+            {
+                return Err("App priorities must name each app once, with a valid name.".into());
+            }
+        }
         Ok(())
     }
+    /// Lowering is automatic for apps in the Background bucket.
     pub fn allows(&self, proposal: &Proposal) -> bool {
         self.enabled
             && proposal.action == "lower_priority"
-            && self
-                .rules
-                .iter()
-                .any(|r| r.workload_id == proposal.process.workload_id)
+            && self.bucket(&proposal.process.workload_id) == Bucket::Background
     }
+    pub fn bucket(&self, workload_id: &str) -> Bucket {
+        self.buckets
+            .iter()
+            .find(|a| a.workload_id == workload_id)
+            .map_or(Bucket::Normal, |a| a.bucket)
+    }
+    pub fn protected(&self, workload_id: &str) -> bool {
+        self.bucket(workload_id) == Bucket::Protected
+    }
+    /// Moves an app to a bucket. Normal removes the entry. Returns whether anything changed.
+    pub fn assign(&mut self, assignment: Assignment) -> bool {
+        let existing = self
+            .buckets
+            .iter()
+            .position(|a| a.workload_id == assignment.workload_id);
+        match (existing, assignment.bucket) {
+            (Some(i), _) if self.buckets[i].bucket == assignment.bucket => false,
+            (None, Bucket::Normal) => false,
+            (Some(i), Bucket::Normal) => {
+                self.buckets.remove(i);
+                true
+            }
+            (Some(i), _) => {
+                self.buckets[i] = assignment;
+                true
+            }
+            (None, _) => {
+                self.buckets.push(assignment);
+                true
+            }
+        }
+    }
+    /// Moves legacy "always lower" permissions to the Background bucket. An app already in a
+    /// bucket keeps it.
+    pub fn migrate_rules(&mut self, at: u64) {
+        for rule in std::mem::take(&mut self.rules) {
+            if self.buckets.len() < 128
+                && !self
+                    .buckets
+                    .iter()
+                    .any(|a| a.workload_id == rule.workload_id)
+            {
+                self.buckets.push(Assignment {
+                    workload_id: rule.workload_id,
+                    label: rule.label,
+                    bucket: Bucket::Background,
+                    since: at,
+                    source: AssignedBy::MigratedRule,
+                });
+            }
+        }
+    }
+}
+
+/// Reads a stored policy, moving legacy rules into buckets, for `#[serde(deserialize_with)]`.
+pub fn load_policy<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Policy, D::Error> {
+    let mut policy = Policy::deserialize(deserializer)?;
+    policy.migrate_rules(now());
+    Ok(policy)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,7 +294,7 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default)]
     pub impact: Option<Impact>,
-    /// The tab or command session a granular action targets (pause, close_tab).
+    /// The tab or command session a granular action targets (pause, pause_tab, close_tab).
     #[serde(default)]
     pub unit: Option<crate::inside::Unit>,
 }
@@ -281,6 +389,9 @@ pub struct Case {
     /// A stop the user can choose instead, shown with what it would free and what it closes.
     #[serde(default)]
     pub alternative: Option<Proposal>,
+    /// A firmer option offered after `alternative`: closing a tab the alternative would pause.
+    #[serde(default)]
+    pub fallback: Option<Proposal>,
     pub report: Option<ActionReport>,
     pub verification: Option<Verification>,
     pub automatic: bool,
@@ -307,6 +418,7 @@ impl Case {
             diagnosis: None,
             proposal: None,
             alternative: None,
+            fallback: None,
             report: None,
             verification: None,
             automatic: false,
@@ -779,7 +891,7 @@ pub fn proposal(s: &Snapshot, trigger: &Trigger) -> Option<Proposal> {
         })
         .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))?
         .clone();
-    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Give competing work more CPU scheduling preference by lowering this busy process’s priority. This does not free memory or guarantee lower CPU usage. Priority stays lowered until the process exits; restoring it may require OS privileges.".into(), unit: None })
+    Some(Proposal { impact: impact(s, &process), process, action: "lower_priority".into(), rationale: "Move this app to Background: macOS runs it in background mode, so your other apps get CPU, disk, and network first. It keeps running; this does not free memory or guarantee lower CPU usage. Move it back to Normal at any time.".into(), unit: None })
 }
 
 pub fn verify(
@@ -793,11 +905,11 @@ pub fn verify(
     } else if report.after.is_none() {
         "The process is no longer in the collected inventory. No continuing resource improvement can be attributed to the priority change."
     } else if !priority_verified {
-        "Fresh resource measurements arrived, but the OS priority change could not be verified. Review the process before trying another action."
+        "Fresh resource measurements arrived, but macOS did not confirm background mode, so the change could not be verified. Review the process before trying another action."
     } else if after.cpu_percent + 5.0 < before.cpu_percent {
-        "The OS priority change is verified. Total CPU was lower in the follow-up sample; this is an observation, not proof the action caused it."
+        "macOS confirms background mode. Total CPU was lower in the follow-up sample; this is an observation, not proof the action caused it."
     } else {
-        "The OS priority change is verified. No clear reduction in total CPU was observed. Lower priority helps scheduling contention and need not reduce CPU or memory usage."
+        "macOS confirms background mode. No clear reduction in total CPU was observed. Background mode helps when apps compete and need not reduce CPU or memory usage."
     };
     Verification {
         summary: summary.into(),
@@ -1459,11 +1571,21 @@ pub(crate) mod tests {
         let trigger = conditions(&s, &p).remove(0);
         let mut action = proposal(&s, &trigger).unwrap();
         assert!(!p.allows(&action));
-        p.rules.push(Rule {
+        let mut background = Assignment {
             workload_id: "fixture".into(),
             label: "Example".into(),
-        });
+            bucket: Bucket::Background,
+            since: 1,
+            source: AssignedBy::You,
+        };
+        assert!(p.assign(background.clone()));
+        assert!(!p.assign(background.clone()));
         assert!(p.allows(&action));
+        background.bucket = Bucket::Protected;
+        assert!(p.assign(background.clone()));
+        assert!(!p.allows(&action) && p.protected("fixture"));
+        background.bucket = Bucket::Background;
+        p.assign(background);
         action.action = "terminate".into();
         assert!(!p.allows(&action));
         action.action = "lower_priority".into();
@@ -1498,7 +1620,7 @@ pub(crate) mod tests {
     fn legacy_settings_migrate_without_granting_action_permissions() {
         let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
         assert!(s.automation.enabled);
-        assert!(s.automation.rules.is_empty());
+        assert!(s.automation.rules.is_empty() && s.automation.buckets.is_empty());
         let mut p = Policy {
             system_cpu_percent: f32::NAN,
             ..Default::default()
@@ -1512,6 +1634,27 @@ pub(crate) mod tests {
             };
             2
         ];
+        assert!(p.validate().is_err());
+        // Loading moves each legacy rule once; an app already in a bucket keeps its bucket.
+        p.buckets.push(Assignment {
+            workload_id: "kept".into(),
+            label: "Kept".into(),
+            bucket: Bucket::Protected,
+            since: 1,
+            source: AssignedBy::You,
+        });
+        p.rules.push(Rule {
+            workload_id: "kept".into(),
+            label: "Kept".into(),
+        });
+        p.migrate_rules(5);
+        assert!(p.rules.is_empty());
+        p.validate().unwrap();
+        assert_eq!(p.bucket("same"), Bucket::Background);
+        assert_eq!(p.bucket("kept"), Bucket::Protected);
+        assert_eq!(p.buckets.len(), 2);
+        // Normal is the absence of an entry, never stored.
+        p.buckets[0].bucket = Bucket::Normal;
         assert!(p.validate().is_err());
     }
 }

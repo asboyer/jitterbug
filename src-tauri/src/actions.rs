@@ -68,6 +68,10 @@ fn application_actions(exe: &std::path::Path) -> Vec<String> {
     actions
 }
 
+/// Runs a supported action after rechecking fresh process identity and permission. On macOS,
+/// lowering priority puts the process in background mode: lower CPU priority, throttled disk
+/// and network I/O, and efficiency cores. Unlike a nice value, it can be undone without
+/// administrator access.
 pub fn execute(pid: u32, start_time: u64, action: &str) -> Result<String, String> {
     if !matches!(action, "terminate" | "lower_priority") {
         return Err("Unsupported process action.".into());
@@ -92,56 +96,85 @@ pub fn execute(pid: u32, start_time: u64, action: &str) -> Result<String, String
     if action == "terminate" {
         return match p.kill_with(Signal::Term) { Some(true) => Ok("Termination requested. A process may handle or ignore this request; watch the next sample.".into()), _ => Err("The operating system rejected the termination request.".into()) };
     }
-    #[cfg(target_os = "macos")]
-    {
-        let current = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid) };
-        let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, current.max(10)) };
-        if result == 0 {
-            Ok("CPU scheduling priority lowered. This does not release memory.".into())
-        } else {
-            Err("The operating system rejected the priority change.".into())
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Process actions are not implemented for this platform yet.".into())
+    match set(pid, true) {
+        Ok(()) => Ok("Moved to background mode: it gets CPU, disk, and network after your other apps. This does not release memory.".into()),
+        Err(Refusal::Gone) => Err("Process has already exited.".into()),
+        Err(_) => Err("The operating system rejected the priority change.".into()),
     }
 }
 
-/// Read OS priority only for the same process identity; never request elevated privileges.
-pub fn priority(pid: u32, start_time: u64) -> Result<i32, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        if system
-            .process(Pid::from_u32(pid))
-            .is_none_or(|p| p.start_time() != start_time)
-        {
-            return Err("Process identity changed or exited.".into());
-        }
-        unsafe {
-            *libc::__error() = 0;
-            let value = libc::getpriority(libc::PRIO_PROCESS, pid);
-            if *libc::__error() != 0 {
-                return Err("Cannot read OS scheduling priority.".into());
+/// Why a background-mode change was not made. Nothing was changed in every case.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The process exited, or its PID now belongs to another process.
+    Gone,
+    /// Another user's process, or (when entering) one Jitterbug never changes: itself, its
+    /// ancestors, system processes, and unsupported executables.
+    NotAllowed,
+    /// The OS refused, or the platform has no background mode.
+    Failed,
+}
+
+/// Puts processes in macOS background mode (`on`) or takes them out of it. Every target is
+/// rechecked first with one fresh process scan: same PID and start time, owned by this user,
+/// and, to enter background mode, permitted to lower priority. Returns one result per target.
+pub fn set_background(targets: &[(u32, u64)], on: bool) -> Vec<Result<(), Refusal>> {
+    if targets.is_empty() {
+        return vec![];
+    }
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_user(UpdateKind::Always)
+            .with_exe(UpdateKind::Always),
+    );
+    targets
+        .iter()
+        .map(|&(pid, start_time)| {
+            let p = system
+                .process(Pid::from_u32(pid))
+                .filter(|p| p.start_time() == start_time)
+                .ok_or(Refusal::Gone)?;
+            let allowed = if on {
+                permitted(p, &system).iter().any(|a| a == "lower_priority")
+            } else {
+                // Leaving background mode only restores the default, but still never touches
+                // another user's process.
+                crate::platform::same_user(p)
+            };
+            if !allowed {
+                return Err(Refusal::NotAllowed);
             }
-            Ok(value)
+            set(pid, on)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn set(pid: u32, on: bool) -> Result<(), Refusal> {
+    let value = if on { libc::PRIO_DARWIN_BG } else { 0 };
+    unsafe {
+        if libc::setpriority(libc::PRIO_DARWIN_PROCESS, pid, value) == 0 {
+            return Ok(());
+        }
+        match *libc::__error() {
+            libc::ESRCH => Err(Refusal::Gone),
+            _ => Err(Refusal::Failed),
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (pid, start_time);
-        Err("OS priority verification is unavailable on this platform.".into())
-    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set(pid: u32, on: bool) -> Result<(), Refusal> {
+    // Process actions are macOS-only for now: `permitted` offers none elsewhere.
+    let _ = (pid, on);
+    Err(Refusal::Failed)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     #[test]
     fn application_helpers_only_offer_priority_changes() {
@@ -173,5 +206,109 @@ mod tests {
         assert!(execute(std::process::id(), 0, "shell").is_err());
         assert!(execute(std::process::id(), 0, "terminate").is_err());
         assert!(execute(1, 0, "lower_priority").is_err());
+    }
+
+    /// A process this test starts and kills, never anyone else's: this test binary, linked
+    /// under a development tool's name so the same permission check as real targets allows it,
+    /// running only `stand_in` below. (A copied system binary would be killed by macOS.)
+    pub(crate) struct Child(std::process::Child, std::path::PathBuf);
+    impl Child {
+        pub(crate) fn spawn() -> (Self, u32, u64) {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNT: AtomicU32 = AtomicU32::new(0);
+            let directory = std::env::temp_dir().join(format!(
+                "jitterbug-bg-test-{}-{}",
+                std::process::id(),
+                COUNT.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir_all(&directory).unwrap();
+            let program = directory.join("python-bg-test");
+            let current = std::env::current_exe().unwrap();
+            if std::fs::hard_link(&current, &program).is_err() {
+                std::fs::copy(&current, &program).unwrap();
+            }
+            let child = std::process::Command::new(&program)
+                .args(["--exact", "actions::tests::stand_in", "--test-threads=1"])
+                .env("JITTERBUG_STAND_IN", "1")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let mut system = System::new();
+            system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+            let start = system.process(Pid::from_u32(pid)).unwrap().start_time();
+            (Self(child, directory), pid, start)
+        }
+    }
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+
+    /// Idle stand-in process for `Child`; returns at once in a normal test run.
+    #[test]
+    fn stand_in() {
+        if std::env::var_os("JITTERBUG_STAND_IN").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn background_mode_rechecks_identity_and_skips_exited_processes() {
+        let (child, pid, start) = Child::spawn();
+        // A reused PID is another process: it is never touched.
+        assert_eq!(
+            set_background(&[(pid, start + 1)], true),
+            [Err(Refusal::Gone)]
+        );
+        assert_eq!(
+            crate::platform::in_background(pid, start),
+            cfg!(target_os = "macos").then_some(false)
+        );
+        // Jitterbug itself is never put in background mode.
+        let own = std::process::id();
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(own)]), true);
+        let own_start = system.process(Pid::from_u32(own)).unwrap().start_time();
+        assert_eq!(
+            set_background(&[(own, own_start)], true),
+            [Err(Refusal::NotAllowed)]
+        );
+        drop(child);
+        assert_eq!(set_background(&[(pid, start)], false), [Err(Refusal::Gone)]);
+        assert_eq!(crate::platform::in_background(pid, start), None);
+    }
+
+    /// The live check: background mode through Jitterbug's own path on a process this test
+    /// started, confirmed by the readback and by `ps`, then cleared without privileges.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn background_mode_is_applied_confirmed_and_cleared_without_privileges() {
+        let (_child, pid, start) = Child::spawn();
+        let ps = || {
+            let out = std::process::Command::new("/bin/ps")
+                .args(["-o", "pri=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<i32>()
+                .unwrap()
+        };
+        let before = ps();
+        assert!(before > 4, "{before}");
+        assert_eq!(set_background(&[(pid, start)], true), [Ok(())]);
+        assert_eq!(crate::platform::in_background(pid, start), Some(true));
+        assert_eq!(ps(), 4);
+        assert_eq!(set_background(&[(pid, start)], false), [Ok(())]);
+        assert_eq!(crate::platform::in_background(pid, start), Some(false));
+        assert_eq!(ps(), before);
+        // The single-process action uses the same mechanism.
+        execute(pid, start, "lower_priority").unwrap();
+        assert_eq!(crate::platform::in_background(pid, start), Some(true));
     }
 }

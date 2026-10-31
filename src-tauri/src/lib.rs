@@ -1,9 +1,11 @@
 pub mod actions;
+pub mod agent_sessions;
 pub mod applications;
 pub mod attribution;
 pub mod automation;
 pub mod budget;
 mod capture;
+mod claude_sessions;
 pub mod collector;
 pub mod control;
 mod desktop;
@@ -13,11 +15,13 @@ mod floating;
 pub mod harness;
 pub mod inside;
 pub mod jitter;
+mod lab;
 pub mod origins;
 pub mod pause;
 pub mod platform;
 mod popup;
 pub mod pressure;
+pub mod priorities;
 pub mod probe;
 pub mod profiles;
 pub mod providers;
@@ -229,15 +233,50 @@ fn get_workload_details(
 async fn get_inside_view(
     state: State<'_, AppState>,
     workload_id: String,
+    connect: Option<bool>,
 ) -> Result<inside::Inside, String> {
     let snapshot = state
         .snapshot
         .read()
         .map_err(|_| "Telemetry unavailable.")?
         .clone();
-    tauri::async_runtime::spawn_blocking(move || inside::inspect(&snapshot, &workload_id))
+    // Automatic loads pass `connect: false`: only an explicit request may make a browser ask.
+    let connect = connect.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || {
+        inside::inspect_with(&snapshot, &workload_id, connect)
+    })
+    .await
+    .map_err(|_| "Inside view unavailable.")?
+}
+
+/// Every command session inside terminals, editors, and agent apps, agents first.
+#[tauri::command]
+async fn get_agent_sessions(
+    state: State<'_, AppState>,
+) -> Result<agent_sessions::Overview, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || agent_sessions::overview(&snapshot))
         .await
-        .map_err(|_| "Inside view unavailable.")?
+        .map_err(|_| "Agent sessions unavailable.".into())
+}
+
+/// Open a new terminal window running an allowlisted agent in a folder.
+#[tauri::command]
+async fn launch_agent_session(request: agent_sessions::LaunchRequest) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_sessions::launch(&request))
+        .await
+        .map_err(|_| "Launching is unavailable.")?
+}
+
+#[tauri::command]
+async fn open_folder_in_vscode(folder: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_sessions::open_in_vscode(&folder))
+        .await
+        .map_err(|_| "VS Code is unavailable.")?
 }
 
 #[tauri::command]
@@ -681,9 +720,18 @@ fn dismiss_automation_case(state: State<'_, AppState>, id: u64) -> Result<(), St
 }
 
 /// Stops only the process the incident offered, after the same identity and policy rechecks.
+/// With `fallback`, applies the firmer option offered after it (closing a tab instead of
+/// pausing it).
 #[tauri::command]
-async fn approve_stop(state: State<'_, AppState>, id: u64) -> Result<(), String> {
-    state.inner().stop(id).await
+async fn approve_stop(
+    state: State<'_, AppState>,
+    id: u64,
+    fallback: Option<bool>,
+) -> Result<(), String> {
+    state
+        .inner()
+        .stop_option(id, fallback.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -719,13 +767,47 @@ async fn session_control(
     .map_err(|_| "Session control unavailable.")?
 }
 
+/// Approving a priority change moves the app to the Background bucket.
 #[tauri::command]
-async fn approve_optimization(
+async fn approve_optimization(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state.inner().apply(id, true).await
+}
+
+/// Apps per priority bucket, with when and by whom they were moved. No process identity.
+#[tauri::command]
+fn get_priority_buckets(state: State<'_, AppState>) -> Result<supervisor::Priorities, String> {
+    state.priorities()
+}
+
+/// Move an app to Protected, Normal, or Background, applied at once.
+#[tauri::command]
+async fn move_to_bucket(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workload_id: String,
+    bucket: automation::Bucket,
+) -> Result<String, String> {
+    let result = state
+        .inner()
+        .move_blocking(&workload_id, bucket, automation::AssignedBy::You)
+        .await;
+    popup::refresh(&app);
+    result
+}
+
+/// Popup Undo: the app this incident moved to Background goes back to Normal.
+#[tauri::command]
+async fn undo_background(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: u64,
-    remember: bool,
-) -> Result<(), String> {
-    state.inner().apply(id, true, remember).await
+) -> Result<String, String> {
+    let runtime = state.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || runtime.undo_background(id))
+        .await
+        .map_err(|_| "Undo unavailable.")?;
+    popup::refresh(&app);
+    result
 }
 
 #[tauri::command]
@@ -825,6 +907,7 @@ pub fn run() {
                             .and_then(|(pid, _)| sample.processes.iter().find(|p| p.pid == pid))
                             .map(|p| p.workload_id.clone());
                         pause::expire();
+                        inside::chrome::expire();
                         if let (Ok(directory), Ok(executable)) =
                             (queue::directory(), std::env::current_exe())
                         {
@@ -856,11 +939,15 @@ pub fn run() {
                         if let Ok(Some(id)) = runtime.observe(&sample) {
                             capture::automatic(&handle, id);
                         }
+                        // Background apps' new processes, and the app now in front.
+                        let _ = runtime.enforce_buckets(&sample);
                         desktop::publish(&handle, &sample);
                         std::thread::sleep(Duration::from_secs(5));
                     }
                 })?;
             desktop::install(app)?;
+            #[cfg(debug_assertions)]
+            lab::open(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -899,6 +986,9 @@ pub fn run() {
             get_workload_details,
             get_workload_icon,
             get_inside_view,
+            get_agent_sessions,
+            launch_agent_session,
+            open_folder_in_vscode,
             tab_action,
             explain_application,
             summarize_agent_task,
@@ -934,6 +1024,9 @@ pub fn run() {
             approve_optimization,
             approve_stop,
             resume_case,
+            get_priority_buckets,
+            move_to_bucket,
+            undo_background,
             session_control,
             capture::report_jitter,
             capture::get_jitter_tally,
@@ -941,7 +1034,8 @@ pub fn run() {
             popup::get_action_popup,
             popup::close_action_popup,
             popup::open_action_case,
-            popup::preview_action_popup
+            popup::preview_action_popup,
+            lab::lab_mcp
         ])
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")

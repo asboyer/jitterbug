@@ -17,10 +17,9 @@
         busy: boolean;
         error: string;
         canApply: boolean;
-        onapply: (remember: boolean) => void;
+        onapply: () => void;
         onclose: () => void;
     } = $props();
-    let remember = $state(false);
     let dialog: HTMLDialogElement;
     let cancel: HTMLButtonElement;
     const label = $derived(
@@ -43,10 +42,16 @@
     }}
 >
     <h2 id="optimization-review-title">Review priority change</h2>
-    <p><strong>{label}</strong> keeps running while other work gets scheduling preference.</p>
+    <p>
+        Move <strong>{label}</strong> to Background: it keeps running while other apps get CPU and disk
+        first.
+    </p>
     <ul class="effects">
         <li>This does not free memory or guarantee lower CPU use.</li>
-        <li>The change lasts until the process exits. Undo may require administrator access.</li>
+        <li>
+            It stays in Background, including processes it starts later, until you move it back to
+            Normal. It runs at full speed while it is in front.
+        </li>
     </ul>
     <details class="process-details">
         <summary>Process details</summary>
@@ -57,21 +62,6 @@
         </p>
         <p>{incident.proposal?.rationale}</p>
     </details>
-    {#if !incident.jitter || incident.jitter.offer_permission}
-        <label class="remember"
-            ><input type="checkbox" bind:checked={remember} disabled={busy || !current} /><span
-                >Allow automatically for {label}</span
-            ></label
-        >
-    {/if}
-    {#if incident.jitter?.offer_permission}<p class="permission-note">
-            {label} has come up in {incident.jitter.recurrence} of your recent snapshots. Snapshot suggestions
-            themselves always wait for you.
-        </p>{/if}
-    {#if remember}<p class="permission-note">
-            Applies now and permits future CPU priority changes for this workload. It never permits
-            stopping processes. Revoke this permission in Settings.
-        </p>{/if}
     {#if incident.source !== 'live'}<p class="demo-note">
             Example only. Nothing will be applied.
         </p>{/if}
@@ -81,11 +71,8 @@
     {#if error}<p role="alert" class="error">{error}</p>{/if}
     <div class="review-actions">
         <button bind:this={cancel} disabled={busy} onclick={onclose}>Cancel</button>
-        <button
-            class="primary"
-            disabled={!canApply || !current || busy}
-            onclick={() => onapply(remember)}
-            >{busy ? 'Applying…' : remember ? 'Allow & apply' : 'Apply once'}</button
+        <button class="primary" disabled={!canApply || !current || busy} onclick={() => onapply()}
+            >{busy ? 'Moving…' : 'Move to Background'}</button
         >
     </div>
 </dialog>
@@ -129,20 +116,6 @@
     summary {
         cursor: pointer;
     }
-    .remember {
-        display: flex;
-        gap: 10px;
-        align-items: start;
-        padding-top: 16px;
-        border-top: 1px solid var(--border);
-        font-size: 13px;
-        line-height: 1.5;
-    }
-    .remember input {
-        width: auto;
-        margin-top: 3px;
-    }
-    .permission-note,
     .demo-note {
         color: var(--muted);
         font-size: 12px;

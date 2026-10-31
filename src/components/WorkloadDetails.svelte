@@ -5,6 +5,8 @@
     import { demoDetails } from '../lib/demo';
     import type {
         AppProfile,
+        InsideView,
+        ProcessLabel,
         ProcessRecord,
         Reply,
         Snapshot,
@@ -51,12 +53,58 @@
     let originPanel: HTMLElement | undefined = $state();
     const demo = $derived(snapshot.source === 'demo' || !isTauri());
     const current = $derived.by(() => detail?.workload ?? workload);
-    const members = $derived.by(
-        () =>
-            detail?.members.filter((p) =>
-                `${p.name} ${p.pid}`.toLowerCase().includes(search.toLowerCase())
-            ) ?? []
-    );
+    // What each process runs (a tab, a session, or a role), from the inside view.
+    let labels: { workload: string; byPid: Map<number, ProcessLabel> } = $state.raw({
+        workload: '',
+        byPid: new Map(),
+    });
+    let expanded: string | null = $state(null);
+    type Row = {
+        key: string;
+        title: string;
+        subtitle: string;
+        members: ProcessRecord[];
+        cpu: number;
+        memory: number;
+    };
+    function named(view: InsideView) {
+        labels = {
+            workload: view.workload_id,
+            byPid: new Map(view.labels.map((label) => [label.pid, label])),
+        };
+    }
+    function label(p: ProcessRecord) {
+        const known = labels.workload === workload.id ? labels.byPid.get(p.pid) : undefined;
+        // A reused PID must not inherit a tab or session name.
+        return known?.start_time === p.start_time ? known : null;
+    }
+    // Processes with the same name and role collapse into one row with a count.
+    const rows = $derived.by(() => {
+        const query = search.toLowerCase();
+        const groups = new Map<string, Row>();
+        for (const member of detail?.members ?? []) {
+            const known = label(member);
+            const title = known?.title ?? member.name;
+            const subtitle = known?.subtitle ?? '';
+            if (!`${title} ${subtitle} ${member.name} ${member.pid}`.toLowerCase().includes(query))
+                continue;
+            const key = `${title}\n${subtitle}`;
+            const row = groups.get(key) ?? { key, title, subtitle, members: [], cpu: 0, memory: 0 };
+            row.members.push(member);
+            row.cpu += member.cpu_percent;
+            row.memory += member.memory_bytes;
+            groups.set(key, row);
+        }
+        return [...groups.values()].sort(
+            (a, b) => b.cpu + b.memory / 1e9 - (a.cpu + a.memory / 1e9)
+        );
+    });
+    const isSelected = (p: ProcessRecord) =>
+        p.pid === process?.pid && p.start_time === process?.start_time;
+    function pick(member: ProcessRecord) {
+        revealOrigin = true;
+        selected = { pid: member.pid, start_time: member.start_time };
+    }
     const process = $derived.by(() => detail?.process ?? null);
     const leaf = $derived.by(() => detail?.ancestry.at(-1));
     const parent = $derived.by(() => detail?.ancestry.at(-2));
@@ -75,7 +123,7 @@
         try {
             const next =
                 sample.source === 'demo' || !isTauri()
-                    ? demoDetails(sample, id)
+                    ? demoDetails(sample, id, identity)
                     : await invoke<WorkloadDetails>('get_workload_details', {
                           workloadId: id,
                           pid: identity?.pid ?? null,
@@ -319,7 +367,7 @@
                 {onaction}
             />
         </div>
-        <InsidePanel {snapshot} workload={current} {demo} {actionBusy} {onaction} />
+        <InsidePanel {snapshot} workload={current} {demo} {actionBusy} {onaction} onview={named} />
         <details class="panel process-section">
             <summary
                 ><span>Processes</span><span class="summary-count">{detail.member_count}</span
@@ -328,7 +376,7 @@
             <div class="section-title process-toolbar">
                 <input
                     aria-label="Filter processes"
-                    placeholder="Name or PID"
+                    placeholder="Name, tab, or PID"
                     bind:value={search}
                 /><InfoTip label="About process measurements"
                     ><p>
@@ -344,25 +392,61 @@
                 >
             </div>
             <div class="members" role="group" aria-label="Workload processes">
-                {#each members as member (`${member.pid}:${member.start_time}`)}<button
-                        class="member"
-                        class:chosen={member.pid === process?.pid &&
-                            member.start_time === process?.start_time}
-                        aria-pressed={member.pid === process?.pid &&
-                            member.start_time === process?.start_time}
-                        onclick={() => {
-                            revealOrigin = true;
-                            selected = { pid: member.pid, start_time: member.start_time };
-                        }}
-                        aria-label={`Inspect ${member.name}, PID ${member.pid}`}
-                    >
-                        <span class="member-name"
-                            ><strong>{member.name}</strong><small>PID {member.pid}</small></span
-                        ><span class="numeric">{percent(member.cpu_percent)}<small>CPU</small></span
-                        ><span class="numeric"
-                            >{memory(member.memory_bytes)}<small>Memory</small></span
-                        ><span aria-hidden="true">›</span>
-                    </button>{:else}<p class="muted empty">No matching processes.</p>{/each}
+                {#each rows as row (row.key)}
+                    {@const single = row.members.length === 1 ? row.members[0] : null}
+                    {@const open = !single && expanded === row.key}
+                    {#if single}<button
+                            class="member"
+                            class:chosen={isSelected(single)}
+                            aria-pressed={isSelected(single)}
+                            onclick={() => pick(single)}
+                            aria-label={`Inspect ${row.title}`}
+                        >
+                            <span class="member-name"
+                                ><strong title={row.title}>{row.title}</strong
+                                >{#if row.subtitle}<small>{row.subtitle}</small>{/if}</span
+                            ><span class="numeric">{percent(row.cpu)}<small>CPU</small></span><span
+                                class="numeric">{memory(row.memory)}<small>Memory</small></span
+                            ><span aria-hidden="true">›</span>
+                        </button>{:else}<button
+                            class="member"
+                            class:chosen={!open && row.members.some(isSelected)}
+                            aria-expanded={open}
+                            onclick={() => (expanded = open ? null : row.key)}
+                            aria-label={`${row.title}, ${row.members.length} processes`}
+                        >
+                            <span class="member-name"
+                                ><strong title={row.title}
+                                    >{row.title}<span class="count">×{row.members.length}</span
+                                    ></strong
+                                ><small
+                                    >{row.members.length} processes{row.subtitle
+                                        ? ` · ${row.subtitle}`
+                                        : ''}</small
+                                ></span
+                            ><span class="numeric">{percent(row.cpu)}<small>CPU</small></span><span
+                                class="numeric">{memory(row.memory)}<small>Memory</small></span
+                            ><span aria-hidden="true" class="chevron" class:open>›</span>
+                        </button>
+                        {#if open}{#each row.members as member (`${member.pid}:${member.start_time}`)}<button
+                                    class="member child"
+                                    class:chosen={isSelected(member)}
+                                    aria-pressed={isSelected(member)}
+                                    onclick={() => pick(member)}
+                                    aria-label={`Inspect ${member.name}, PID ${member.pid}`}
+                                >
+                                    <span class="member-name"
+                                        ><strong>{member.name}</strong><small
+                                            >PID {member.pid}</small
+                                        ></span
+                                    ><span class="numeric"
+                                        >{percent(member.cpu_percent)}<small>CPU</small></span
+                                    ><span class="numeric"
+                                        >{memory(member.memory_bytes)}<small>Memory</small></span
+                                    ><span aria-hidden="true">›</span>
+                                </button>{/each}{/if}
+                    {/if}
+                {:else}<p class="muted empty">No matching processes.</p>{/each}
             </div>
         </details>
         {#if process}<section
@@ -684,9 +768,27 @@
     }
     .member small {
         display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         color: var(--muted);
         font-size: 10px;
         margin-top: 4px;
+    }
+    .member.child {
+        padding: 8px 8px 8px 24px;
+    }
+    .count {
+        margin-left: 8px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 400;
+    }
+    .chevron {
+        transition: transform 0.15s;
+    }
+    .chevron.open {
+        transform: rotate(90deg);
     }
     .origin-title {
         display: flex;

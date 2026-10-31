@@ -74,8 +74,8 @@ export function incidentOutcome(incident: IncidentSummary): string {
                 : 'The process stopped. A fresh sample no longer shows it.';
         if (!incident.report.after) return 'The original process is no longer in the inventory.';
         return incident.verification.priority_verified
-            ? 'The operating system confirmed the lower priority.'
-            : 'The priority change could not be confirmed.';
+            ? 'macOS confirmed background mode.'
+            : 'macOS did not confirm background mode.';
     }
     switch (incident.stage) {
         case 'detected':
@@ -83,11 +83,11 @@ export function incidentOutcome(incident: IncidentSummary): string {
         case 'investigating':
             return 'Jitterbug is checking what changed.';
         case 'awaiting_approval':
-            return 'Review a CPU priority adjustment before it runs.';
+            return 'Review moving an app to Background before it runs.';
         case 'applying':
-            return 'Applying the approved priority adjustment.';
+            return 'Moving the app to Background.';
         case 'verifying':
-            return 'Collecting a fresh reading and checking the operating system’s priority.';
+            return 'Collecting a fresh reading and checking background mode.';
         case 'completed':
             return incident.report
                 ? 'The action was sent. Open the result to review what was measured.'
@@ -148,6 +148,33 @@ export function noticeTitle(incident: IncidentSummary): string {
     }
 }
 
+/** The popup's headline: the same news as the in-app notice, without the greeting. */
+export function popupTitle(incident: IncidentSummary): string {
+    const subject = incident.trigger.target?.label ?? 'An app';
+    switch (incident.trigger.kind) {
+        case 'app_unresponsive':
+            return `${subject} has stopped responding`;
+        case 'system_cpu':
+            return 'Your computer has stayed busy';
+        case 'memory_pressure':
+            return 'Your computer is short on memory';
+        case 'thermal_pressure':
+            return 'Your computer is running warm';
+        case 'memory_growth':
+            return `${subject}’s memory use has grown`;
+        case 'cpu_anomaly':
+            return `${subject} is busier than usual`;
+        case 'user_reported':
+            return 'Here’s that moment';
+        case 'short_spike':
+            return 'Caught a short hitch';
+        case 'agent_request':
+            return incident.trigger.title;
+        default:
+            return `${subject} has stayed busy`;
+    }
+}
+
 /** What approving does, in plain words. */
 export function proposalSummary(processName: string, victim?: string | null): string {
     return `Lower ${processName}’s CPU priority so ${victim ?? 'your other apps'} get the CPU first when they compete. ${processName} keeps running.`;
@@ -158,15 +185,13 @@ function change(before: string, after: string | null): string {
     return after === null ? `${before} before` : `${before} → ${after}`;
 }
 
-/** Current use of the workload an option belongs to. */
+/** Current use of the workload an option belongs to; the title already names it. */
 export function nowLine(option: ActionPopupOption): string {
     const impact = option.impact;
-    if (!impact) {
-        return `Now: ${option.process.name} uses ${percent(option.process.cpu_percent)} CPU · ${memory(option.process.memory_bytes)}`;
-    }
-    const processes =
-        impact.process_count === 1 ? '1 process' : `${impact.process_count} processes`;
-    return `Now: ${impact.label} uses ${percent(impact.workload_cpu_percent)} CPU · ${memory(impact.workload_memory_bytes)} · ${processes}`;
+    const [cpu, bytes] = impact
+        ? [impact.workload_cpu_percent, impact.workload_memory_bytes]
+        : [option.process.cpu_percent, option.process.memory_bytes];
+    return `Now: ${percent(cpu)} CPU · ${memory(bytes)}`;
 }
 
 /** A helper's name rarely says what it is; say so instead of implying it can be identified. */
@@ -180,14 +205,20 @@ export function helperNote(option: ActionPopupOption): string | null {
     return `Busiest part: ${name}, a tab, extension, or background part of ${label}. macOS doesn’t say which.${manager}`;
 }
 
-export function priorityAfter(victim?: string | null): string {
-    return `After: same usage; ${victim ?? 'your other apps'} go first when they compete.`;
+/** The priority option names the app and the bucket it moves to. */
+export function backgroundLabel(option: ActionPopupOption): string {
+    return `Move ${option.impact?.label ?? option.process.name} to Background`;
+}
+
+/** Who goes first afterwards, and that it can be undone. */
+export function backgroundAfter(victim?: string | null): string {
+    return `After: keeps running; ${victim ?? 'other apps'} get CPU and disk first`;
 }
 
 /** A stop frees what ends: the whole app for its main executable, else that one process. */
 export function stopAfter(option: ActionPopupOption): string {
     const impact = option.impact;
-    if (option.action === 'pause')
+    if (option.action === 'pause' || option.action === 'pause_tab')
         return `Now: ${percent(option.impact?.workload_cpu_percent ?? 0)} CPU · ${memory(option.impact?.workload_memory_bytes ?? 0)}. After: no CPU until resumed; memory stays allocated`;
     if (option.action === 'close_tab')
         return `After: frees about ${percent(impact?.workload_cpu_percent ?? 0)} CPU · ${memory(impact?.workload_memory_bytes ?? 0)}`;
@@ -199,6 +230,8 @@ export function stopAfter(option: ActionPopupOption): string {
 
 export function stopLabel(option: ActionPopupOption): string {
     if (option.action === 'pause') return `Pause ${option.unit?.title ?? option.process.name}`;
+    if (option.action === 'pause_tab')
+        return `Pause the “${option.unit?.title ?? option.process.name}” tab`;
     if (option.action === 'close_tab')
         return `Close the “${option.unit?.title ?? option.process.name}” tab`;
     return option.impact?.whole_app ? `Quit ${option.impact.label}` : `Stop ${option.process.name}`;
@@ -206,6 +239,9 @@ export function stopLabel(option: ActionPopupOption): string {
 
 /** What an option ends, without repeating its label: "Pause X: its 7 processes…" → "Its 7 processes…". */
 export function stopWarning(option: ActionPopupOption): string {
+    // The label already says "Quit <app>"; the warning only adds what is lost.
+    if (option.action === 'terminate' && option.impact?.whole_app)
+        return 'Every window closes; unsaved work is lost.';
     const text = option.closes ?? '';
     const label = stopLabel(option);
     if (!text.startsWith(label)) return text;
@@ -240,6 +276,15 @@ export function actionResult(
                       report.cpu_after === null ? null : percent(report.cpu_after)
                   )} · ${machine}`
                 : 'A fresh measurement was unavailable.',
+            note: '',
+        };
+    }
+    if (report.action === 'pause_tab') {
+        return {
+            title: `Paused the “${name}” tab`,
+            meaning:
+                'Its scripts and timers are frozen, not closed: it resumes when you choose Resume or by itself after 15 minutes. Its memory stays allocated; close the tab to free it.',
+            measured: report.fresh ? machine : 'A fresh measurement was unavailable.',
             note: '',
         };
     }
@@ -287,13 +332,14 @@ export function actionResult(
     }
     const verified = !!verification?.priority_verified;
     const dropped = report.cpu_after !== null && report.cpu_after < report.cpu_before - 1;
+    const app = option?.impact?.label ?? name;
     return {
         title: verified
-            ? `Lowered ${name}’s priority`
-            : `Priority change for ${name} not confirmed`,
+            ? `Moved ${app} to Background`
+            : `Background mode for ${name} not confirmed`,
         meaning: verified
-            ? `${name} keeps running. When apps compete for CPU, macOS now runs ${victim ?? 'your other apps'} first.`
-            : 'macOS did not confirm the new priority. Open Review for details.',
+            ? `${app} keeps running. macOS now gives ${victim ?? 'your other apps'} CPU and disk first, including when ${app} starts new processes.`
+            : 'macOS did not confirm background mode. Open Review for details.',
         measured: report.fresh
             ? `${name} ${change(
                   percent(report.cpu_before),
@@ -304,6 +350,6 @@ export function actionResult(
             ? ''
             : dropped
               ? 'Its CPU use dropped; other activity may also have changed.'
-              : 'No drop is expected: lower priority doesn’t cap CPU, it only decides who goes first. Lasts until it exits.',
+              : 'No drop is expected: background mode doesn’t cap CPU, it only decides who goes first.',
     };
 }

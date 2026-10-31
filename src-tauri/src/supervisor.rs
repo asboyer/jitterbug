@@ -1,8 +1,8 @@
 //! Native incident lifecycle. It continues while the window is hidden; models cannot execute tools.
 use crate::{
     actions,
-    automation::{self, Case, Monitor, Origin, Policy, Rule, Stage},
-    budget, details, jitter, profiles, providers, settings, settings_history, storage,
+    automation::{self, AssignedBy, Assignment, Bucket, Case, Monitor, Origin, Policy, Stage},
+    budget, details, jitter, priorities, profiles, providers, settings, settings_history, storage,
     system_settings,
     types::*,
 };
@@ -90,19 +90,24 @@ fn related(cases: &VecDeque<Case>, workload: Option<&str>, at: u64) -> Option<u6
         .map(|c| c.id)
 }
 
-/// The most specific alternative for a workload: close its heaviest tab or pause the command
-/// session using it, else stop a supported process. Never applied without approval.
+/// The most specific alternative for a workload: pause its heaviest tab (with closing it as
+/// the fallback) or pause the command session using it, else stop a supported process. Never
+/// applied without approval.
 async fn alternative(
     snapshot: &Snapshot,
     workload: &str,
     memory: bool,
-) -> Option<automation::Proposal> {
+) -> (Option<automation::Proposal>, Option<automation::Proposal>) {
     let (sample, id) = (snapshot.clone(), workload.to_string());
-    tokio::task::spawn_blocking(move || crate::inside::options::option(&sample, &id, memory))
-        .await
-        .ok()
-        .flatten()
-        .or_else(|| automation::stop_option(snapshot, workload))
+    let mut offers =
+        tokio::task::spawn_blocking(move || crate::inside::options::options(&sample, &id, memory))
+            .await
+            .unwrap_or_default()
+            .into_iter();
+    match offers.next() {
+        Some(first) => (Some(first), offers.next()),
+        None => (automation::stop_option(snapshot, workload), None),
+    }
 }
 
 pub struct Runtime {
@@ -121,7 +126,48 @@ pub struct Runtime {
     settings_writer: SettingsWriter,
     pub directory: PathBuf,
     book: Mutex<Book>,
+    priorities: Mutex<priorities::Ledger>,
     publish: Publish,
+}
+
+/// One app in the priorities view: names and counts only, no process identity.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AppPriority {
+    pub workload_id: String,
+    pub label: String,
+    pub bucket: Bucket,
+    /// When and by whom it was moved; none for an app that was never moved.
+    pub since: Option<u64>,
+    pub source: Option<AssignedBy>,
+    pub running: bool,
+    pub frontmost: bool,
+    /// Its processes Jitterbug keeps in background mode right now.
+    pub affected: usize,
+}
+
+/// Apps per bucket. Normal lists the busiest running apps that could be moved.
+#[derive(Debug, serde::Serialize)]
+pub struct Priorities {
+    pub protected: Vec<AppPriority>,
+    pub normal: Vec<AppPriority>,
+    pub background: Vec<AppPriority>,
+}
+
+/// Running apps listed in Normal; the rest can be found in the app.
+const NORMAL_LISTED: usize = 12;
+
+/// Who moved an app when an incident's approval moved it.
+fn bucket_source(origin: &Origin) -> AssignedBy {
+    if *origin == Origin::Agent {
+        AssignedBy::Agent
+    } else {
+        AssignedBy::You
+    }
+}
+
+/// Whether macOS confirms background mode for this exact process.
+fn in_background(process: &ProcessRecord) -> bool {
+    crate::platform::in_background(process.pid, process.start_time) == Some(true)
 }
 
 impl Runtime {
@@ -188,6 +234,7 @@ impl Runtime {
             settings_writer,
             directory,
             book: Mutex::new(Book::default()),
+            priorities: Mutex::new(priorities::Ledger::default()),
             publish,
         })
     }
@@ -381,6 +428,7 @@ impl Runtime {
                         "The observed problem has cleared. No process changes were needed.",
                     );
                     c.alternative = None;
+                    c.fallback = None;
                 })?;
             }
         }
@@ -583,11 +631,15 @@ impl Runtime {
         (self.publish)(case.clone());
         Ok(case)
     }
-    pub fn save_policy(&self, policy: Policy) -> Result<(), String> {
-        policy.validate()?;
+    pub fn save_policy(&self, mut policy: Policy) -> Result<(), String> {
         let enabled = policy.enabled;
         {
             let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.")?;
+            // App priorities change only through `move_to_bucket`, so an older settings form
+            // cannot overwrite them; legacy rules from such a form are ignored.
+            policy.rules.clear();
+            policy.buckets = settings.automation.buckets.clone();
+            policy.validate()?;
             let mut next = settings.clone();
             next.automation = policy;
             storage::write(&self.directory.join("settings.json"), &next)?;
@@ -737,31 +789,34 @@ impl Runtime {
             self.update(id, |c| c.transition(Stage::Resolved, "The resource trigger cleared during investigation. No optimization was applied."))?;
             return Ok(());
         }
-        // An already-lowered process gets no repeated change.
-        let proposal = automation::proposal(&snapshot, &case.trigger).filter(|p| {
-            !actions::priority(p.process.pid, p.process.start_time).is_ok_and(|n| n >= 10)
-        });
+        // A process already in background mode gets no repeated change, and Protected apps
+        // are never offered for lowering or quitting.
+        let proposal = automation::proposal(&snapshot, &case.trigger)
+            .filter(|p| !policy.protected(&p.process.workload_id) && !in_background(&p.process));
         let memory = matches!(
             case.trigger.kind,
             automation::Kind::MemoryPressure | automation::Kind::MemoryGrowth
         );
-        let alternative = match (&case.trigger.target, &case.trigger.kind) {
+        let (alternative, fallback) = match (&case.trigger.target, &case.trigger.kind) {
             (Some(t), automation::Kind::AppUnresponsive) => {
-                automation::stop_option(&snapshot, &t.workload_id)
+                (automation::stop_option(&snapshot, &t.workload_id), None)
             }
             (Some(t), _) => alternative(&snapshot, &t.workload_id, memory).await,
-            (None, _) => None,
+            (None, _) => (None, None),
         };
+        // Protected apps are never offered a stop.
+        let alternative = alternative.filter(|a| !policy.protected(&a.process.workload_id));
+        let fallback = fallback.filter(|a| !policy.protected(&a.process.workload_id));
         if proposal.is_none() && alternative.is_none() {
             self.update(id, |c| c.transition(Stage::Completed, "Investigation complete. No supported change fits this incident. Review the diagnosis; protected processes and app helpers need a different intervention."))?;
             return Ok(());
         }
         let automatic = proposal.as_ref().is_some_and(|p| policy.allows(p));
-        self.update(id, |c| { c.proposal = proposal; c.alternative = alternative; c.transition(Stage::AwaitingApproval,
-            if automatic { "This workload has permission for automatic priority changes. Rechecking live evidence before acting." }
-            else { "A change is available. Approve it once, or allow future automatic priority changes for this workload." }); })?;
+        self.update(id, |c| { c.proposal = proposal; c.alternative = alternative; c.fallback = fallback; c.transition(Stage::AwaitingApproval,
+            if automatic { "This app is in Background. Rechecking live evidence before moving this process too." }
+            else { "A change is available. Moving the app to Background needs your approval." }); })?;
         if automatic {
-            self.apply(id, false, false).await?;
+            self.apply(id, false).await?;
         }
         Ok(())
     }
@@ -876,27 +931,32 @@ impl Runtime {
                 unit: None,
             })
         });
-        // An already-lowered culprit gets no repeated change.
-        let proposal = proposal.filter(|p| {
-            !actions::priority(p.process.pid, p.process.start_time).is_ok_and(|n| n >= 10)
-        });
+        // A culprit already in background mode gets no repeated change, and Protected apps are
+        // never offered for lowering or quitting.
+        let policy = self.policy()?;
+        let proposal = proposal
+            .filter(|p| !policy.protected(&p.process.workload_id) && !in_background(&p.process));
         let culprit = report.culprit.as_ref().and_then(|c| c.workload_id.clone());
         let memory = report
             .findings
             .iter()
             .any(|f| f.kind == jitter::FindingKind::MemoryThrash && f.workload_id == culprit);
-        let alternative = match &culprit {
+        let (alternative, fallback) = match &culprit {
             Some(workload) => alternative(&snapshot, workload, memory).await,
-            None => None,
+            None => (None, None),
         };
+        // Protected apps are never offered a stop.
+        let alternative = alternative.filter(|a| !policy.protected(&a.process.workload_id));
+        let fallback = fallback.filter(|a| !policy.protected(&a.process.workload_id));
         if proposal.is_none() && alternative.is_none() {
             self.update(id, |c| c.transition(Stage::Completed, "Analysis complete. No in-app change fits these findings; review the suggestions."))?;
             return Ok(());
         }
-        // Never auto-applied, even when this workload has a saved permission.
+        // Never auto-applied, even when this app is in Background.
         self.update(id, |c| {
             c.proposal = proposal;
             c.alternative = alternative;
+            c.fallback = fallback;
             c.transition(
                 Stage::AwaitingApproval,
                 "A change is available for the culprit. It needs your approval.",
@@ -905,12 +965,8 @@ impl Runtime {
         Ok(())
     }
     /// Approval is for the stored proposal, never an arbitrary command supplied by a model or UI.
-    pub async fn apply(
-        self: &Arc<Self>,
-        id: u64,
-        approved: bool,
-        remember: bool,
-    ) -> Result<(), String> {
+    /// Approving a priority change moves the whole app to the Background bucket.
+    pub async fn apply(self: &Arc<Self>, id: u64, approved: bool) -> Result<(), String> {
         let _guard = self
             .action
             .try_lock()
@@ -925,6 +981,10 @@ impl Runtime {
         let proposal = case
             .proposal
             .ok_or("No supported optimization was proposed.")?;
+        let policy = self.policy()?;
+        if policy.protected(&proposal.process.workload_id) {
+            return Err("This app is Protected. Move it to Normal first.".into());
+        }
         let before = self.snapshot()?;
         if !before.processes.iter().any(|p| {
             p.pid == proposal.process.pid
@@ -934,7 +994,6 @@ impl Runtime {
             self.update(id, |c| c.transition(Stage::Resolved, "The proposed process exited or changed identity. No permission or action was applied."))?;
             return Ok(());
         }
-        let policy = self.policy()?;
         let past = case.origin != Origin::Automatic;
         if !past && !automation::still_present(&before, &policy, &case.trigger) {
             self.update(id, |c| {
@@ -948,38 +1007,23 @@ impl Runtime {
         if !approved && (past || !policy.allows(&proposal)) {
             return Err("This workload is not allowed to change priority automatically.".into());
         }
-        if remember {
+        // The app in front always runs at full speed: it joins Background now and enters
+        // background mode once you switch away from it.
+        if before.frontmost_workload.as_deref() == Some(proposal.process.workload_id.as_str()) {
             if !approved {
-                return Err("Only explicit user approval can add a permission.".into());
+                return Err("This app is in front; nothing was changed.".into());
             }
-            if past && !case.jitter.as_ref().is_some_and(|j| j.offer_permission) {
-                return Err(
-                    "A permission is offered only after this workload recurs in snapshots.".into(),
-                );
-            }
-            let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.")?;
-            if !settings
-                .automation
-                .rules
-                .iter()
-                .any(|r| r.workload_id == proposal.process.workload_id)
-            {
-                let mut next = settings.clone();
-                next.automation.rules.push(Rule {
-                    workload_id: proposal.process.workload_id.clone(),
-                    label: case
-                        .trigger
-                        .target
-                        .as_ref()
-                        .map(|t| t.label.clone())
-                        .unwrap_or_else(|| proposal.process.name.clone()),
-                });
-                next.validate()?;
-                storage::write(&self.directory.join("settings.json"), &next)?;
-                *settings = next;
-            }
+            let message = self
+                .move_blocking(
+                    &proposal.process.workload_id,
+                    Bucket::Background,
+                    bucket_source(&case.origin),
+                )
+                .await?;
+            self.update(id, |c| c.transition(Stage::Completed, &message))?;
+            return Ok(());
         }
-        self.update(id, |c| { c.automatic = !approved; c.transition(Stage::Applying, "Rechecking identity, ownership, current telemetry, and action policy before lowering priority."); })?;
+        self.update(id, |c| { c.automatic = !approved; c.transition(Stage::Applying, "Rechecking identity, ownership, current telemetry, and action policy before moving it to background mode."); })?;
         let result = self
             .apply_and_measure(
                 proposal.process.pid,
@@ -995,15 +1039,15 @@ impl Runtime {
                     .read()
                     .map_err(|_| "Telemetry unavailable.")?
                     .clone();
-                let verified = actions::priority(proposal.process.pid, proposal.process.start_time)
-                    .is_ok_and(|p| p >= 10);
+                // Read back from the kernel: the background flag plus a throttled base priority.
+                let verified = in_background(&proposal.process);
                 let mut verification = automation::verify(&before, &after, &report, verified);
                 if past {
                     // A past spike cannot be re-measured; readback and recurrence are the check.
                     verification.summary = if verified {
-                        "The OS confirms the lower priority. This was a past moment, so current CPU is not a measure of success. If it recurs, take another snapshot: Jitterbug counts how often this workload is implicated."
+                        "macOS confirms background mode. This was a past moment, so current CPU is not a measure of success. If it recurs, take another snapshot: Jitterbug counts how often this workload is implicated."
                     } else {
-                        "The priority change could not be confirmed by the OS. Review the process before trying again."
+                        "macOS did not confirm background mode. Review the process before trying again."
                     }
                     .into();
                 }
@@ -1018,6 +1062,10 @@ impl Runtime {
     }
     /// Approve the offered stop. Always an explicit choice: never automatic, never remembered.
     pub async fn stop(self: &Arc<Self>, id: u64) -> Result<(), String> {
+        self.stop_option(id, false).await
+    }
+    /// Approve the offered stop, or with `fallback` the firmer option offered after it.
+    pub async fn stop_option(self: &Arc<Self>, id: u64, fallback: bool) -> Result<(), String> {
         let _guard = self
             .action
             .try_lock()
@@ -1026,10 +1074,16 @@ impl Runtime {
         if case.source != "live" || case.stage != Stage::AwaitingApproval {
             return Err("This incident has no pending live action.".into());
         }
-        let stop = case
-            .alternative
-            .ok_or("No stop was offered for this incident.")?;
-        if matches!(stop.action.as_str(), "pause" | "close_tab") {
+        let stop = if fallback {
+            case.fallback
+        } else {
+            case.alternative
+        }
+        .ok_or("No stop was offered for this incident.")?;
+        if self.policy()?.protected(&stop.process.workload_id) {
+            return Err("This app is Protected. Move it to Normal first.".into());
+        }
+        if matches!(stop.action.as_str(), "pause" | "pause_tab" | "close_tab") {
             return self.granular(id, stop).await;
         }
         let before = self.snapshot()?;
@@ -1091,7 +1145,7 @@ impl Runtime {
             }
         }
     }
-    /// Pause a command session or close a tab, then measure with a fresh sample.
+    /// Pause a command session, or pause or close a tab, then measure with a fresh sample.
     async fn granular(
         self: &Arc<Self>,
         id: u64,
@@ -1103,12 +1157,15 @@ impl Runtime {
             .ok_or("The offered target is unavailable.")?;
         let before = self.snapshot()?;
         let pausing = option.action == "pause";
+        let tab_pause = option.action == "pause_tab";
         self.update(id, |c| {
             c.proposal = Some(option.clone());
             c.transition(
                 Stage::Applying,
                 if pausing {
                     "Rechecking ownership and pausing the whole command."
+                } else if tab_pause {
+                    "Checking the tab still shows the same page in the background, then pausing it."
                 } else {
                     "Checking the tab still shows the same page, then closing it."
                 },
@@ -1116,6 +1173,7 @@ impl Runtime {
         })?;
         let (pid, start) = (option.process.pid, option.process.start_time);
         let target = unit.clone();
+        let tab_action = option.action.clone();
         let result = tokio::task::spawn_blocking(move || {
             if pausing {
                 crate::pause::pause(pid, start, &target.title).map(|p| {
@@ -1127,7 +1185,7 @@ impl Runtime {
                     )
                 })
             } else {
-                crate::inside::chrome::act(&target.id, &target.detail, "close_tab")
+                crate::inside::chrome::act(&target.id, &target.detail, &tab_action)
             }
         })
         .await
@@ -1192,6 +1250,10 @@ impl Runtime {
                 "Paused. Its memory stays allocated until it resumes; macOS can compress or swap it meanwhile. Choose Resume when you want it back, or it resumes by itself in {} minutes.",
                 crate::pause::LIMIT_SECONDS / 60
             ),
+            (false, true) if tab_pause => format!(
+                "The tab is paused: its scripts and timers stop until you resume it, or by themselves in {} minutes. Its memory stays allocated; close the tab to free it.",
+                crate::pause::LIMIT_SECONDS / 60
+            ),
             (false, true) => "The tab is closed. The browser releases that renderer's memory shortly; compare available memory before and after.".into(),
         };
         self.update(id, |c| {
@@ -1201,6 +1263,8 @@ impl Runtime {
                 Stage::Completed,
                 if pausing {
                     "The command is paused and follow-up evidence is available."
+                } else if tab_pause {
+                    "The tab is paused and follow-up evidence is available."
                 } else {
                     "The tab was closed and follow-up evidence is available."
                 },
@@ -1224,14 +1288,37 @@ impl Runtime {
         if !policy.agent_control {
             return Err("Agent control is turned off in Jitterbug's settings.".into());
         }
-        let unit = option
-            .unit
-            .as_ref()
-            .ok_or("The request names no tab or session.")?;
-        let verb = if option.action == "pause" {
-            "pause"
+        // A Protected app is never targeted by an agent.
+        if workload.as_deref().is_some_and(|w| policy.protected(w))
+            || policy.protected(&option.process.workload_id)
+        {
+            return Err("The person marked this app Protected. Leave it as it is.".into());
+        }
+        let background = option.action == "lower_priority";
+        let (verb, subject, key) = if background {
+            let label = option
+                .impact
+                .as_ref()
+                .map_or_else(|| option.process.name.clone(), |i| i.label.clone());
+            (
+                "move",
+                label,
+                format!("agent:background:{}", option.process.workload_id),
+            )
         } else {
-            "close the tab"
+            let unit = option
+                .unit
+                .as_ref()
+                .ok_or("The request names no tab or session.")?;
+            (
+                match option.action.as_str() {
+                    "pause" => "pause",
+                    "pause_tab" => "pause the tab",
+                    _ => "close the tab",
+                },
+                unit.title.clone(),
+                format!("agent:{}:{}", option.action, unit.id),
+            )
         };
         // Agent text is untrusted: bounded, single-line, shown as a quotation.
         let clean = |text: &str, limit: usize| -> String {
@@ -1243,12 +1330,13 @@ impl Runtime {
                 .to_string()
         };
         let trigger = automation::Trigger {
-            key: format!("agent:{}:{}", option.action, unit.id),
+            key,
             kind: automation::Kind::AgentRequest,
             title: format!(
-                "{} asks to {verb} “{}”",
+                "{} asks to {verb} “{}”{}",
                 clean(requester, 60),
-                clean(&unit.title, 80)
+                clean(&subject, 80),
+                if background { " to Background" } else { "" }
             ),
             reason: format!("“{}”", clean(reason, 200)),
             target: workload.and_then(|id| {
@@ -1268,7 +1356,7 @@ impl Runtime {
                 .lock()
                 .map_err(|_| "Incident state unavailable.")?;
             // While the person has paused actions, even a reversible pause waits for them.
-            let automatic = option.action == "pause"
+            let automatic = matches!(option.action.as_str(), "pause" | "pause_tab")
                 && policy.agent_pause_without_asking
                 && book.monitor.snoozed_until <= now();
             // One open request per target, and a bounded rate, so a looping agent cannot
@@ -1299,7 +1387,12 @@ impl Runtime {
             let id = now().saturating_mul(1000).saturating_add(book.sequence);
             let mut case = Case::new(id, &snapshot, trigger);
             case.origin = automation::Origin::Agent;
-            case.alternative = Some(option);
+            // Moving to Background is the proposal the popup's Apply approves.
+            if background {
+                case.proposal = Some(option);
+            } else {
+                case.alternative = Some(option);
+            }
             case.transition(
                 Stage::AwaitingApproval,
                 if automatic {
@@ -1349,19 +1442,41 @@ impl Runtime {
         crate::pause::resume(pid, start_time)
     }
 
+    /// Resume a tab for an agent: only one an agent's request paused, and only that pause.
+    pub fn agent_resume_tab(&self, target_id: &str) -> Result<String, String> {
+        let paused_at = crate::inside::chrome::paused()
+            .into_iter()
+            .find(|p| p.target_id == target_id)
+            .map(|p| p.paused_at)
+            .ok_or("This tab is not paused. It may have resumed by itself or been closed.")?;
+        let requested = self
+            .cases()?
+            .iter()
+            .any(|c| c.origin == Origin::Agent && agent_paused_tab(c, target_id, paused_at));
+        if !requested {
+            return Err(
+                "Only tabs paused at an agent's request can be resumed by an agent. Ask the person to resume this one in Jitterbug.".into(),
+            );
+        }
+        crate::inside::chrome::resume(target_id)
+    }
+
     /// Current state of one incident, for an agent following its request.
     pub fn request(&self, id: u64) -> Result<Case, String> {
         self.case(id)
     }
 
-    /// Resume the command an incident paused.
+    /// Resume the command or tab an incident paused.
     pub fn resume(&self, id: u64) -> Result<String, String> {
         let case = self.case(id)?;
         let paused = case
             .proposal
-            .filter(|p| p.action == "pause")
+            .filter(|p| matches!(p.action.as_str(), "pause" | "pause_tab"))
             .ok_or("This incident paused nothing.")?;
-        let message = crate::pause::resume(paused.process.pid, paused.process.start_time)?;
+        let message = match (&paused.unit, paused.action.as_str()) {
+            (Some(tab), "pause_tab") => crate::inside::chrome::resume(&tab.id)?,
+            _ => crate::pause::resume(paused.process.pid, paused.process.start_time)?,
+        };
         self.update(id, |c| {
             c.steps.push(automation::Step {
                 at: now(),
@@ -1400,10 +1515,11 @@ impl Runtime {
             .ok_or("The process is no longer in the inventory.")?;
         let runtime = self.clone();
         let operation = action.to_string();
-        let message = tokio::task::spawn_blocking(move || {
+        let (message, origin) = tokio::task::spawn_blocking(move || {
             // Serialize policy changes with the last authorization check and the OS action.
             let settings = runtime.settings.lock().map_err(|_| "Settings unavailable.")?;
             let book = runtime.book.lock().map_err(|_| "Incident state unavailable.")?;
+            let mut origin = None;
             if let Some((id, automatic)) = incident {
                 let case = book.cases.iter().find(|c| c.id == id).ok_or("Incident unavailable.")?;
                 let proposal = case.proposal.as_ref().ok_or("Proposal unavailable.")?;
@@ -1419,10 +1535,35 @@ impl Runtime {
                     || !snapshot.processes.iter().any(|p| p.pid == pid && p.start_time == start_time && p.workload_id == proposal.process.workload_id && busy_enough(p)) {
                     return Err("The trigger or process activity changed. No action was applied.".into());
                 }
+                if settings.automation.protected(&proposal.process.workload_id) {
+                    return Err("This app is Protected. No action was applied.".into());
+                }
+                origin = (!automatic).then(|| case.origin.clone());
             }
-            actions::execute(pid, start_time, &operation)
+            actions::execute(pid, start_time, &operation).map(|message| (message, origin))
         }).await.map_err(|_| "The process action could not finish.")??;
         let applied_at = now();
+        if action == "lower_priority" {
+            self.priorities
+                .lock()
+                .map_err(|_| "Priority state unavailable.")?
+                .record(priorities::Change {
+                    pid,
+                    start_time,
+                    workload_id: before.workload_id.clone(),
+                    at: applied_at,
+                    case: incident.map(|(id, _)| id),
+                });
+            // An approved incident moves the whole app, including its other processes.
+            if let Some(origin) = origin {
+                self.move_blocking(
+                    &before.workload_id,
+                    Bucket::Background,
+                    bucket_source(&origin),
+                )
+                .await?;
+            }
+        }
         if let Some((id, _)) = incident {
             let sent = if action == "terminate" {
                 "Stop request sent."
@@ -1462,6 +1603,230 @@ impl Runtime {
             fresh,
         })
     }
+    /// Keeps each app's bucket true for one sample: new processes of Background apps enter
+    /// background mode; the app in front and Protected apps leave it. Cheap when nothing
+    /// changed: no OS calls unless the plan has work.
+    pub fn enforce_buckets(&self, sample: &Snapshot) -> Result<(), String> {
+        if sample.source != "live" || !sample.sample_ready {
+            return Ok(());
+        }
+        let policy = self.policy()?;
+        let plan = {
+            let mut ledger = self
+                .priorities
+                .lock()
+                .map_err(|_| "Priority state unavailable.")?;
+            ledger.retain_live(sample);
+            priorities::plan(sample, &policy, &ledger)
+        };
+        if plan.is_empty() {
+            return Ok(());
+        }
+        let identity = |targets: &[priorities::Target]| -> Vec<(u32, u64)> {
+            targets.iter().map(|t| (t.pid, t.start_time)).collect()
+        };
+        let cleared = actions::set_background(&identity(&plan.clear), false);
+        let applied = actions::set_background(&identity(&plan.apply), true);
+        let mut ledger = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority state unavailable.")?;
+        // Cleared or gone either way; a refused clear is not retried every sample.
+        for (target, _) in plan.clear.iter().zip(cleared) {
+            ledger.forget(target.pid, target.start_time);
+        }
+        for (target, result) in plan.apply.into_iter().zip(applied) {
+            match result {
+                Ok(()) => ledger.record(priorities::Change {
+                    pid: target.pid,
+                    start_time: target.start_time,
+                    workload_id: target.workload_id,
+                    at: now(),
+                    case: None,
+                }),
+                Err(actions::Refusal::Gone) => {}
+                Err(_) => ledger.refuse(target.pid, target.start_time),
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves an app to a bucket and applies it at once: Background puts its processes in
+    /// background mode (unless it is in front); Normal and Protected take every process
+    /// Jitterbug put there out of it.
+    pub fn move_to_bucket(
+        &self,
+        workload_id: &str,
+        bucket: Bucket,
+        source: AssignedBy,
+    ) -> Result<String, String> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .clone();
+        let label = {
+            let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.")?;
+            let label = snapshot
+                .workloads
+                .iter()
+                .find(|w| w.id == workload_id)
+                .map(|w| w.label.chars().take(80).collect::<String>())
+                .or_else(|| {
+                    settings
+                        .automation
+                        .buckets
+                        .iter()
+                        .find(|a| a.workload_id == workload_id)
+                        .map(|a| a.label.clone())
+                })
+                .ok_or("This app is not running. Nothing was changed.")?;
+            let mut next = settings.clone();
+            if next.automation.assign(Assignment {
+                workload_id: workload_id.into(),
+                label: label.clone(),
+                bucket,
+                since: now(),
+                source,
+            }) {
+                next.validate()?;
+                storage::write(&self.directory.join("settings.json"), &next)?;
+                *settings = next;
+            }
+            label
+        };
+        if bucket == Bucket::Background {
+            self.enforce_buckets(&snapshot)?;
+            if snapshot.frontmost_workload.as_deref() == Some(workload_id) {
+                return Ok(format!(
+                    "{label} is in Background. It stays at full speed while it is in front."
+                ));
+            }
+            return Ok(format!("Moved {label} to Background."));
+        }
+        let targets: Vec<(u32, u64)> = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority state unavailable.")?
+            .entries()
+            .iter()
+            .filter(|c| c.workload_id == workload_id)
+            .map(|c| (c.pid, c.start_time))
+            .collect();
+        let results = actions::set_background(&targets, false);
+        let mut ledger = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority state unavailable.")?;
+        let mut failed = 0;
+        for (&(pid, start_time), result) in targets.iter().zip(results) {
+            ledger.forget(pid, start_time);
+            if matches!(result, Err(actions::Refusal::Failed)) {
+                failed += 1;
+            }
+        }
+        let name = if bucket == Bucket::Protected {
+            "Protected"
+        } else {
+            "Normal"
+        };
+        if failed > 0 {
+            return Err(format!(
+                "Moved {label} to {name}, but macOS refused to restore {failed} of its processes. They return to normal when they quit."
+            ));
+        }
+        Ok(format!("Moved {label} to {name}."))
+    }
+
+    /// `move_to_bucket` off the async runtime: it scans processes and calls the OS.
+    pub async fn move_blocking(
+        self: &Arc<Self>,
+        workload_id: &str,
+        bucket: Bucket,
+        source: AssignedBy,
+    ) -> Result<String, String> {
+        let (runtime, workload) = (self.clone(), workload_id.to_string());
+        tokio::task::spawn_blocking(move || runtime.move_to_bucket(&workload, bucket, source))
+            .await
+            .map_err(|_| "The priority change could not finish.".to_string())?
+    }
+
+    /// Popup Undo: moves the app an incident moved to Background back to Normal.
+    pub fn undo_background(&self, case: u64) -> Result<String, String> {
+        let workload = self
+            .undoable(&self.case(case)?)
+            .ok_or("This app is no longer in Background.")?;
+        self.move_to_bucket(&workload, Bucket::Normal, AssignedBy::You)
+    }
+
+    /// The app a finished priority change put in Background, while it is still there.
+    pub fn undoable(&self, case: &Case) -> Option<String> {
+        let report = case.report.as_ref()?;
+        let workload = &case.proposal.as_ref()?.process.workload_id;
+        (report.action == "lower_priority"
+            && self.policy().ok()?.bucket(workload) == Bucket::Background)
+            .then(|| workload.clone())
+    }
+
+    /// Apps per bucket with when and why they were moved, for the Lab and Settings.
+    pub fn priorities(&self) -> Result<Priorities, String> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.")?
+            .clone();
+        let policy = self.policy()?;
+        let ledger = self
+            .priorities
+            .lock()
+            .map_err(|_| "Priority state unavailable.")?;
+        let row = |workload_id: &str, label: &str, assigned: Option<&Assignment>| AppPriority {
+            workload_id: workload_id.into(),
+            label: label.into(),
+            bucket: assigned.map_or(Bucket::Normal, |a| a.bucket),
+            since: assigned.map(|a| a.since),
+            source: assigned.map(|a| a.source),
+            running: snapshot.workloads.iter().any(|w| w.id == workload_id),
+            frontmost: snapshot.frontmost_workload.as_deref() == Some(workload_id),
+            affected: ledger.count(workload_id),
+        };
+        let listed = |bucket: Bucket| -> Vec<AppPriority> {
+            policy
+                .buckets
+                .iter()
+                .filter(|a| a.bucket == bucket)
+                .map(|a| row(&a.workload_id, &a.label, Some(a)))
+                .collect()
+        };
+        let mut running: Vec<&Workload> = snapshot
+            .workloads
+            .iter()
+            .filter(|w| {
+                policy.bucket(&w.id) == Bucket::Normal
+                    // A single unattributed process is named by its PID; it is not an app.
+                    && !w.id.starts_with("p-")
+                    && snapshot
+                        .processes
+                        .iter()
+                        .any(|p| p.workload_id == w.id && p.actions.iter().any(|a| a == "lower_priority"))
+            })
+            .collect();
+        running.sort_by(|a, b| {
+            (ledger.count(&b.id) > 0)
+                .cmp(&(ledger.count(&a.id) > 0))
+                .then(b.cpu_percent.total_cmp(&a.cpu_percent))
+        });
+        Ok(Priorities {
+            protected: listed(Bucket::Protected),
+            normal: running
+                .into_iter()
+                .take(NORMAL_LISTED)
+                .map(|w| row(&w.id, &w.label, None))
+                .collect(),
+            background: listed(Bucket::Background),
+        })
+    }
+
     pub fn spending(&self) -> Result<budget::Ledger, String> {
         self.engine.spending()
     }
@@ -1721,6 +2086,15 @@ impl Runtime {
     }
 }
 
+/// Whether this case paused the tab, and the tab's current pause (made at `paused_at`) is the
+/// one it made: the person may have resumed it and paused it again since.
+fn agent_paused_tab(case: &Case, target_id: &str, paused_at: u64) -> bool {
+    case.proposal.as_ref().is_some_and(|p| {
+        p.action == "pause_tab" && p.unit.as_ref().is_some_and(|u| u.id == target_id)
+    }) && (case.detected_at..=case.steps.last().map_or(case.detected_at, |s| s.at))
+        .contains(&paused_at)
+}
+
 fn secure_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| "Cannot create a secure restore preview token.")?;
@@ -1896,6 +2270,22 @@ mod tests {
         }
     }
 
+    /// Puts the fixture app in a bucket without touching any process.
+    fn put(f: &Fixture, bucket: Bucket) {
+        f.runtime
+            .settings
+            .lock()
+            .unwrap()
+            .automation
+            .assign(Assignment {
+                workload_id: "fixture".into(),
+                label: "Example".into(),
+                bucket,
+                since: 1,
+                source: AssignedBy::You,
+            });
+    }
+
     /// Agent control is opt-in; these tests turn it on as the person would in Settings.
     fn allow_agents(f: &Fixture) -> Policy {
         let mut policy = f.runtime.policy().unwrap();
@@ -2030,6 +2420,36 @@ mod tests {
         crate::pause::resume(pid, start).unwrap();
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn agents_resume_only_the_tab_pause_their_request_made() {
+        let mut case = automation::simulated_case(100).unwrap();
+        let process = case
+            .evidence
+            .as_ref()
+            .and_then(|e| e.processes.first())
+            .cloned()
+            .unwrap();
+        case.proposal = Some(automation::Proposal {
+            process,
+            action: "pause_tab".into(),
+            rationale: String::new(),
+            impact: None,
+            unit: Some(crate::inside::Unit {
+                id: "T1".into(),
+                kind: "tab".into(),
+                ..Default::default()
+            }),
+        });
+        let (start, end) = (case.detected_at, case.steps.last().unwrap().at);
+        assert!(agent_paused_tab(&case, "T1", start));
+        assert!(agent_paused_tab(&case, "T1", end));
+        assert!(!agent_paused_tab(&case, "T2", start));
+        // Paused again by the person after the request finished.
+        assert!(!agent_paused_tab(&case, "T1", end + 60));
+        case.proposal.as_mut().unwrap().action = "close_tab".into();
+        assert!(!agent_paused_tab(&case, "T1", start));
     }
 
     #[tokio::test]
@@ -2588,7 +3008,7 @@ mod tests {
         assert!(case.report.is_none());
         assert!(f
             .runtime
-            .apply(id, false, false)
+            .apply(id, false)
             .await
             .unwrap_err()
             .contains("not allowed"));
@@ -2610,7 +3030,7 @@ mod tests {
         let case = f.runtime.case(id).unwrap();
         assert_eq!(case.stage, Stage::Dismissed);
         assert!(case.diagnosis.is_none());
-        assert!(f.runtime.apply(id, true, false).await.is_err());
+        assert!(f.runtime.apply(id, true).await.is_err());
     }
     #[tokio::test]
     async fn cleared_trigger_or_changed_identity_never_saves_permission() {
@@ -2623,9 +3043,9 @@ mod tests {
                 next.processes[0].start_time += 1;
             }
             *f.runtime.snapshot.write().unwrap() = next;
-            f.runtime.apply(id, true, true).await.unwrap();
+            f.runtime.apply(id, true).await.unwrap();
             assert_eq!(f.runtime.case(id).unwrap().stage, Stage::Resolved);
-            assert!(f.runtime.policy().unwrap().rules.is_empty());
+            assert!(f.runtime.policy().unwrap().buckets.is_empty());
             assert!(f.runtime.case(id).unwrap().report.is_none());
         }
     }
@@ -2636,23 +3056,16 @@ mod tests {
             let id = f.incident();
             f.runtime.run(id).await;
             let mut p = f.runtime.policy().unwrap();
-            p.rules.push(Rule {
-                workload_id: "fixture".into(),
-                label: "Example".into(),
-            });
-            f.runtime.save_policy(p.clone()).unwrap();
+            put(&f, Bucket::Background);
             match mode {
                 "pause" => f.runtime.snooze(15).unwrap(),
                 "disable" => {
                     p.enabled = false;
                     f.runtime.save_policy(p).unwrap();
                 }
-                _ => {
-                    p.rules.clear();
-                    f.runtime.save_policy(p).unwrap();
-                }
+                _ => put(&f, Bucket::Normal),
             }
-            assert!(f.runtime.apply(id, false, false).await.is_err());
+            assert!(f.runtime.apply(id, false).await.is_err());
             assert!(f.runtime.case(id).unwrap().report.is_none());
         }
     }
@@ -2735,11 +3148,8 @@ mod tests {
         let f = Fixture::new();
         let mut p = f.runtime.policy().unwrap();
         p.max_investigations_per_hour = 1;
-        p.rules.push(Rule {
-            workload_id: "fixture".into(),
-            label: "Example".into(),
-        });
         f.runtime.save_policy(p).unwrap();
+        put(&f, Bucket::Background);
         let first = f.incident();
         f.runtime.run(first).await;
         // Dismissed, so the snapshot cannot join it. The automatic hourly cap is now spent;
@@ -2763,16 +3173,10 @@ mod tests {
         assert!(diagnosis.text.starts_with("What happened"));
         assert!(f
             .runtime
-            .apply(id, false, false)
+            .apply(id, false)
             .await
             .unwrap_err()
             .contains("not allowed"));
-        assert!(f
-            .runtime
-            .apply(id, true, true)
-            .await
-            .unwrap_err()
-            .contains("recurs"));
         assert_eq!(f.runtime.spending().unwrap().requests, 0);
         assert_eq!(tally.recurrence("Example"), 2);
         assert!(jitter::Tally::path(&f.directory).exists());
@@ -2940,7 +3344,7 @@ mod tests {
         f.runtime.run(id).await;
         // The workload is quiet now; a sustained-incident case would resolve instead of acting.
         *f.runtime.snapshot.write().unwrap() = sample(now(), 0.0);
-        assert!(f.runtime.apply(id, true, false).await.is_err());
+        assert!(f.runtime.apply(id, true).await.is_err());
         let case = f.runtime.case(id).unwrap();
         assert_eq!(case.stage, Stage::Blocked);
         assert!(case.steps.last().unwrap().message.contains("exited"));
@@ -2975,7 +3379,7 @@ mod tests {
         f.runtime.run(spike).await;
         let case = f.runtime.case(spike).unwrap();
         assert_eq!(case.stage, Stage::AwaitingApproval);
-        assert!(f.runtime.apply(spike, false, false).await.is_err());
+        assert!(f.runtime.apply(spike, false).await.is_err());
         // Spikes with nothing measured are dropped rather than interrupting the user.
         let quiet = jitter::tests::capture(|_, _| {});
         assert_eq!(f.runtime.spike(quiet).unwrap(), None);
@@ -2993,10 +3397,196 @@ mod tests {
         f.runtime.snapshot.write().unwrap().captured_at = now() - 30;
         assert!(f
             .runtime
-            .apply(id, true, true)
+            .apply(id, true)
             .await
             .unwrap_err()
             .contains("Fresh telemetry"));
-        assert!(f.runtime.policy().unwrap().rules.is_empty());
+        assert!(f.runtime.policy().unwrap().buckets.is_empty());
+    }
+
+    #[test]
+    fn legacy_rules_load_as_background_and_are_never_written_back() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(&f.directory).unwrap();
+        let path = f.directory.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"automation": {"rules": [{"workload_id": "w-1", "label": "Example"}]}}"#,
+        )
+        .unwrap();
+        let loaded: settings::Settings = storage::read(&path).unwrap();
+        loaded.validate().unwrap();
+        assert!(loaded.automation.rules.is_empty());
+        let migrated = &loaded.automation.buckets[0];
+        assert_eq!(
+            (migrated.workload_id.as_str(), migrated.label.as_str()),
+            ("w-1", "Example")
+        );
+        assert_eq!(migrated.bucket, Bucket::Background);
+        assert_eq!(migrated.source, AssignedBy::MigratedRule);
+        assert!(loaded.automation.allows(&automation::Proposal {
+            process: ProcessRecord {
+                workload_id: "w-1".into(),
+                ..Default::default()
+            },
+            action: "lower_priority".into(),
+            rationale: String::new(),
+            impact: None,
+            unit: None,
+        }));
+        let written = serde_json::to_string(&loaded).unwrap();
+        assert!(!written.contains("\"rules\""), "{written}");
+        // A settings form sent without buckets, or with old rules, cannot change them.
+        let f = Fixture::new();
+        put(&f, Bucket::Protected);
+        let mut stale = Policy::default();
+        stale.rules.push(automation::Rule {
+            workload_id: "other".into(),
+            label: "Other".into(),
+        });
+        f.runtime.save_policy(stale).unwrap();
+        let policy = f.runtime.policy().unwrap();
+        assert!(policy.rules.is_empty());
+        assert_eq!(policy.bucket("fixture"), Bucket::Protected);
+        assert_eq!(policy.bucket("other"), Bucket::Normal);
+    }
+
+    #[tokio::test]
+    async fn protected_apps_are_never_proposed_or_requested_by_agents() {
+        let f = Fixture::new();
+        put(&f, Bucket::Protected);
+        let id = f.incident();
+        f.runtime.run(id).await;
+        let case = f.runtime.case(id).unwrap();
+        assert!(case.proposal.is_none() && case.alternative.is_none());
+        assert_eq!(case.stage, Stage::Completed);
+        allow_agents(&f);
+        let mut background = agent_option("a");
+        background.action = "lower_priority".into();
+        background.unit = None;
+        for option in [agent_option("a"), background.clone()] {
+            let error = f
+                .runtime
+                .agent_request(option, Some("fixture".into()), "An agent", "busy")
+                .await
+                .unwrap_err();
+            assert!(error.contains("Protected"), "{error}");
+        }
+        // Normal again: the request waits for the person, as the popup's Apply.
+        put(&f, Bucket::Normal);
+        let case = f
+            .runtime
+            .agent_request(background, Some("fixture".into()), "An agent", "busy")
+            .await
+            .unwrap();
+        assert_eq!(case.stage, Stage::AwaitingApproval);
+        assert_eq!(
+            case.trigger.title,
+            "An agent asks to move “Example” to Background"
+        );
+        assert_eq!(case.proposal.unwrap().action, "lower_priority");
+        assert!(case.alternative.is_none() && case.report.is_none());
+        assert!(f.runtime.policy().unwrap().buckets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn undo_moves_the_app_an_incident_moved_back_to_normal() {
+        let f = Fixture::new();
+        let id = f.incident();
+        f.runtime.run(id).await;
+        let case = f.runtime.case(id).unwrap();
+        assert!(f.runtime.undoable(&case).is_none());
+        let process = case.proposal.unwrap().process;
+        f.runtime
+            .update(id, |c| {
+                c.report = Some(ActionReport {
+                    action: "lower_priority".into(),
+                    message: String::new(),
+                    before: process,
+                    after: None,
+                    measured_after_seconds: 6,
+                    fresh: true,
+                })
+            })
+            .unwrap();
+        f.runtime
+            .move_to_bucket("fixture", Bucket::Background, AssignedBy::You)
+            .unwrap();
+        let listed = f.runtime.priorities().unwrap();
+        assert_eq!(listed.background[0].label, "Example");
+        assert_eq!(listed.background[0].source, Some(AssignedBy::You));
+        assert!(listed.normal.is_empty());
+        assert_eq!(
+            f.runtime.undoable(&f.runtime.case(id).unwrap()).as_deref(),
+            Some("fixture")
+        );
+        assert_eq!(
+            f.runtime.undo_background(id).unwrap(),
+            "Moved Example to Normal."
+        );
+        let listed = f.runtime.priorities().unwrap();
+        assert!(listed.background.is_empty());
+        assert_eq!(listed.normal[0].label, "Example");
+        assert!(listed.normal[0].since.is_none());
+        assert!(f.runtime.undo_background(id).is_err());
+        // Persisted, so a restart keeps the bucket.
+        f.runtime
+            .move_to_bucket("fixture", Bucket::Protected, AssignedBy::You)
+            .unwrap();
+        let saved: settings::Settings = storage::read(&f.directory.join("settings.json")).unwrap();
+        assert_eq!(saved.automation.bucket("fixture"), Bucket::Protected);
+        assert!(f
+            .runtime
+            .move_to_bucket("gone", Bucket::Background, AssignedBy::You)
+            .is_err());
+    }
+
+    /// Runs real background-mode changes, only on processes this test starts.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn buckets_follow_new_processes_the_front_app_and_process_identity() {
+        use crate::actions::tests::Child;
+        use crate::platform::in_background;
+        let (_first, a, a_start) = Child::spawn();
+        let (_second, b, b_start) = Child::spawn();
+        let f = Fixture::new();
+        let process = |pid, start_time| ProcessRecord {
+            pid,
+            start_time,
+            name: "python-bg-test".into(),
+            workload_id: "fixture".into(),
+            actions: vec!["lower_priority".into()],
+            ..Default::default()
+        };
+        let mut s = sample(now(), 1.0);
+        // The second process has a different start time here: its PID names someone else.
+        s.processes = vec![process(a, a_start), process(b, b_start + 1)];
+        *f.runtime.snapshot.write().unwrap() = s.clone();
+        f.runtime
+            .move_to_bucket("fixture", Bucket::Background, AssignedBy::You)
+            .unwrap();
+        assert_eq!(in_background(a, a_start), Some(true));
+        assert_eq!(in_background(b, b_start), Some(false));
+        assert_eq!(f.runtime.priorities().unwrap().background[0].affected, 1);
+        // The app comes to the front: it runs at full speed until it leaves.
+        s.frontmost_workload = Some("fixture".into());
+        f.runtime.enforce_buckets(&s).unwrap();
+        assert_eq!(in_background(a, a_start), Some(false));
+        // It leaves the front, and a process it started later appears.
+        s.frontmost_workload = None;
+        s.processes[1].start_time = b_start;
+        f.runtime.enforce_buckets(&s).unwrap();
+        assert_eq!(in_background(a, a_start), Some(true));
+        assert_eq!(in_background(b, b_start), Some(true));
+        assert_eq!(f.runtime.priorities().unwrap().background[0].affected, 2);
+        // Protected takes every process Jitterbug moved out of background mode.
+        f.runtime
+            .move_to_bucket("fixture", Bucket::Protected, AssignedBy::You)
+            .unwrap();
+        assert_eq!(in_background(a, a_start), Some(false));
+        assert_eq!(in_background(b, b_start), Some(false));
+        f.runtime.enforce_buckets(&s).unwrap();
+        assert_eq!(in_background(a, a_start), Some(false));
+        assert_eq!(f.runtime.priorities().unwrap().protected[0].affected, 0);
     }
 }

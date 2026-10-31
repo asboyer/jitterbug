@@ -4,20 +4,69 @@ import type {
     AutomationCase,
     Bootstrap,
     InsideView,
+    ProcessLabel,
+    ProcessRecord,
     Snapshot,
     Workload,
     WorkloadDetails,
 } from './types';
 
-export function demoDetails(snapshot: Snapshot, id: string): WorkloadDetails {
+/** Synthetic helper processes, so the demo shows processes named by tab, session, or role. */
+function demoMembers(snapshot: Snapshot, id: string): ProcessRecord[] {
+    const main = snapshot.processes.find((p) => p.workload_id === id)!;
+    const mib = 1024 ** 2;
+    const helper = (pid: number, name: string, cpu: number, mem: number, parent = main.pid) => ({
+        ...main,
+        pid,
+        parent_pid: parent,
+        name,
+        cpu_percent: cpu,
+        memory_bytes: mem * mib,
+    });
+    const renderer = 'Example Browser Helper (Renderer)';
+    if (id === 'demo-browser')
+        return [
+            helper(9101, renderer, 2.4, 380),
+            helper(9102, renderer, 1.1, 260),
+            helper(9103, renderer, 0.1, 190),
+            helper(9104, 'Example Browser Helper (GPU)', 0.8, 150),
+            helper(main.pid, main.name, 0.4, 120, 1),
+            helper(9105, 'Example Browser Helper', 0.1, 40),
+            helper(9106, 'Example Browser Helper', 0.1, 30),
+            helper(9107, renderer, 0, 60),
+        ];
+    if (id === 'demo-editor')
+        return [
+            helper(9203, 'npm', 1.2, 520, 9202),
+            helper(9204, 'node', 0.9, 350, 9203),
+            helper(9206, 'claude', 0.5, 330, 9205),
+            helper(main.pid, main.name, 0.2, 180, 1),
+            helper(9201, 'Example Editor Helper (Renderer)', 0.2, 160),
+            helper(9202, 'zsh', 0, 8),
+            helper(9205, 'zsh', 0, 8),
+            helper(9207, 'zsh', 0, 7),
+            helper(9208, 'zsh', 0, 7),
+        ];
+    return [main];
+}
+
+export function demoDetails(
+    snapshot: Snapshot,
+    id: string,
+    selected: { pid: number; start_time: number } | null = null
+): WorkloadDetails {
     const workload = snapshot.workloads.find((w) => w.id === id)!;
-    const process = snapshot.processes.find((p) => p.workload_id === id)!;
+    const members = demoMembers(snapshot, id);
+    const main = snapshot.processes.find((p) => p.workload_id === id)!;
+    const process =
+        members.find((p) => p.pid === selected?.pid && p.start_time === selected.start_time) ??
+        members.find((p) => p.pid === main.pid)!;
     return {
         captured_at: snapshot.captured_at,
         workload,
         process,
-        members: [process],
-        member_count: 1,
+        members,
+        member_count: members.length,
         independent_roots: 1,
         application: null,
         can_generate_profile: false,
@@ -201,7 +250,7 @@ export const demoBootstrap: Bootstrap = {
             sustained_samples: 3,
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,
-            rules: [],
+            buckets: [],
             jitter_mode: 'auto',
             action_popups: true,
             auto_snapshots: false,
@@ -410,9 +459,9 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
                 : null,
         alternative: !process
             ? null
-            : example === 'tab' || example === 'agent'
+            : example === 'tab'
               ? {
-                    action: 'close_tab',
+                    action: 'pause_tab',
                     process,
                     impact: {
                         label: 'Video call tab',
@@ -421,29 +470,60 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
                         process_count: 1,
                         whole_app: false,
                     },
-                    closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                    closes: 'Pause the “Video call” tab (meet.example.com). Its scripts, timers, and media stop until you resume it (automatically after 15 minutes); nothing is closed. Its memory stays allocated. The rest of Example Browser keeps running.',
                     unit: { title: 'Video call', kind: 'tab' },
                 }
-              : example === 'pause'
+              : example === 'agent'
                 ? {
-                      action: 'pause',
+                      action: 'close_tab',
                       process,
                       impact: {
-                          label: 'claude · feat-search in Example Editor',
-                          workload_cpu_percent: 31,
-                          workload_memory_bytes: 2.1 * 1024 ** 3,
-                          process_count: 7,
+                          label: 'Video call tab',
+                          workload_cpu_percent: 9.4,
+                          workload_memory_bytes: 640 * 1024 ** 2,
+                          process_count: 1,
                           whole_app: false,
                       },
-                      closes: 'Pause claude · feat-search in Example Editor: its 7 processes stop using CPU until you resume it (automatically after 15 minutes). Nothing is closed.',
-                      unit: { title: 'claude · feat-search in Example Editor', kind: 'session' },
+                      closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                      unit: { title: 'Video call', kind: 'tab' },
                   }
-                : {
-                      action: 'terminate',
+                : example === 'pause'
+                  ? {
+                        action: 'pause',
+                        process,
+                        impact: {
+                            label: 'claude · feat-search in Example Editor',
+                            workload_cpu_percent: 31,
+                            workload_memory_bytes: 2.1 * 1024 ** 3,
+                            process_count: 7,
+                            whole_app: false,
+                        },
+                        closes: 'Pause claude · feat-search in Example Editor: its 7 processes stop using CPU until you resume it (automatically after 15 minutes). Nothing is closed.',
+                        unit: { title: 'claude · feat-search in Example Editor', kind: 'session' },
+                    }
+                  : {
+                        action: 'terminate',
+                        process,
+                        impact: impact ? { ...impact, whole_app: true } : null,
+                        closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
+                    },
+        // Closing is offered after pausing, never in its place.
+        fallback:
+            process && example === 'tab'
+                ? {
+                      action: 'close_tab',
                       process,
-                      impact: impact ? { ...impact, whole_app: true } : null,
-                      closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
-                  },
+                      impact: {
+                          label: 'Video call tab',
+                          workload_cpu_percent: 9.4,
+                          workload_memory_bytes: 640 * 1024 ** 2,
+                          process_count: 1,
+                          whole_app: false,
+                      },
+                      closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                      unit: { title: 'Video call', kind: 'tab' },
+                  }
+                : null,
         report: null,
         verification: null,
         origin: example === 'agent' ? 'agent' : 'automatic',
@@ -452,15 +532,24 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
     };
 }
 
-export function demoInside(workload: Workload): InsideView {
+export function demoInside(workload: Workload, snapshot: Snapshot): InsideView {
     const mib = 1024 ** 2;
+    const members = demoMembers(snapshot, workload.id);
+    const named = (pid: number, title: string, subtitle = ''): ProcessLabel => ({
+        pid,
+        start_time: members.find((p) => p.pid === pid)?.start_time ?? 0,
+        title,
+        subtitle,
+    });
     const tab = (
         id: string,
         title: string,
         host: string,
         cpu: number,
         mem: number,
-        shared = 0
+        shared = 0,
+        pid: number | null = null,
+        pausedUntil: number | null = null
     ) => ({
         id,
         kind: 'tab' as const,
@@ -471,12 +560,16 @@ export function demoInside(workload: Workload): InsideView {
         memory_bytes: mem * mib,
         process_count: 1,
         shared_with: shared,
-        pid: null,
-        start_time: null,
-        actions: ['focus_tab', 'close_tab'],
+        pid,
+        start_time: pid === null ? null : (members[0]?.start_time ?? null),
+        actions: pausedUntil
+            ? ['resume_tab', 'close_tab']
+            : pid === null
+              ? ['focus_tab', 'close_tab']
+              : ['focus_tab', 'pause_tab', 'close_tab'],
         evidence: ['Synthetic example: no browser was contacted.'],
         confidence: 'Matched by CPU time',
-        paused_until: null,
+        paused_until: pausedUntil,
     });
     const session = (
         id: string,
@@ -485,9 +578,10 @@ export function demoInside(workload: Workload): InsideView {
         cpu: number,
         mem: number,
         detail: string,
-        actions: string[]
+        actions: string[],
+        pid: number
     ) => ({
-        ...tab(id, title, host, cpu, mem),
+        ...tab(id, title, host, cpu, mem, 0, pid),
         kind: 'session' as const,
         detail,
         process_count: 4,
@@ -508,21 +602,34 @@ export function demoInside(workload: Workload): InsideView {
             measured_seconds: 0,
             captured_at: Math.floor(Date.now() / 1000),
             limits: '',
+            labels: [],
         };
     return {
         workload_id: workload.id,
         source: browser ? 'Browser DevTools' : 'Process tree',
         status: 'ready',
         message: browser
-            ? '4 tabs measured over one second.'
+            ? '5 tabs measured over one second.'
             : '2 commands running inside the app.',
         setup: [],
         units: browser
             ? [
-                  tab('d1', 'Video call', 'meet.example.com', 9.4, 640),
-                  tab('d2', 'Browser game', 'games.example.com', 6.1, 410),
-                  tab('d3', 'Docs', 'docs.example.com', 0.2, 180, 1),
-                  tab('d4', 'Mail', 'mail.example.com', 0.1, 150, 1),
+                  tab('d1', 'Video call', 'meet.example.com', 9.4, 640, 0, 9101),
+                  tab('d2', 'Browser game', 'games.example.com', 6.1, 410, 0, 9102),
+                  tab('d3', 'Docs', 'docs.example.com', 0.2, 180, 1, 9103),
+                  tab('d4', 'Mail', 'mail.example.com', 0.1, 150, 1, 9103),
+                  tab(
+                      'd7',
+                      'News live blog',
+                      'news.example.com',
+                      0,
+                      220,
+                      0,
+                      9108,
+                      Math.floor(Date.now() / 1000) + 11 * 60
+                  ),
+                  tab('d5', 'Recipes', 'recipes.example.com', 0, 0),
+                  tab('d6', 'Travel plans', 'travel.example.com', 0, 0),
               ]
             : [
                   session(
@@ -532,7 +639,8 @@ export function demoInside(workload: Workload): InsideView {
                       11.5,
                       870,
                       '~/example/sample-web-app',
-                      ['pause', 'lower_priority', 'terminate']
+                      ['pause', 'lower_priority', 'terminate'],
+                      9203
                   ),
                   session(
                       's1',
@@ -541,7 +649,8 @@ export function demoInside(workload: Workload): InsideView {
                       3.2,
                       520,
                       '~/example/repo.worktrees/feat-search',
-                      ['pause']
+                      ['pause'],
+                      9206
                   ),
               ],
         remainder: [
@@ -555,5 +664,32 @@ export function demoInside(workload: Workload): InsideView {
         measured_seconds: browser ? 1 : 0,
         captured_at: Math.floor(Date.now() / 1000),
         limits: 'Measurements are illustrative.',
+        labels: browser
+            ? [
+                  named(9101, 'Video call', 'meet.example.com'),
+                  named(9102, 'Browser game', 'games.example.com'),
+                  named(9103, '2 tabs: Docs, Mail', 'docs.example.com, mail.example.com'),
+                  named(9104, 'Graphics (shared by all tabs)', 'Draws every tab on screen'),
+                  named(9105, 'Network & storage', 'Network, storage, audio, and utility services'),
+                  named(9106, 'Network & storage', 'Network, storage, audio, and utility services'),
+                  named(9107, 'Extensions', 'Extensions, background pages, and workers'),
+                  named(
+                      members[4]?.pid ?? 0,
+                      'Browser window',
+                      'Windows, tab strip, and downloads'
+                  ),
+              ]
+            : [
+                  ...[9202, 9203, 9204].map((pid) =>
+                      named(pid, 'npm · sample-web-app', 'Command session')
+                  ),
+                  ...[9205, 9206].map((pid) =>
+                      named(pid, 'Claude Code session · feat-search', 'Coding agent session')
+                  ),
+                  named(9207, 'Idle shell', 'A terminal shell with nothing running in it'),
+                  named(9208, 'Idle shell', 'A terminal shell with nothing running in it'),
+                  named(9201, 'Window or extension', 'Draws a window, panel, or web view'),
+                  named(members[3]?.pid ?? 0, 'App window', 'The app’s main process'),
+              ],
     };
 }

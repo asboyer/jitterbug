@@ -213,6 +213,43 @@ fn task_cpu_ns(pid: u32) -> Option<u64> {
     ticks_to_ns(task.pti_total_user.saturating_add(task.pti_total_system))
 }
 
+/// Set on a process another process put in background mode with
+/// `setpriority(PRIO_DARWIN_PROCESS, pid, PRIO_DARWIN_BG)`. XNU's private `proc_info.h`
+/// defines it; `getpriority(PRIO_DARWIN_PROCESS)` does not report this state for other processes.
+const PROC_FLAG_EXT_DARWINBG: u32 = 0x10000;
+/// The base priority XNU gives a task in background mode (`MAXPRI_THROTTLE`).
+const MAXPRI_THROTTLE: i32 = 4;
+
+/// Background-mode readback, only while the start time still matches: whether background mode
+/// was set from outside (the kernel flag) and the task's base priority.
+pub fn background_state(pid: u32, start_time: u64) -> Option<(bool, i32)> {
+    let bsd = bsd_info(pid)?;
+    if bsd.pbi_start_tvsec != start_time {
+        return None;
+    }
+    let mut task: libc::proc_taskinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&mut task as *mut libc::proc_taskinfo).cast(),
+            size,
+        )
+    };
+    (read == size).then_some((
+        bsd.pbi_flags & PROC_FLAG_EXT_DARWINBG != 0,
+        task.pti_priority,
+    ))
+}
+
+/// Background mode holds when the flag is set and the base priority is throttled, so a stale
+/// or misread flag alone never counts as confirmation.
+pub fn in_background(pid: u32, start_time: u64) -> Option<bool> {
+    background_state(pid, start_time).map(|(flag, base)| flag && base <= MAXPRI_THROTTLE)
+}
+
 /// Total CPU time of one process in nanoseconds, only while its start time still matches.
 /// Two `proc_pidinfo` calls; processes owned by other users are unavailable without privileges.
 pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {

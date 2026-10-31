@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, untrack } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import Icon from './Icon.svelte';
@@ -7,23 +7,33 @@
     import { errorMessage } from '../lib/format';
     import {
         actionResult,
+        backgroundAfter,
+        backgroundLabel,
         helperNote,
         incidentObservation,
         incidentOutcome,
-        noticeTitle,
         nowLine,
-        priorityAfter,
+        popupTitle,
         snapshotBadge,
         stopAfter,
         stopLabel,
         stopWarning,
     } from '../lib/incidents';
-    import type { ActionPopupCase, ActionPopupPayload, AutomationStage } from '../lib/types';
+    import type {
+        ActionPopupCase,
+        ActionPopupOption,
+        ActionPopupPayload,
+        AutomationStage,
+    } from '../lib/types';
 
-    const desktop = isTauri();
+    // A preset renders one fixed example (the Lab's gallery): played locally, never applied.
+    let { preset = null }: { preset?: ActionPopupPayload | null } = $props();
+    const fixed = untrack(() => preset);
+    const desktop = isTauri() && !fixed;
     const finished: AutomationStage[] = ['completed', 'resolved', 'blocked'];
     let payload = $state<ActionPopupPayload | null>(
-        desktop ? null : demoActionPopup(new URLSearchParams(location.search).get('example'))
+        fixed ??
+            (desktop ? null : demoActionPopup(new URLSearchParams(location.search).get('example')))
     );
     const capture = $derived(payload?.kind === 'capturing' ? payload : null);
     const popup = $derived(payload?.kind === 'case' ? payload : null);
@@ -34,6 +44,10 @@
     let hovering = $state(false);
     // A stop needs a second click within a few seconds.
     let confirming = $state(false);
+    // Closing a tab offered after pausing it needs its own second click.
+    let confirmingFallback = $state(false);
+    // Undo moved the app this result put in Background back to Normal.
+    let restored = $state(false);
     let timers: ReturnType<typeof setTimeout>[] = [];
     const shown = $derived(example && example.id === popup?.id ? example : popup);
     const asking = $derived(shown?.stage === 'awaiting_approval');
@@ -49,10 +63,14 @@
             ? actionResult(shown.report, shown.verification, shown.proposal, victim)
             : null
     );
+    const undo = $derived(done && !restored && !!shown?.report?.undo);
+    const app = $derived(
+        shown?.proposal?.impact?.label ?? shown?.report?.process ?? shown?.proposal?.process.name
+    );
     // The option the numbers describe: the priority change if offered, else the stop.
     const subject = $derived(shown ? (shown.proposal ?? shown.alternative) : null);
     const stopping = $derived(
-        ['terminate', 'pause', 'close_tab'].includes(shown?.proposal?.action ?? '')
+        ['terminate', 'pause', 'pause_tab', 'close_tab'].includes(shown?.proposal?.action ?? '')
     );
     const title = $derived.by(() => {
         if (!shown) return '';
@@ -60,17 +78,18 @@
             case 'applying':
                 return stopping
                     ? `${stopLabel(shown.proposal!).replace(/^(Quit|Stop|Pause|Close)/, (verb) => ({ Quit: 'Quitting', Stop: 'Stopping', Pause: 'Pausing', Close: 'Closing' })[verb] ?? verb)}…`
-                    : 'Applying the priority change…';
+                    : `Moving ${app ?? 'the app'} to Background…`;
             case 'verifying':
                 return 'Checking the result…';
             case 'completed':
-                return result?.title ?? noticeTitle(shown);
+                if (restored) return `Moved ${app ?? 'the app'} back to Normal`;
+                return result?.title ?? popupTitle(shown);
             case 'resolved':
                 return 'No change was needed';
             case 'blocked':
                 return 'Jitterbug couldn’t finish this step';
             default:
-                return noticeTitle(shown);
+                return popupTitle(shown);
         }
     });
 
@@ -107,7 +126,8 @@
         if (next?.id !== payload?.id) {
             error = '';
             example = null;
-            confirming = false;
+            confirming = confirmingFallback = false;
+            restored = false;
             stopTimers();
         }
         payload = next;
@@ -143,7 +163,7 @@
             error = errorMessage(cause);
         }
     }
-    async function apply(remember: boolean) {
+    async function apply() {
         if (!shown || !asking || busy) return;
         error = '';
         if (shown.source !== 'live') {
@@ -152,8 +172,27 @@
         }
         busy = true;
         try {
-            // The stored proposal is rechecked against fresh process identity before acting.
-            await invoke('approve_optimization', { id: shown.id, remember });
+            // The stored proposal is rechecked against fresh process identity before acting;
+            // approving moves the app to Background.
+            await invoke('approve_optimization', { id: shown.id });
+        } catch (cause) {
+            error = errorMessage(cause);
+        } finally {
+            busy = false;
+        }
+    }
+    async function restore() {
+        if (!undo || !shown || busy) return;
+        error = '';
+        if (shown?.source !== 'live') {
+            restored = true;
+            return;
+        }
+        busy = true;
+        try {
+            // Moves the app back to Normal; each process is rechecked before it changes.
+            await invoke('undo_background', { id: shown.id });
+            restored = true;
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
@@ -172,32 +211,33 @@
             busy = false;
         }
     }
-    async function stop() {
-        if (!shown?.alternative || !asking || busy) return;
-        if (!confirming) {
-            confirming = true;
-            timers.push(setTimeout(() => (confirming = false), 5000));
+    async function stop(fallback = false) {
+        const option = fallback ? shown?.fallback : shown?.alternative;
+        if (!shown || !option || !asking || busy) return;
+        if (!(fallback ? confirmingFallback : confirming)) {
+            if (fallback) confirmingFallback = true;
+            else confirming = true;
+            timers.push(setTimeout(() => (confirming = confirmingFallback = false), 5000));
             return;
         }
-        confirming = false;
+        confirming = confirmingFallback = false;
         error = '';
         if (shown.source !== 'live') {
-            playStopExample(shown);
+            playStopExample(shown, option);
             return;
         }
         busy = true;
         try {
             // Only the offered process is stopped, after fresh identity and policy rechecks.
-            await invoke('approve_stop', { id: shown.id });
+            await invoke('approve_stop', { id: shown.id, fallback });
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
             busy = false;
         }
     }
-    function playStopExample(base: ActionPopupCase) {
+    function playStopExample(base: ActionPopupCase, option: ActionPopupOption) {
         stopTimers();
-        const option = base.alternative!;
         example = { ...base, proposal: option, stage: 'applying' };
         timers.push(
             setTimeout(() => {
@@ -246,6 +286,7 @@
                         cpu_after: 12.4,
                         memory_before: base.proposal?.process.memory_bytes ?? 0,
                         memory_after: base.proposal?.process.memory_bytes ?? 0,
+                        undo: true,
                     },
                     verification: {
                         priority_verified: true,
@@ -297,7 +338,12 @@
                 onclick={() => close()}>×</button
             >
         </header>
-        <h2>{title}</h2>
+        {#if undo}<h2 class="with-undo">
+                <span>{title}</span> ·
+                <button class="text-button" disabled={busy} onclick={restore}
+                    >{busy ? 'Undoing…' : 'Undo'}</button
+                >
+            </h2>{:else}<h2>{title}</h2>{/if}
         {#if asking && shown.trigger.reason}<p class="note clamp">
                 Reason given: {shown.trigger.reason}
             </p>{/if}
@@ -308,10 +354,12 @@
             <ul class="options">
                 {#if shown.proposal}<li>
                         <div>
-                            <strong>Lower priority</strong>
-                            <span>{priorityAfter(victim)}</span>
+                            <strong title={backgroundLabel(shown.proposal)}
+                                >{backgroundLabel(shown.proposal)}</strong
+                            >
+                            <span>{backgroundAfter(victim)}</span>
                         </div>
-                        <button class="primary" disabled={busy} onclick={() => apply(false)}
+                        <button class="primary" disabled={busy} onclick={apply}
                             >{busy ? 'Applying…' : 'Apply'}</button
                         >
                     </li>{/if}
@@ -327,19 +375,31 @@
                                     >{stopWarning(shown.alternative)}</span
                                 >{/if}
                         </div>
-                        <button class:danger={confirming} disabled={busy} onclick={stop}
-                            >{confirming
-                                ? 'Confirm'
-                                : shown.alternative.action === 'pause'
-                                  ? 'Pause…'
-                                  : shown.alternative.action === 'close_tab'
-                                    ? 'Close…'
-                                    : shown.alternative.impact?.whole_app
-                                      ? 'Quit…'
-                                      : 'Stop…'}</button
-                        >
+                        <div class="choices">
+                            <button class:danger={confirming} disabled={busy} onclick={() => stop()}
+                                >{confirming
+                                    ? 'Confirm'
+                                    : ['pause', 'pause_tab'].includes(shown.alternative.action)
+                                      ? 'Pause…'
+                                      : shown.alternative.action === 'close_tab'
+                                        ? 'Close…'
+                                        : shown.alternative.impact?.whole_app
+                                          ? 'Quit…'
+                                          : 'Stop…'}</button
+                            >
+                            <!-- Closing the tab is offered second, in the same row. -->
+                            {#if shown.fallback}<button
+                                    class:danger={confirmingFallback}
+                                    disabled={busy}
+                                    title={`${stopLabel(shown.fallback)}. ${stopAfter(shown.fallback)}`}
+                                    onclick={() => stop(true)}
+                                    >{confirmingFallback ? 'Confirm' : 'Close…'}</button
+                                >{/if}
+                        </div>
                     </li>{/if}
             </ul>
+        {:else if restored}
+            <p class="reason outcome">It competes for CPU and disk as before.</p>
         {:else if result}
             <p class="proposal">{result.meaning}</p>
             <p class="measured">{result.measured}</p>
@@ -359,17 +419,12 @@
         {:else}
             <p class="reason outcome">{incidentOutcome(shown)}</p>
         {/if}
-        {#if error}<p class="error" role="alert">
+        {#if error}<p class="error" role="alert" title={error}>
                 {error}
             </p>{:else if asking && shown.source !== 'live'}<p class="note">
                 Example only. Nothing will be applied.
             </p>{/if}
         <div class="actions">
-            {#if asking && shown.proposal?.action === 'lower_priority'}<button
-                    class="text-button"
-                    disabled={busy}
-                    onclick={() => apply(true)}>Always lower for this app</button
-                >{/if}
             <span class="links">
                 <button class="text-button" disabled={!desktop || busy} onclick={details}
                     >{done && !shown.report ? 'Review' : 'Details'}</button
@@ -451,6 +506,21 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
+    .with-undo {
+        display: flex;
+        align-items: baseline;
+        gap: 4px;
+    }
+    .with-undo span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .with-undo button {
+        font-size: 13px;
+        padding: 0 2px;
+        flex-shrink: 0;
+    }
     p {
         margin: 0;
         font-size: 11px;
@@ -513,6 +583,10 @@
         padding: 4px 9px;
         flex-shrink: 0;
     }
+    .options .choices {
+        flex: none;
+        gap: 4px;
+    }
     .options .danger {
         background: var(--danger);
         color: white;
@@ -570,9 +644,11 @@
     }
     .error {
         color: var(--danger);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
     }
     .actions {
         display: flex;
