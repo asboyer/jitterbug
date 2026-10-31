@@ -14,7 +14,8 @@ pub const HELP: &str = "Shared validation queue (keep the Jitterbug desktop open
 
 Profiles are explicit permission to run a fixed command in a fixed worktree. Inspect the
 command before registering it. MCP cannot register profiles or supply shell commands.
-The single slot is shared across all clients of this OS user. Only submitted jobs are
+Resource admission is shared across all clients of this OS user. New checks run alone;
+up to two measured checks may overlap when the whole computer has room. Only submitted jobs are
 governed. Running jobs are never killed automatically. After a worker crash, inspect
 its descendants before releasing its slot. Memory estimates are admission hints, not
 hard limits. Git fingerprints exclude ignored files and external inputs. Outputs are

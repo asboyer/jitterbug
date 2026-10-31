@@ -161,6 +161,13 @@ fn validation_child_fixture() {
     };
     event("start");
     let mode = fs::read_to_string("mode.txt").unwrap();
+    if mode == "wait" {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !directory.join("release-fixture").exists() {
+            assert!(Instant::now() < deadline, "fixture was not released");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     std::thread::sleep(Duration::from_millis(if mode == "slow" {
         1200
     } else {
@@ -204,6 +211,26 @@ fn validation_tick_fixture() {
         memory_available_bytes: 10 * GIB,
         ..Default::default()
     };
+    if std::env::var_os("JITTERBUG_TEST_ATTRIBUTION").is_some() {
+        sample.agent_workflows = vec![jitterbug_lib::workflows::AgentWorkflow {
+            agents: queue::inspect(&directory)
+                .unwrap()
+                .jobs
+                .iter()
+                .filter(|j| j.stage == Stage::Running)
+                .map(|j| jitterbug_lib::workflows::AgentSession {
+                    run_id: j.id.clone(),
+                    cpu_percent: 8.0,
+                    peak_cpu_percent: 8.0,
+                    memory_bytes: GIB / 2,
+                    peak_memory_bytes: GIB / 2,
+                    observed_samples: 4,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }];
+    }
     queue::tick(
         &directory,
         &sample,
@@ -738,4 +765,114 @@ fn checkpoint_timeout_is_not_permission_and_model_plans_cannot_expand_actions() 
         assert!(queue::control::Plan::parse(invalid, &state).is_err());
     }
     assert!(queue::control::Plan::parse(r#"{"action":"protect","job_id":null,"reason":"Hold upcoming checks while your apps are busy."}"#, &state).is_ok());
+}
+
+#[test]
+fn learned_checks_overlap_real_commands_but_never_exceed_two_slots() {
+    let f = Fixture::new();
+    for name in ["parallel-a", "parallel-b"] {
+        f.profile(name, "wait", true);
+        f.submit(name, name);
+    }
+    // Synthetic completed measurements, not actual hardware readings. The launched
+    // commands, lock, worker revalidation and overlap below are real and isolated.
+    queue::transaction(&f.queue(), |s| {
+        let pending = s.jobs.clone();
+        s.jobs.clear();
+        for candidate in &pending {
+            for i in 0..2 {
+                let mut previous = candidate.clone();
+                previous.id = format!("history-{}-{i}", candidate.id);
+                previous.stage = Stage::Passed;
+                previous.ended_at = Some(now() - 1);
+                previous.observed_samples = 4;
+                previous.peak_cpu_percent = 8.0;
+                previous.peak_memory_bytes = GIB / 2;
+                s.jobs.push(previous);
+            }
+        }
+        s.jobs.extend(pending);
+        Ok(())
+    })
+    .unwrap();
+    f.submit("parallel-a", "third-check");
+    f.tick(false);
+    let start = Instant::now();
+    loop {
+        let state = queue::inspect(&f.queue()).unwrap();
+        if state.jobs.iter().any(|j| j.stage == Stage::Running) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Warm-up must use a new sample after the first command has been running.
+    f.tick(false);
+    assert_eq!(
+        queue::inspect(&f.queue())
+            .unwrap()
+            .jobs
+            .iter()
+            .filter(|j| j.stage == Stage::Running)
+            .count(),
+        1
+    );
+    std::thread::sleep(Duration::from_secs(6));
+    // Racing coordinators must reserve capacity under the same native file lock.
+    let mut a = f
+        .tick_command(false)
+        .env("JITTERBUG_TEST_ATTRIBUTION", "yes")
+        .spawn()
+        .unwrap();
+    let mut b = f
+        .tick_command(false)
+        .env("JITTERBUG_TEST_ATTRIBUTION", "yes")
+        .spawn()
+        .unwrap();
+    assert!(a.wait().unwrap().success());
+    assert!(b.wait().unwrap().success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let events = fs::read_to_string(f.queue().join("events.txt")).unwrap_or_default();
+        if events
+            .lines()
+            .filter(|line| line.starts_with("start "))
+            .count()
+            == 2
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "second command did not start: {}",
+            queue::inspect(&f.queue()).unwrap().view().reason
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let state = queue::inspect(&f.queue()).unwrap();
+    assert_eq!(
+        state
+            .jobs
+            .iter()
+            .filter(|j| j.stage == Stage::Running)
+            .count(),
+        2
+    );
+    assert_eq!(
+        state
+            .jobs
+            .iter()
+            .filter(|j| j.stage == Stage::Queued)
+            .count(),
+        1
+    );
+    let events = fs::read_to_string(f.queue().join("events.txt")).unwrap();
+    assert!(events.lines().all(|line| line.starts_with("start ")));
+    fs::write(f.queue().join("release-fixture"), "release owned fixtures").unwrap();
+    f.settle();
+    assert!(queue::inspect(&f.queue())
+        .unwrap()
+        .jobs
+        .iter()
+        .all(|j| j.stage == Stage::Passed));
 }

@@ -1,7 +1,7 @@
 # Jitterbug
 
-A desktop resource copilot for busy computers. Understand what your apps and agents are doing,
-investigate slowdowns, and make room for the work that matters.
+Get more out of your hardware while running parallel agents, local models, and everyday apps.
+Jitterbug explains resource use, investigates slowdowns, and schedules approved checks around you.
 
 Built with **Tauri, Rust, Svelte, and TypeScript**. Early-stage; macOS has the fullest support.
 Windows has live telemetry, with gaps in native diagnostics and actions.
@@ -12,7 +12,7 @@ Windows has live telemetry, with gaps in native diagnostics and actions.
 - **Catch a slowdown:** press **⌘⇧J** on Mac or **Ctrl+Shift+J** on Windows for a Jitter Snapshot.
 - **Act on the cause:** review an optimization, pause a command session, or inspect supported
   Chromium tabs. Pausing retains memory; it does not close the command.
-- **Coordinate agents:** attribute registered tasks and let heavy checks take turns across sessions.
+- **Coordinate agents:** learn check costs and share spare capacity across sessions, with room for your apps.
 - **Save system settings:** capture a Mac settings baseline and preview a rollback.
 
 Rules handle monitoring and scheduling. AI explains unfamiliar processes and investigates incidents

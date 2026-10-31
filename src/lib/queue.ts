@@ -22,12 +22,23 @@ export interface ValidationJob {
     peak_cpu_percent: number;
     peak_memory_bytes: number;
     observed_samples: number;
+    last_sample?: { captured_at: number; cpu_percent: number; memory_bytes: number } | null;
 }
 
 export interface ValidationQueue {
     paused: boolean;
     control?: WorkflowControls;
     capacity: number;
+    scheduling?: {
+        running: number;
+        waiting: number;
+        learned_profiles: number;
+        cpu_ceiling: number;
+        memory_reserve_bytes: number;
+        state: 'ready' | 'learning' | 'parallel' | 'running' | 'waiting' | 'paused' | 'review';
+        title: string;
+        detail: string;
+    };
     reason: string;
     profiles: string[];
     jobs: ValidationJob[];
@@ -90,11 +101,22 @@ export function demoQueue(): ValidationQueue {
         peak_cpu_percent: 18,
         peak_memory_bytes: 800 * 1024 * 1024,
         observed_samples: 6,
+        last_sample: { captured_at: now, cpu_percent: 8, memory_bytes: 800 * 1024 ** 2 },
     };
     return {
         paused: false,
-        capacity: 1,
-        reason: 'One validation is running. Other sessions wait their turn.',
+        capacity: 2,
+        scheduling: {
+            running: 1,
+            waiting: 1,
+            learned_profiles: 0,
+            cpu_ceiling: 55,
+            memory_reserve_bytes: (16 * 1024 ** 3) / 5,
+            state: 'learning',
+            title: 'Learning this check',
+            detail: 'Simulated: checks run alone until two sampled, successful runs establish an estimate.',
+        },
+        reason: 'Learning the running check before sharing capacity.',
         profiles: ['unit-tests', 'typecheck'],
         jobs: [
             base,

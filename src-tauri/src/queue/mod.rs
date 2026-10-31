@@ -1,5 +1,6 @@
-//! One cooperative validation slot shared by every session of this OS user.
+//! Resource-aware validation admission shared by every session of this OS user.
 //! The desktop publishes headroom and schedules. Clients can request only saved profiles.
+pub mod admission;
 pub mod cli;
 pub mod control;
 pub mod inputs;
@@ -128,6 +129,8 @@ pub struct Job {
     pub peak_cpu_percent: f32,
     pub peak_memory_bytes: u64,
     pub observed_samples: u64,
+    #[serde(default)]
+    pub last_sample: Option<admission::Sample>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -163,6 +166,7 @@ pub struct JobView {
     pub peak_cpu_percent: f32,
     pub peak_memory_bytes: u64,
     pub observed_samples: u64,
+    pub last_sample: Option<admission::Sample>,
 }
 
 impl From<&Job> for JobView {
@@ -194,6 +198,7 @@ impl From<&Job> for JobView {
             peak_cpu_percent: j.peak_cpu_percent,
             peak_memory_bytes: j.peak_memory_bytes,
             observed_samples: j.observed_samples,
+            last_sample: j.last_sample.clone(),
         }
     }
 }
@@ -203,6 +208,7 @@ pub struct View {
     pub paused: bool,
     pub control: control::Controls,
     pub capacity: usize,
+    pub scheduling: admission::Scheduling,
     pub reason: String,
     pub resources: Resources,
     pub profiles: Vec<String>,
@@ -210,42 +216,16 @@ pub struct View {
 }
 
 impl Store {
-    fn reason(&self, memory: u64) -> Option<String> {
-        if self.paused {
-            return Some("New jobs are paused.".into());
-        }
-        if self.control.protection().is_some() {
-            return Some("Protected session: upcoming checks are held.".into());
-        }
-        if self.jobs.iter().any(|j| j.stage == Stage::Interrupted) {
-            return Some(
-                "A worker was interrupted. Review its processes before releasing the slot.".into(),
-            );
-        }
-        if self.jobs.iter().any(|j| j.stage.occupies_slot()) {
-            return Some("One validation is running. Other sessions wait their turn.".into());
-        }
-        if let Some(reason) = self.resources.block_reason(memory) {
-            return Some(reason);
-        }
-        if let Some(reason) = self.goal_block() {
-            return Some(reason);
-        }
-        if self.resources.consecutive_good < 2 {
-            return Some("Waiting for two healthy resource samples.".into());
-        }
-        None
-    }
     pub fn view(&self) -> View {
-        let memory = self
-            .next_index()
-            .map_or(0, |i| self.jobs[i].profile.memory_bytes);
+        let next = self.next_index().map(|i| &self.jobs[i]);
         View {
             paused: self.paused,
             control: self.control.clone(),
-            capacity: 1,
+            capacity: admission::MAX_CONCURRENT,
+            scheduling: self.scheduling(),
             reason: self
-                .reason(memory)
+                .global_block()
+                .or_else(|| next.and_then(|j| self.admission_reason(j)))
                 .unwrap_or_else(|| "Ready for the next validation.".into()),
             resources: self.resources.clone(),
             profiles: self.profiles.iter().map(|p| p.name.clone()).collect(),
@@ -256,9 +236,7 @@ impl Store {
                 .map(|j| {
                     let mut view = JobView::from(j);
                     if j.stage == Stage::Queued {
-                        view.hold_reason = self
-                            .job_hold(j)
-                            .or_else(|| self.reason(j.profile.memory_bytes));
+                        view.hold_reason = self.job_hold(j).or_else(|| self.admission_reason(j));
                         view.next = self.next_index().is_some_and(|i| self.jobs[i].id == j.id);
                     }
                     view
@@ -464,6 +442,7 @@ pub fn submit(
             peak_cpu_percent: 0.0,
             peak_memory_bytes: 0,
             observed_samples: 0,
+            last_sample: None,
         };
         let view = JobView::from(&job);
         s.jobs.push(job);
@@ -550,6 +529,11 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
                         job.peak_memory_bytes =
                             job.peak_memory_bytes.max(session.peak_memory_bytes);
                         job.observed_samples = job.observed_samples.max(session.observed_samples);
+                        job.last_sample = Some(admission::Sample {
+                            captured_at: snapshot.captured_at,
+                            cpu_percent: session.cpu_percent,
+                            memory_bytes: session.memory_bytes,
+                        });
                     }
                 }
             }
@@ -560,11 +544,7 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
                     "Expired after one hour in the queue; submit again when ready.".into();
             }
         }
-        let block = if s.jobs.iter().any(|j| j.stage == Stage::Queued) {
-            s.reason(0)
-        } else {
-            None
-        };
+        let block = s.next_index().and_then(|i| s.admission_reason(&s.jobs[i]));
         if block != s.control.last_block {
             if let Some(ref reason) = block {
                 s.control.record(reason.clone());
@@ -581,7 +561,7 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
         let Some(index) = s.next_index() else {
             return Ok(());
         };
-        if let Some(reason) = s.reason(s.jobs[index].profile.memory_bytes) {
+        if let Some(reason) = s.admission_reason(&s.jobs[index]) {
             s.jobs[index].message = reason;
             return Ok(());
         }
@@ -618,7 +598,13 @@ pub fn tick(directory: &Path, snapshot: &Snapshot, executable: &Path) -> Result<
                 if s.control.next_job.as_deref() == Some(job.id.as_str()) {
                     s.control.next_job = None;
                 }
-                s.control.record("Starting the next eligible check.");
+                s.control.record(
+                    if s.jobs.iter().filter(|j| j.stage.occupies_slot()).count() > 1 {
+                        "Started another check using spare capacity."
+                    } else {
+                        "Started the next eligible check."
+                    },
+                );
                 // Reap owned children without blocking the collector. A detached worker can
                 // finish if the desktop closes; no new jobs start without fresh telemetry.
                 std::thread::spawn(move || {

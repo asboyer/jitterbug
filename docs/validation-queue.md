@@ -1,6 +1,6 @@
 # Shared validation queue
 
-Jitterbug admits one heavy validation at a time across every participating session,
+Jitterbug schedules approved validations across every participating session,
 worktree, and project of the logged-in OS user. An agent can keep editing or reasoning
 while its submitted validation waits. The same runner also works for a human in a
 terminal; this is not restricted to subagents or one conversation.
@@ -11,6 +11,27 @@ It checks the **whole computer**, including browsers, local models, ordinary app
 and background services. The dashboard's **Make room** suggestions identify measured
 competitors and suggest deferring work, closing unused apps/tabs, unloading a model,
 or considering a remote runner. Suggestions do not move or stop anything.
+
+## Sharing spare capacity
+
+New checks run alone. After two successful runs with at least three resource samples each,
+Jitterbug can admit a second familiar check from a different working folder. It uses the largest
+peaks from up to five recent runs of the exact approved command, folder, memory floor and PATH.
+CPU gets 25% padding plus five percentage points (at least 10% total CPU); memory gets 25%
+padding plus 256 MiB, never below your approved estimate. Estimates expire after seven days;
+a failed, stale, cancelled or insufficiently sampled run resets the learning streak.
+
+The scheduler adds the next check's estimate to whole-machine usage and reserves any remaining
+estimated demand of the running check. It waits for fresh attributed samples after launch before
+sharing capacity. A local model or browser consuming the remaining headroom holds new work just
+like another build would. Checks in the same or nested working folders always take turns.
+
+The **Hardware capacity** card shows learning, sharing or waiting, with details behind its info
+button. **Share spare capacity** in Demo is synthetic and launches nothing.
+
+These are admission estimates, not hard CPU/RAM limits. Short bursts can be missed; source changes,
+external dependencies and later phases may use more resources. Running work finishes normally.
+No agent is automatically suspended and no local model is unloaded by this scheduler.
 
 ## Register a validation
 
@@ -192,11 +213,12 @@ time and descendants, not a shared desktop app-server PID.
 
 ## Admission and recovery
 
-- One slot; FIFO across sessions unless you choose **Run next**. Held jobs are skipped.
+- At most two checks; FIFO across sessions unless you choose **Run next**. Held jobs are skipped.
+  Unknown checks run alone; familiar checks overlap only when their combined estimates fit.
   This MVP does not increase concurrency automatically.
 - Two healthy samples; fresh telemetry no older than 15 seconds.
-- CPU below 55% for **Keep responsive**, or 70% for **Finish sooner**; available memory at least the job estimate plus 2 GiB and at least
-  20% of total RAM, no OS memory warning, no reported thermal pressure, and less
+- CPU below 55% for **Keep responsive**, or 70% for **Finish sooner**; remaining memory after job reservations at least 2 GiB or
+  20% of total RAM, whichever is larger, no OS memory warning, no reported thermal pressure, and less
   than 128 MiB swap growth in the latest interval. Missing Windows thermal/memory
   pressure sensors are unavailable, not proof of normal conditions.
 - These are admission checks, not CPU/RAM limits. Unexpected growth can still occur.

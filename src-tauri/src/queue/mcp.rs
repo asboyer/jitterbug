@@ -74,7 +74,7 @@ pub fn call(
             )?))
         }
         "validation_profiles" => Ok(
-            json!({"profiles":state.profiles.iter().filter(|p| allowed.contains(&p.name)).map(|p| json!({"name":p.name,"worktree":p.worktree,"command":p.command,"memory_estimate_mib":p.memory_bytes / 1024 / 1024})).collect::<Vec<_>>(),"queue_reason":state.view().reason,"capacity":1,"routing":"Use only a profile matching this session's exact working directory and intended command. Submit heavy checks here instead of launching duplicates. If none matches, ask the user to approve a profile in Jitterbug."}),
+            json!({"profiles":state.profiles.iter().filter(|p| allowed.contains(&p.name)).map(|p| json!({"name":p.name,"worktree":p.worktree,"command":p.command,"memory_estimate_mib":p.memory_bytes / 1024 / 1024})).collect::<Vec<_>>(),"queue_reason":state.view().reason,"capacity":admission::MAX_CONCURRENT,"routing":"Use only a profile matching this session's exact working directory and intended command. Submit heavy checks here instead of launching duplicates. If none matches, ask the user to approve a profile in Jitterbug."}),
         ),
         "validation_submit" => {
             let profile = get("profile")?;

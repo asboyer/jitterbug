@@ -15,7 +15,10 @@ test('workflow hub holds checks during pressure and resumes them when room retur
     const search = hub.getByRole('article', { name: 'Check search changes' });
     const checkout = hub.getByRole('article', { name: 'Validate checkout' });
     await hub.getByRole('button', { name: 'Resource spike', exact: true }).click();
-    await expect(hub.getByRole('meter')).toHaveAttribute('aria-valuenow', '88');
+    await expect(hub.getByRole('meter', { name: 'Total CPU usage' })).toHaveAttribute(
+        'aria-valuenow',
+        '88'
+    );
     const notice = page.getByRole('region', { name: 'Make room for your apps', exact: true });
     await notice.getByRole('button', { name: 'Not now' }).click();
     await expect(search).toContainText('Waiting');
@@ -138,4 +141,63 @@ test('desktop bridge sends exact controls and keeps a rejected AI plan reviewabl
     await expect(hub.getByRole('alert')).toContainText('Queue unavailable');
     await expect(hub.getByLabel('Scheduling plan')).toBeVisible();
     await expect(hub.getByText('Making room for your apps', { exact: true })).toHaveCount(0);
+});
+
+test('capacity sharing explains parallel work without a chat or a model call', async ({ page }) => {
+    await page.goto('/');
+    const hub = page.getByRole('region', { name: 'Workflow hub' });
+    const capacity = hub.getByRole('region', { name: 'Hardware capacity' });
+    await expect(capacity).toContainText('Learning this check');
+    await expect(capacity).toContainText('1 running');
+    await hub.getByRole('button', { name: 'Share spare capacity', exact: true }).click();
+    await expect(capacity).toContainText('Putting spare capacity to work');
+    await expect(capacity).toContainText('2 running');
+    await expect(hub.getByRole('article', { name: 'Validate checkout' })).toContainText('8.0%');
+    await expect(hub.getByRole('article', { name: 'Check search changes' })).toContainText('5.0%');
+    await expect(capacity.getByRole('meter', { name: 'Total CPU usage' })).toHaveAttribute(
+        'aria-valuenow',
+        '36'
+    );
+    await capacity.getByRole('button', { name: 'How capacity sharing works' }).click();
+    await expect(capacity).toContainText('Estimates include headroom');
+    await expect(capacity).toContainText('2 profiles learned');
+    await expect(hub).toContainText('SIMULATED');
+    await page.keyboard.press('Escape');
+    await hub.getByRole('button', { name: 'Make room · 20 min' }).click();
+    await expect(capacity).toContainText('Keeping room for your apps');
+    // Protection affects admission, never silently suspends the two running checks.
+    await expect(capacity).toContainText('2 running');
+    await hub.getByRole('button', { name: 'Next checkpoint', exact: true }).click();
+    await expect(capacity).toContainText('0 running');
+});
+
+test('hardware summary fits a small window with readable values and details on demand', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 760, height: 560 });
+    await page.goto('/');
+    const capacity = page.getByRole('region', { name: 'Hardware capacity' });
+    await expect(capacity).toBeInViewport();
+    await expect(capacity.getByRole('meter', { name: 'Total memory usage' })).toBeVisible();
+    await expect(capacity).not.toContainText('Familiar checks can overlap');
+    const details = capacity.getByRole('button', { name: 'How capacity sharing works' });
+    await details.focus();
+    await page.keyboard.press('Enter');
+    await expect(capacity).toContainText('Familiar checks can overlap');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        760
+    );
+});
+
+test('live queue readings expire instead of masquerading as current usage', async () => {
+    const { demoSnapshot } = await import('../../src/lib/demo');
+    const { hubDemo, workflowRows } = await import('../../src/lib/workflow-hub');
+    const snapshot = demoSnapshot();
+    snapshot.source = 'live';
+    const queue = hubDemo();
+    queue.resources.captured_at -= 30;
+    queue.jobs[0].last_sample!.captured_at = queue.resources.captured_at;
+    expect(workflowRows(queue, snapshot).find((row) => row.id === 'demo-1')?.cpu).toBeNull();
+    snapshot.source = 'demo';
+    expect(workflowRows(queue, snapshot).find((row) => row.id === 'demo-1')?.cpu).toBe(8);
 });

@@ -92,7 +92,9 @@
             <h2>Validation queue <span class="muted">{demo ? 'Demo' : 'All sessions'}</span></h2>
             <p>{queue?.reason ?? 'Reading queue status…'}</p>
         </div>
-        <span class="count">{active.length}/1 running · {waiting.length} waiting</span>
+        <span class="count"
+            >{active.length}/{queue?.capacity ?? 2} running · {waiting.length} waiting</span
+        >
         <button disabled={demo} onclick={() => onmanage({})}>Manage workloads</button>
         <button
             disabled={demo || busy || !queue}

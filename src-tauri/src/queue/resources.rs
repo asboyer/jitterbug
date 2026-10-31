@@ -43,7 +43,9 @@ impl Resources {
             0
         } else if snapshot.captured_at == previous.captured_at {
             previous.consecutive_good
-        } else if previous.captured_at + 15 >= snapshot.captured_at {
+        } else if snapshot.captured_at > previous.captured_at
+            && previous.captured_at.saturating_add(15) >= snapshot.captured_at
+        {
             previous.consecutive_good.saturating_add(1)
         } else {
             1
@@ -83,19 +85,23 @@ impl Resources {
         value
     }
 
+    pub fn memory_reserve(&self) -> u64 {
+        (2 * GIB).max(self.total_bytes / 5)
+    }
+
     pub fn block_reason(&self, requested_bytes: u64) -> Option<String> {
         if !self.ready || self.captured_at > now() + 2 || self.captured_at + 15 < now() {
             return Some("Waiting for fresh telemetry. Keep Jitterbug open.".into());
         }
         if self.total_bytes == 0
-            || self.available_bytes < requested_bytes.saturating_add(2 * GIB)
-            || self.available_bytes as f64 / (self.total_bytes as f64) < 0.20
+            || self.available_bytes > self.total_bytes
+            || self.available_bytes < requested_bytes.saturating_add(self.memory_reserve())
         {
             return Some(
-                "Waiting for memory headroom: job estimate plus 2 GiB, and 20% available.".into(),
+                "Leaving memory for your apps: at least 2 GiB or 20% after reservations.".into(),
             );
         }
-        if !self.cpu_percent.is_finite() || self.cpu_percent >= 70.0 {
+        if !self.cpu_percent.is_finite() || !(0.0..70.0).contains(&self.cpu_percent) {
             return Some("Waiting for total CPU use to fall below 70%.".into());
         }
         if matches!(
