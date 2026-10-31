@@ -13,6 +13,7 @@ mod floating;
 pub mod harness;
 pub mod inside;
 pub mod jitter;
+mod lab;
 pub mod origins;
 pub mod pause;
 pub mod platform;
@@ -861,6 +862,8 @@ pub fn run() {
                     }
                 })?;
             desktop::install(app)?;
+            #[cfg(debug_assertions)]
+            lab::open(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -941,7 +944,8 @@ pub fn run() {
             popup::get_action_popup,
             popup::close_action_popup,
             popup::open_action_case,
-            popup::preview_action_popup
+            popup::preview_action_popup,
+            lab::lab_mcp
         ])
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, untrack } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import Icon from './Icon.svelte';
@@ -20,10 +20,14 @@
     } from '../lib/incidents';
     import type { ActionPopupCase, ActionPopupPayload, AutomationStage } from '../lib/types';
 
-    const desktop = isTauri();
+    // A preset renders one fixed example (the Lab's gallery): played locally, never applied.
+    let { preset = null }: { preset?: ActionPopupPayload | null } = $props();
+    const fixed = untrack(() => preset);
+    const desktop = isTauri() && !fixed;
     const finished: AutomationStage[] = ['completed', 'resolved', 'blocked'];
     let payload = $state<ActionPopupPayload | null>(
-        desktop ? null : demoActionPopup(new URLSearchParams(location.search).get('example'))
+        fixed ??
+            (desktop ? null : demoActionPopup(new URLSearchParams(location.search).get('example')))
     );
     const capture = $derived(payload?.kind === 'capturing' ? payload : null);
     const popup = $derived(payload?.kind === 'case' ? payload : null);
