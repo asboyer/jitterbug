@@ -1,0 +1,351 @@
+/* Settings shares the app palette, with one focused category visible at a time. */
+.settings-workspace {
+    max-width: 860px;
+    margin: 0 auto;
+}
+.settings-workspace [hidden] {
+    display: none !important;
+}
+.settings-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+.settings-title h1 {
+    margin: 0;
+}
+.settings-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 20px;
+    background: var(--sidebar);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+}
+.settings-tabs button {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    padding: 10px 6px;
+    background: transparent;
+    color: var(--muted);
+    border-radius: 6px;
+    font-size: 12px;
+}
+.settings-tabs button[aria-selected='true'] {
+    background: var(--control);
+    color: var(--text);
+    box-shadow: 0 1px 4px #0002;
+    font-weight: 600;
+}
+.settings-workspace [role='tabpanel']:focus {
+    outline: none;
+}
+.settings-workspace [role='tabpanel']:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+}
+.preference-card,
+.settings-workspace .settings-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+}
+.preference-heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.preference-heading h2,
+.budget-overview h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+}
+.preference-heading p {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+.preference-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: grid;
+    place-items: center;
+    flex: 0 0 38px;
+}
+.preference-disclosures {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 12px;
+    overflow: hidden;
+}
+.preference-detail {
+    background: var(--panel);
+}
+.preference-detail + .preference-detail {
+    border-top: 1px solid var(--border);
+}
+.preference-detail > summary,
+.model-configuration > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 22px;
+    list-style: none;
+    cursor: pointer;
+    font-size: 12px;
+}
+.preference-detail > summary::-webkit-details-marker,
+.model-configuration > summary::-webkit-details-marker {
+    display: none;
+}
+.preference-detail > summary::after,
+.model-configuration > summary::after {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: rotate(-45deg);
+    flex-shrink: 0;
+}
+.preference-detail[open] > summary::after,
+.model-configuration[open] > summary::after {
+    transform: rotate(45deg);
+}
+.detail-name {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 500;
+    flex: 1;
+}
+.detail-name svg {
+    color: var(--muted);
+    flex-shrink: 0;
+}
+.detail-value {
+    color: var(--muted);
+    font-size: 11px;
+    text-align: right;
+}
+.detail-body {
+    padding: 0 22px 20px;
+}
+.detail-body p,
+.inline-help p {
+    line-height: 1.6;
+    font-size: 12px;
+}
+.detail-body > p:last-child {
+    margin-bottom: 0;
+}
+.inline-help {
+    margin: 12px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+.inline-help > summary {
+    cursor: pointer;
+    padding: 5px 0;
+}
+.inline-help[open] > summary {
+    margin-bottom: 8px;
+}
+.inline-help p:last-child {
+    margin-bottom: 0;
+}
+.preference-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 0 16px;
+    font-size: 11px;
+}
+.preference-footer button {
+    padding: 7px 14px;
+    font-size: 12px;
+}
+.settings-workspace .mode-options {
+    gap: 10px;
+    margin: 20px 0;
+}
+.settings-workspace .mode-options label {
+    padding: 14px 12px;
+    border-radius: 8px;
+}
+.settings-workspace .mode-options p {
+    line-height: 1.5;
+}
+.model-configuration {
+    border-top: 1px solid var(--border);
+}
+.model-configuration > summary {
+    padding: 16px 0 0;
+}
+.model-configuration > summary > span:first-child {
+    flex: 1;
+    font-weight: 500;
+}
+.model-configuration[open] > summary {
+    margin-bottom: 12px;
+}
+.routing-preview {
+    color: var(--muted);
+}
+.routing-preview span {
+    margin: 0 6px;
+}
+.settings-workspace .tier-row {
+    grid-template-columns: 1fr minmax(135px, 1fr) minmax(160px, 1.2fr);
+}
+.settings-workspace .tier-row h3 {
+    font-size: 12px;
+    margin-bottom: 5px;
+}
+.settings-workspace .tier-row label,
+.settings-workspace .credential-row label,
+.budget-overview label {
+    display: grid;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+}
+.settings-workspace input,
+.settings-workspace select {
+    color: var(--text);
+}
+.budget-overview {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+.budget-overview h2 {
+    margin-bottom: 10px;
+}
+.budget-overview label {
+    max-width: 155px;
+}
+.budget-amount {
+    font-size: 23px;
+    letter-spacing: -0.6px;
+    margin-right: 6px;
+    font-variant-numeric: tabular-nums;
+}
+.budget-track {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--track);
+    margin-top: 18px;
+}
+.budget-caption {
+    color: var(--muted);
+    font-size: 10px;
+    margin: 7px 0 0;
+}
+.budget-track span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+}
+.local-models {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+}
+.local-guardrails,
+.provider-statuses {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin: 20px 0;
+}
+.local-guardrails > div,
+.provider-statuses > div {
+    display: grid;
+    gap: 6px;
+}
+.local-guardrails > div + div,
+.provider-statuses > div + div {
+    border-left: 1px solid var(--border);
+    padding-left: 16px;
+}
+.local-guardrails span,
+.provider-statuses span {
+    color: var(--muted);
+    font-size: 11px;
+}
+.provider-statuses .configured {
+    color: var(--success);
+}
+.credential-details {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+.credential-details .credential-row {
+    margin: 12px 0;
+}
+@media (max-width: 760px) {
+    .settings-tabs {
+        gap: 2px;
+    }
+    .settings-tabs button {
+        flex-direction: column;
+        gap: 6px;
+        font-size: 11px;
+    }
+    .preference-card,
+    .settings-workspace .settings-panel {
+        padding: 18px 16px;
+    }
+    .preference-detail > summary {
+        padding: 16px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .detail-name {
+        flex-basis: 55%;
+    }
+    .detail-value {
+        max-width: 34%;
+    }
+    .settings-workspace .tier-row {
+        grid-template-columns: 1fr 1fr;
+    }
+    .settings-workspace .tier-row > div {
+        grid-column: 1 / -1;
+    }
+    .settings-workspace .credential-row {
+        grid-template-columns: 1fr;
+    }
+}
+@media (max-width: 560px) {
+    .settings-workspace .mode-options,
+    .settings-workspace .automation-fields {
+        grid-template-columns: 1fr;
+    }
+    .budget-overview {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+    .settings-title .tag {
+        max-width: 140px;
+        text-align: right;
+    }
+}
