@@ -173,7 +173,9 @@
             <small title={unit.detail}
                 >{unit.kind === 'tab'
                     ? (unit.host ?? unit.detail)
-                    : unit.detail || unit.confidence}{unit.paused_until
+                    : unit.detail || unit.confidence}{unit.agent_status && !unit.paused_until
+                    ? ` · ${unit.agent_status}`
+                    : ''}{unit.paused_until
                     ? unit.kind === 'tab'
                         ? ` · Paused · resumes ${until(unit.paused_until)}`
                         : ` · paused, resumes by ${until(unit.paused_until)}`

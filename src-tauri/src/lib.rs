@@ -5,6 +5,7 @@ pub mod attribution;
 pub mod automation;
 pub mod budget;
 mod capture;
+mod claude_sessions;
 pub mod collector;
 pub mod control;
 mod desktop;

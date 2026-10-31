@@ -704,6 +704,7 @@ fn measure_tabs(
                         (Some(_), false) => "Matched by CPU time".into(),
                     },
                     paused_until,
+                    agent_status: None,
                 });
             }
         }

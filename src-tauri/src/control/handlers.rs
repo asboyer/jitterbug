@@ -99,6 +99,7 @@ fn session_json(unit: &Unit, lineage: &[(u32, u64)]) -> Value {
         "memory_mib": mib(unit.memory_bytes),
         "process_count": unit.process_count,
         "paused_until": unit.paused_until,
+        "agent_status": unit.agent_status,
         "is_your_session": inside_caller(unit, lineage),
         "actions": unit.actions.iter().filter(|a| matches!(a.as_str(), "pause" | "resume")).collect::<Vec<_>>(),
         "evidence": unit.evidence,
