@@ -142,6 +142,13 @@ pub fn refusal(p: &Process, system: &System) -> Option<&'static str> {
     {
         return Some("Apps are not paused: a frozen window cannot redraw. Pause a command running inside it instead.");
     }
+    // This helper lives outside iTerm's bundle and can own every open terminal session.
+    // Refuse it even after reparenting or when the UI has an old, pre-fix action offer.
+    if p.exe()
+        .is_some_and(crate::inside::sessions::is_iterm_server_executable)
+    {
+        return Some("iTerm's session server is not a command. Pause an individual command inside iTerm instead.");
+    }
     let protected = protected(system);
     if tree(system, p)
         .iter()

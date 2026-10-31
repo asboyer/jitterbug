@@ -58,6 +58,61 @@ fn is_wrapper(p: &ProcessRecord) -> bool {
     WRAPPERS.contains(&name)
 }
 
+/// iTerm copies its server outside the app bundle so sessions can survive app upgrades.
+/// A process name alone is not enough: restrict this exception to its exact support folder.
+/// This is path evidence, not a code-signature or publisher verification.
+pub(crate) fn is_iterm_server_executable(executable: &Path) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let Some(version) = executable
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("iTermServer-"))
+    else {
+        return false;
+    };
+    executable.parent() == Some(home.join("Library/Application Support/iTerm2").as_path())
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b".-_".contains(&c))
+}
+
+fn valid_parent(parent: &ProcessRecord, child: &ProcessRecord) -> bool {
+    parent.pid != child.pid
+        && parent.start_time <= child.start_time
+        && child
+            .parent_start_time
+            .is_none_or(|s| s == parent.start_time)
+}
+
+fn is_iterm_server(p: &ProcessRecord, by_pid: &HashMap<u32, &ProcessRecord>) -> bool {
+    let Some(executable) = p.executable.as_deref() else {
+        return false;
+    };
+    if !is_iterm_server_executable(executable) {
+        return false;
+    }
+    let Some(parent) = p.parent_pid.and_then(|id| by_pid.get(&id)) else {
+        return false;
+    };
+    let Some(parent_executable) = parent.executable.as_deref() else {
+        return false;
+    };
+    let Some(bundle) = crate::attribution::application_bundle(parent_executable) else {
+        return false;
+    };
+    // Only traverse a server launched directly by iTerm's main executable, with a current
+    // parent identity. A renamed command or a helper started by a shell is not app plumbing.
+    valid_parent(parent, p)
+        && matches!(
+            bundle.file_stem().and_then(|s| s.to_str()),
+            Some("iTerm" | "iTerm2")
+        )
+        && parent_executable == bundle.join("Contents/MacOS/iTerm2")
+}
+
 fn basename(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().chars().take(60).collect())
@@ -65,6 +120,8 @@ fn basename(path: &Path) -> String {
 }
 
 pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord]) -> Inside {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
     let bundles: HashSet<&Path> = members
         .iter()
         .filter_map(|p| p.executable.as_deref())
@@ -80,25 +137,21 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
                 .into_owned()
         })
         .unwrap_or_else(|| "the app".into());
-    // An app's own processes live inside its bundle; commands it launched do not.
+    // An app's own processes live inside its bundle, except iTerm's copied session server.
     let own = |p: &ProcessRecord| {
         p.executable
             .as_deref()
             .and_then(crate::attribution::application_bundle)
             .is_some_and(|b| bundles.contains(b))
+            || is_iterm_server(p, &by_pid)
     };
     let mut children: HashMap<u32, Vec<&ProcessRecord>> = HashMap::new();
-    let by_pid: HashMap<u32, &ProcessRecord> =
-        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
     for p in &snapshot.processes {
         let Some(parent) = p.parent_pid.and_then(|id| by_pid.get(&id)) else {
             continue;
         };
         // A reused parent PID must not adopt an unrelated process.
-        if parent.pid == p.pid
-            || parent.start_time > p.start_time
-            || p.parent_start_time.is_some_and(|s| s != parent.start_time)
-        {
+        if !valid_parent(parent, p) {
             continue;
         }
         children.entry(parent.pid).or_default().push(p);
@@ -279,6 +332,13 @@ fn session_actions(root: &ProcessRecord) -> Vec<String> {
     if crate::pause::is_paused(root.pid, root.start_time) {
         return vec!["resume".into()];
     }
+    if root
+        .executable
+        .as_deref()
+        .is_some_and(is_iterm_server_executable)
+    {
+        return vec![];
+    }
     let mut actions = vec!["pause".into()];
     actions.extend(root.actions.iter().cloned());
     actions
@@ -297,7 +357,12 @@ pub fn session_of(snapshot: &Snapshot, pid: u32) -> Option<Unit> {
             .map(|s| s.to_string_lossy().into_owned())
     };
     let start = by_pid.get(&pid)?;
-    if bundle(start).is_some() {
+    if bundle(start).is_some()
+        || start
+            .executable
+            .as_deref()
+            .is_some_and(is_iterm_server_executable)
+    {
         return None;
     }
     let (mut root, mut current, mut app) = (*start, *start, None);
@@ -305,18 +370,14 @@ pub fn session_of(snapshot: &Snapshot, pid: u32) -> Option<Unit> {
         let Some(parent) = current.parent_pid.and_then(|id| by_pid.get(&id)) else {
             break;
         };
-        if parent.start_time > current.start_time
-            || current
-                .parent_start_time
-                .is_some_and(|s| s != parent.start_time)
-        {
+        if !valid_parent(parent, current) {
             break;
         }
         if let Some(name) = bundle(parent) {
             app = Some(name);
             break;
         }
-        if !is_wrapper(parent) {
+        if !is_wrapper(parent) && !is_iterm_server(parent, &by_pid) {
             root = parent;
         }
         current = parent;
@@ -325,7 +386,7 @@ pub fn session_of(snapshot: &Snapshot, pid: u32) -> Option<Unit> {
     let mut children: HashMap<u32, Vec<&ProcessRecord>> = HashMap::new();
     for p in &snapshot.processes {
         if let Some(parent) = p.parent_pid.and_then(|id| by_pid.get(&id)) {
-            if parent.pid != p.pid && parent.start_time <= p.start_time {
+            if valid_parent(parent, p) {
                 children.entry(parent.pid).or_default().push(p);
             }
         }
@@ -366,6 +427,131 @@ mod tests {
             workload_id: "code".into(),
             ..Default::default()
         }
+    }
+
+    fn iterm() -> Snapshot {
+        let server = dirs::home_dir()
+            .unwrap()
+            .join("Library/Application Support/iTerm2/iTermServer-3.7.6");
+        Snapshot {
+            source: "live".into(),
+            sample_ready: true,
+            processes: vec![
+                p(
+                    1,
+                    None,
+                    "iTerm2",
+                    "/Applications/iTerm.app/Contents/MacOS/iTerm2",
+                    0.5,
+                ),
+                p(
+                    2,
+                    Some(1),
+                    "iTermServer-3.7.6",
+                    server.to_str().unwrap(),
+                    0.5,
+                ),
+                p(3, Some(2), "login", "/usr/bin/login", 0.0),
+                p(4, Some(3), "-zsh", "/bin/zsh", 0.0),
+                p(5, Some(4), "node", "/usr/local/bin/node", 8.0),
+                p(6, Some(5), "worker", "/opt/tools/worker", 4.0),
+                p(7, Some(2), "zsh", "/bin/zsh", 0.0),
+                p(8, Some(7), "python3", "/usr/local/bin/python3", 3.0),
+                p(9, Some(2), "login", "/usr/bin/login", 0.0),
+                p(10, Some(9), "zsh", "/bin/zsh", 0.0),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn iterm_server_is_app_plumbing_and_commands_have_separate_resources() {
+        let snapshot = iterm();
+        let members = snapshot.processes.iter().collect::<Vec<_>>();
+        let inside = inspect(&snapshot, "iterm", &members);
+        assert_eq!(inside.units.len(), 2);
+        let first = &inside.units[0];
+        assert_eq!((first.pid, first.process_count), (Some(5), 2));
+        assert_eq!(first.cpu_percent, 12.0);
+        assert_eq!(first.memory_bytes, 2 << 20);
+        assert!(first.actions.iter().any(|a| a == "pause"));
+        let second = &inside.units[1];
+        assert_eq!((second.pid, second.process_count), (Some(8), 1));
+        assert_eq!(second.cpu_percent, 3.0);
+        assert_eq!(inside.remainder[0].process_count, 2);
+        assert_eq!(inside.remainder[0].cpu_percent, 1.0);
+        assert_eq!(inside.remainder[1].process_count, 5);
+    }
+
+    #[test]
+    fn incident_attribution_targets_the_command_not_all_iterm_sessions() {
+        let snapshot = iterm();
+        let first = session_of(&snapshot, 6).unwrap();
+        assert_eq!((first.pid, first.process_count), (Some(5), 2));
+        assert_eq!(first.cpu_percent, 12.0);
+        let second = session_of(&snapshot, 8).unwrap();
+        assert_eq!((second.pid, second.process_count), (Some(8), 1));
+        assert!(session_of(&snapshot, 2).is_none());
+        assert!(session_actions(&snapshot.processes[1]).is_empty());
+    }
+
+    #[test]
+    fn a_similarly_named_command_outside_iterms_support_folder_stays_a_command() {
+        let mut snapshot = iterm();
+        for path in [
+            "/tmp/iTermServer-3.7.6",
+            "/tmp/Library/Application Support/iTerm2/iTermServer-3.7.6",
+        ] {
+            snapshot.processes[1].executable = Some(path.into());
+            let members = snapshot.processes.iter().collect::<Vec<_>>();
+            let inside = inspect(&snapshot, "iterm", &members);
+            assert_eq!(inside.units.len(), 1);
+            assert_eq!(inside.units[0].pid, Some(2));
+            assert_eq!(session_of(&snapshot, 6).unwrap().pid, Some(2));
+        }
+    }
+
+    #[test]
+    fn the_server_exception_requires_iterms_main_executable_as_its_parent() {
+        let mut snapshot = iterm();
+        for parent in [
+            "/Applications/Other.app/Contents/MacOS/iTerm2",
+            "/Applications/iTerm.app/Contents/MacOS/other",
+        ] {
+            snapshot.processes[0].executable = Some(parent.into());
+            let members = snapshot.processes.iter().collect::<Vec<_>>();
+            let inside = inspect(&snapshot, "iterm", &members);
+            assert_eq!(inside.units.len(), 1);
+            assert_eq!(inside.units[0].pid, Some(2));
+            // Do not offer pausing a possible server, even without enough evidence to
+            // split its sessions (e.g. a detached server or an unexpected parent).
+            assert!(inside.units[0].actions.is_empty());
+        }
+    }
+
+    #[test]
+    fn changed_parent_identity_cannot_attach_a_server_or_an_extra_command_child() {
+        let mut snapshot = iterm();
+        snapshot.processes[1].parent_start_time = Some(99);
+        let members = snapshot.processes.iter().collect::<Vec<_>>();
+        assert!(inspect(&snapshot, "iterm", &members).units.is_empty());
+        assert!(session_of(&snapshot, 6).is_none());
+
+        let mut snapshot = iterm();
+        snapshot.processes[5].parent_start_time = Some(99);
+        let members = snapshot.processes.iter().collect::<Vec<_>>();
+        let inside = inspect(&snapshot, "iterm", &members);
+        assert_eq!(inside.units[0].process_count, 1);
+        assert_eq!(session_of(&snapshot, 5).unwrap().process_count, 1);
+        assert!(session_of(&snapshot, 6).is_none());
+    }
+
+    #[test]
+    fn a_server_without_its_original_parent_never_becomes_a_pause_target() {
+        let mut snapshot = iterm();
+        snapshot.processes[1].parent_pid = None;
+        assert!(session_of(&snapshot, 2).is_none());
+        assert!(session_actions(&snapshot.processes[1]).is_empty());
     }
 
     #[test]
