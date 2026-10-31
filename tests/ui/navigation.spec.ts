@@ -105,7 +105,9 @@ test('simulated pressure and inbox keep explanations concise and demo actions di
     await expect(assistant.locator('details[open]')).toHaveCount(0);
     await assistant.getByRole('button', { name: 'Review change', exact: true }).click();
     const review = page.getByRole('dialog', { name: 'Review priority change' });
-    await expect(review.getByRole('button', { name: 'Apply once', exact: true })).toBeDisabled();
+    await expect(
+        review.getByRole('button', { name: 'Move to Background', exact: true })
+    ).toBeDisabled();
     await review.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.clock.install();
     await page.clock.fastForward(10_000);

@@ -27,11 +27,9 @@ test('incident explanation is optional and permissions appear only in review', a
     await assistant.getByRole('button', { name: 'Review change' }).press('Enter');
     const review = page.getByRole('dialog', { name: 'Review priority change' });
     await expect(review).toContainText('does not free memory');
-    await expect(review).toContainText('Undo may require administrator access');
-    await expect(review.getByRole('checkbox')).not.toBeChecked();
-    await review.getByRole('checkbox').check();
-    await expect(review).toContainText('permits future CPU priority changes');
-    await expect(review.getByRole('button', { name: 'Allow & apply' })).toBeDisabled();
+    await expect(review).toContainText('until you move it back to Normal');
+    await expect(review.getByRole('checkbox')).toHaveCount(0);
+    await expect(review.getByRole('button', { name: 'Move to Background' })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
     await expect(explanation).toBeHidden();

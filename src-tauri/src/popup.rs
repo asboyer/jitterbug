@@ -109,8 +109,8 @@ pub fn choose(cases: &[Case], policy: &Policy, gate: &Gate, deferred: &[u64]) ->
 }
 
 /// Only what the in-app notice and review already show: no paths, PIDs, evidence, or diagnosis.
-/// `undo` is the opaque id of the priority change this case made, while it can be undone.
-pub fn view(case: &Case, more: usize, undo: Option<u64>) -> Value {
+/// `undo` says the app this case moved to Background is still there, so Undo can move it back.
+pub fn view(case: &Case, more: usize, undo: bool) -> Value {
     let mut payload = json!({
         "kind": "case",
         "id": case.id,
@@ -138,7 +138,7 @@ pub fn view(case: &Case, more: usize, undo: Option<u64>) -> Value {
                 && case.proposal.as_ref().is_some_and(|p| {
                     crate::pause::is_paused(p.process.pid, p.process.start_time)
                 }),
-            "undo": undo.filter(|_| r.action == "lower_priority"),
+            "undo": undo && r.action == "lower_priority",
         })),
         "verification": case.verification.as_ref().map(|v| json!({
             "priority_verified": v.priority_verified,
@@ -240,7 +240,7 @@ fn update(app: &tauri::AppHandle) {
     let shown = capture.or_else(|| {
         let choice = choice?;
         let case = cases.iter().find(|c| c.id == choice.id)?;
-        Some(view(case, choice.more, state.priority_change_for(case.id)))
+        Some(view(case, choice.more, state.undoable(case).is_some()))
     });
     inner.current = shown.clone();
     drop(inner);
@@ -545,7 +545,6 @@ fn demo_case(at: u64) -> Result<Case, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation::Rule;
 
     fn waiting(id: u64, detected_at: u64) -> Case {
         let mut case = demo_case(detected_at).unwrap();
@@ -652,14 +651,15 @@ mod tests {
         manual.origin = Origin::Snapshot;
         assert!(choose(&[manual.clone()], &disabled, &open(200), &[]).is_some());
         assert!(choose(&[manual], &policy, &snoozed, &[]).is_some());
-        // A saved permission applies automatically without asking.
-        let permitted = Policy {
-            rules: vec![Rule {
-                workload_id: case.proposal.unwrap().process.workload_id,
-                label: "Example".into(),
-            }],
-            ..Default::default()
-        };
+        // An app in Background is moved automatically without asking.
+        let mut permitted = Policy::default();
+        permitted.assign(crate::automation::Assignment {
+            workload_id: case.proposal.unwrap().process.workload_id,
+            label: "Example".into(),
+            bucket: crate::automation::Bucket::Background,
+            since: 1,
+            source: crate::automation::AssignedBy::You,
+        });
         assert_eq!(choose(&cases, &permitted, &open(200), &[]), None);
     }
 
@@ -696,7 +696,7 @@ mod tests {
             proposal.process.executable = Some("/private/example/tool".into());
             proposal.process.working_directory = Some("/private/example".into());
         }
-        let text = view(&case, 2, Some(7)).to_string();
+        let text = view(&case, 2, true).to_string();
         for private in [
             "/private",
             "pid",
@@ -709,7 +709,7 @@ mod tests {
         }
         assert!(text.contains("\"more\":2"));
         assert!(text.contains("awaiting_approval"));
-        // A finished priority change offers Undo by an opaque id, never by process identity.
+        // A finished priority change offers Undo, never by process identity.
         let process = case.proposal.as_ref().unwrap().process.clone();
         case.report = Some(crate::types::ActionReport {
             action: "lower_priority".into(),
@@ -719,14 +719,14 @@ mod tests {
             measured_after_seconds: 6,
             fresh: true,
         });
-        let payload = view(&case, 0, Some(7));
-        assert_eq!(payload["report"]["undo"], 7);
+        let payload = view(&case, 0, true);
+        assert_eq!(payload["report"]["undo"], true);
         let text = payload.to_string();
         for private in ["/private", "pid", "start_time"] {
             assert!(!text.contains(private), "{private} leaked");
         }
         case.report.as_mut().unwrap().action = "terminate".into();
-        assert!(view(&case, 0, Some(7))["report"]["undo"].is_null());
+        assert_eq!(view(&case, 0, true)["report"]["undo"], false);
     }
 
     #[test]

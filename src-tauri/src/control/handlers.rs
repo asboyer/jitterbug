@@ -240,6 +240,19 @@ pub fn handle(
             ))?;
             Ok(case_json(&case))
         }
+        "request_background" => {
+            let snapshot = snapshot(runtime)?;
+            let option = background_option(&snapshot, &policy, text("workload_id")?)?;
+            let who = requester(&snapshot, &lineage(caller));
+            let workload = option.process.workload_id.clone();
+            let case = tauri::async_runtime::block_on(runtime.agent_request(
+                option,
+                Some(workload),
+                &who,
+                text("reason").unwrap_or("No reason given."),
+            ))?;
+            Ok(case_json(&case))
+        }
         "request_status" => {
             let id = params
                 .get("request_id")
@@ -253,6 +266,42 @@ pub fn handle(
         }
         _ => Err("Unknown method.".into()),
     }
+}
+
+/// The request behind `jitterbug_request_background`: the app's busiest process it may lower,
+/// never a Protected app or one already in Background.
+fn background_option(
+    snapshot: &Snapshot,
+    policy: &crate::automation::Policy,
+    workload_id: &str,
+) -> Result<crate::automation::Proposal, String> {
+    let workload = snapshot
+        .workloads
+        .iter()
+        .find(|w| w.id == workload_id)
+        .ok_or("That app is not running. Call jitterbug_overview for current workload IDs.")?;
+    match policy.bucket(workload_id) {
+        crate::automation::Bucket::Protected => {
+            return Err("The person marked this app Protected. Leave it as it is.".into())
+        }
+        crate::automation::Bucket::Background => {
+            return Err("This app is already in Background.".into())
+        }
+        crate::automation::Bucket::Normal => {}
+    }
+    let process = snapshot
+        .processes
+        .iter()
+        .filter(|p| p.workload_id == workload.id && p.actions.iter().any(|a| a == "lower_priority"))
+        .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))
+        .ok_or("Jitterbug cannot change this app's priority.")?;
+    Ok(crate::automation::Proposal {
+        impact: crate::automation::impact(snapshot, process),
+        process: process.clone(),
+        action: "lower_priority".into(),
+        rationale: "An agent asked to move this app to Background: macOS runs it in background mode, so other apps get CPU, disk, and network first. It keeps running, and you can move it back to Normal at any time.".into(),
+        unit: None,
+    })
 }
 
 pub fn overview(snapshot: &Snapshot, lineage: &[(u32, u64)]) -> Result<Value, String> {

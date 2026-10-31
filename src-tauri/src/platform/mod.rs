@@ -78,6 +78,21 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
     macos::process_cpu_ns(pid, start_time)
 }
 
+/// Whether macOS confirms the process is in background mode that another process set: the
+/// kernel's flag plus a throttled base priority. `None` when the process exited, its PID was
+/// reused, it cannot be read, or the platform has no background mode.
+pub fn in_background(pid: u32, start_time: u64) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::in_background(pid, start_time)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, start_time);
+        None
+    }
+}
+
 /// One process from a native all-process scan.
 #[derive(Clone, Debug, Default)]
 pub struct NativeProcess {

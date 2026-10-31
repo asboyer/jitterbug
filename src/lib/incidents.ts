@@ -74,8 +74,8 @@ export function incidentOutcome(incident: IncidentSummary): string {
                 : 'The process stopped. A fresh sample no longer shows it.';
         if (!incident.report.after) return 'The original process is no longer in the inventory.';
         return incident.verification.priority_verified
-            ? 'The operating system confirmed the lower priority.'
-            : 'The priority change could not be confirmed.';
+            ? 'macOS confirmed background mode.'
+            : 'macOS did not confirm background mode.';
     }
     switch (incident.stage) {
         case 'detected':
@@ -83,11 +83,11 @@ export function incidentOutcome(incident: IncidentSummary): string {
         case 'investigating':
             return 'Jitterbug is checking what changed.';
         case 'awaiting_approval':
-            return 'Review a CPU priority adjustment before it runs.';
+            return 'Review moving an app to Background before it runs.';
         case 'applying':
-            return 'Applying the approved priority adjustment.';
+            return 'Moving the app to Background.';
         case 'verifying':
-            return 'Collecting a fresh reading and checking the operating system’s priority.';
+            return 'Collecting a fresh reading and checking background mode.';
         case 'completed':
             return incident.report
                 ? 'The action was sent. Open the result to review what was measured.'
@@ -205,13 +205,14 @@ export function helperNote(option: ActionPopupOption): string | null {
     return `Busiest part: ${name}, a tab, extension, or background part of ${label}. macOS doesn’t say which.${manager}`;
 }
 
-/** The priority option as its consequence: who goes first. */
-export function priorityLabel(victim?: string | null): string {
-    return victim ? `Let ${victim} go first` : 'Let other apps go first';
+/** The priority option names the app and the bucket it moves to. */
+export function backgroundLabel(option: ActionPopupOption): string {
+    return `Move ${option.impact?.label ?? option.process.name} to Background`;
 }
 
-export function priorityAfter(): string {
-    return 'After: keeps running, waits its turn for CPU';
+/** Who goes first afterwards, and that it can be undone. */
+export function backgroundAfter(victim?: string | null): string {
+    return `After: keeps running; ${victim ?? 'other apps'} get CPU and disk first`;
 }
 
 /** A stop frees what ends: the whole app for its main executable, else that one process. */
@@ -320,13 +321,14 @@ export function actionResult(
     }
     const verified = !!verification?.priority_verified;
     const dropped = report.cpu_after !== null && report.cpu_after < report.cpu_before - 1;
+    const app = option?.impact?.label ?? name;
     return {
         title: verified
-            ? `Lowered ${option?.impact?.label ?? name}`
-            : `Priority change for ${name} not confirmed`,
+            ? `Moved ${app} to Background`
+            : `Background mode for ${name} not confirmed`,
         meaning: verified
-            ? `${name} keeps running. When apps compete for CPU, macOS now runs ${victim ?? 'your other apps'} first.`
-            : 'macOS did not confirm the new priority. Open Review for details.',
+            ? `${app} keeps running. macOS now gives ${victim ?? 'your other apps'} CPU and disk first, including when ${app} starts new processes.`
+            : 'macOS did not confirm background mode. Open Review for details.',
         measured: report.fresh
             ? `${name} ${change(
                   percent(report.cpu_before),
@@ -337,6 +339,6 @@ export function actionResult(
             ? ''
             : dropped
               ? 'Its CPU use dropped; other activity may also have changed.'
-              : 'No drop is expected: lower priority doesn’t cap CPU, it only decides who goes first. Lasts until it exits.',
+              : 'No drop is expected: background mode doesn’t cap CPU, it only decides who goes first.',
     };
 }

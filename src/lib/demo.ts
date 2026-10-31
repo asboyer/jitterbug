@@ -250,7 +250,7 @@ export const demoBootstrap: Bootstrap = {
             sustained_samples: 3,
             cooldown_seconds: 300,
             max_investigations_per_hour: 4,
-            rules: [],
+            buckets: [],
             jitter_mode: 'auto',
             action_popups: true,
             auto_snapshots: false,
