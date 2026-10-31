@@ -678,6 +678,13 @@ export interface InsideUnit {
     paused_until: number | null;
 }
 
+export interface ProcessLabel {
+    pid: number;
+    start_time: number;
+    title: string;
+    subtitle: string;
+}
+
 export interface InsideView {
     workload_id: string;
     source: string;
@@ -694,4 +701,5 @@ export interface InsideView {
     measured_seconds: number;
     captured_at: number;
     limits: string;
+    labels: ProcessLabel[];
 }

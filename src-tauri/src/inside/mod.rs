@@ -41,6 +41,28 @@ pub struct Remainder {
     pub process_count: usize,
 }
 
+/// What one process of the workload is, in a person's terms: the tab or session it runs, or its
+/// role in the app. Local-only like unit titles; never sent to events, logs, or model prompts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ProcessLabel {
+    pub pid: u32,
+    pub start_time: u64,
+    pub title: String,
+    /// Secondary context: a tab's host or what a role covers. May be empty.
+    pub subtitle: String,
+}
+
+impl ProcessLabel {
+    fn new(p: &ProcessRecord, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
+        Self {
+            pid: p.pid,
+            start_time: p.start_time,
+            title: title.into(),
+            subtitle: subtitle.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Inside {
     pub workload_id: String,
@@ -54,6 +76,8 @@ pub struct Inside {
     pub measured_seconds: f32,
     pub captured_at: u64,
     pub limits: String,
+    /// Names for the workload's processes; processes with nothing better are left out.
+    pub labels: Vec<ProcessLabel>,
 }
 
 impl Inside {
@@ -94,11 +118,31 @@ pub fn lens(members: &[&ProcessRecord]) -> Lens {
     }
 }
 
-/// Blocking: a browser view samples for about one second.
+/// Blocking: a browser view samples for about one second and may make the browser ask once.
 pub fn inspect(snapshot: &Snapshot, workload_id: &str) -> Result<Inside, String> {
+    inspect_with(snapshot, workload_id, true)
+}
+
+/// Without `connect`, a browser is only measured through a connection the person already
+/// allowed, so automatic labeling never makes the browser ask.
+pub fn inspect_with(
+    snapshot: &Snapshot,
+    workload_id: &str,
+    connect: bool,
+) -> Result<Inside, String> {
     let members = crate::details::members(snapshot, workload_id)?;
-    Ok(match lens(&members) {
-        Lens::Browser => chrome::inspect(snapshot, workload_id, &members),
+    let lens = lens(&members);
+    let mut inside = match lens {
+        Lens::Browser if connect => chrome::inspect(snapshot, workload_id, &members),
+        Lens::Browser if chrome::connected() => {
+            chrome::inspect_connected(snapshot, workload_id, &members)
+        }
+        Lens::Browser => Inside::status(
+            workload_id,
+            chrome::SOURCE,
+            "setup",
+            "Choose Show tabs to see which tab each process runs.",
+        ),
         Lens::Sessions => sessions::inspect(snapshot, workload_id, &members),
         Lens::None => Inside::status(
             workload_id,
@@ -106,6 +150,56 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str) -> Result<Inside, String>
             "unavailable",
             "No inside view for this app yet. Browsers built on Chromium, terminals, editors, and coding-agent apps are supported.",
         ),
+    };
+    let browser = matches!(lens, Lens::Browser);
+    if !matches!(lens, Lens::None) {
+        for p in &members {
+            if inside.labels.iter().any(|l| l.pid == p.pid) {
+                continue;
+            }
+            if let Some((title, subtitle)) = role(p, browser) {
+                inside.labels.push(ProcessLabel::new(p, title, subtitle));
+            }
+        }
+    }
+    Ok(inside)
+}
+
+/// A helper's role from its name, for processes no tab or session explains. Only processes
+/// inside an app bundle: a command's own name is already the best name for it.
+fn role(p: &ProcessRecord, browser: bool) -> Option<(&'static str, &'static str)> {
+    let executable = p.executable.as_deref()?;
+    let bundle = crate::attribution::application_bundle(executable)?;
+    let main = executable.parent() == Some(bundle.join("Contents/MacOS").as_path());
+    let name = p.name.to_lowercase();
+    Some(if name.contains("crashpad") {
+        ("Crash reporter", "Sends a report if the app crashes")
+    } else if name.ends_with("(renderer)") && browser {
+        (
+            "Tab or extension (not identified)",
+            "Choose Show tabs to identify it",
+        )
+    } else if name.ends_with("(renderer)") {
+        ("Window or extension", "Draws a window, panel, or web view")
+    } else if name.ends_with("(gpu)") && browser {
+        chrome::role("GPU").1
+    } else if name.ends_with("(gpu)") {
+        ("Graphics", "Shared by all windows")
+    } else if name.ends_with("(plugin)") {
+        ("Extensions", "Extension host or plug-in")
+    } else if name.ends_with("(alerts)") {
+        ("Notifications", "Shows the app's alerts")
+    } else if name.contains("helper") && browser {
+        chrome::role("utility").1
+    } else if name.contains("helper") {
+        ("Background helper", "Services the app's windows")
+    } else if !main {
+        // An updater or other bundled tool: its own name says more than a guess.
+        return None;
+    } else if browser {
+        chrome::role("browser").1
+    } else {
+        ("App window", "The app's main process")
     })
 }
 
@@ -138,6 +232,75 @@ mod tests {
         );
         assert_eq!(host("about:blank"), None);
         assert_eq!(host("chrome://newtab/").as_deref(), Some("newtab"));
+    }
+
+    #[test]
+    fn helpers_get_plain_roles_without_ever_contacting_the_browser() {
+        let bundle = "/Applications/Google Chrome.app/Contents";
+        let helper = |pid: u32, name: &str, exe: String| ProcessRecord {
+            pid,
+            start_time: pid as u64,
+            name: name.into(),
+            executable: Some(exe.into()),
+            workload_id: "chrome".into(),
+            ..Default::default()
+        };
+        let frameworks = format!("{bundle}/Frameworks/F.framework/Helpers");
+        let snapshot = Snapshot {
+            source: "live".into(),
+            captured_at: now(),
+            sample_ready: true,
+            processes: vec![
+                helper(1, "Google Chrome", format!("{bundle}/MacOS/Google Chrome")),
+                helper(
+                    2,
+                    "Google Chrome Helper (Renderer)",
+                    format!("{frameworks}/R.app/Contents/MacOS/r"),
+                ),
+                helper(
+                    3,
+                    "Google Chrome Helper (Renderer)",
+                    format!("{frameworks}/R.app/Contents/MacOS/r"),
+                ),
+                helper(
+                    4,
+                    "Google Chrome Helper (GPU)",
+                    format!("{frameworks}/G.app/Contents/MacOS/g"),
+                ),
+                helper(
+                    5,
+                    "Google Chrome Helper",
+                    format!("{frameworks}/H.app/Contents/MacOS/h"),
+                ),
+                helper(
+                    6,
+                    "chrome_crashpad_handler",
+                    format!("{frameworks}/crashpad"),
+                ),
+                helper(7, "some-tool", "/usr/local/bin/some-tool".into()),
+            ],
+            ..Default::default()
+        };
+        // No connection was ever allowed in tests, so this must not measure or prompt.
+        let inside = inspect_with(&snapshot, "chrome", false).unwrap();
+        assert_eq!(inside.status, "setup");
+        assert!(inside.units.is_empty());
+        let title = |pid: u32| {
+            inside
+                .labels
+                .iter()
+                .find(|l| l.pid == pid)
+                .map(|l| l.title.as_str())
+        };
+        assert_eq!(title(1), Some("Browser window"));
+        assert_eq!(title(2), Some("Tab or extension (not identified)"));
+        assert_eq!(title(3), Some("Tab or extension (not identified)"));
+        assert_eq!(title(4), Some("Graphics (shared by all tabs)"));
+        assert_eq!(title(5), Some("Network & storage"));
+        assert_eq!(title(6), Some("Crash reporter"));
+        // Outside an app bundle, or a bundled tool, the own name is already the best name.
+        assert_eq!(title(7), None);
+        assert_eq!(title(8), None);
     }
 
     #[test]

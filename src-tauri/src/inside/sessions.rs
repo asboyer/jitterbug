@@ -1,7 +1,7 @@
 //! Terminal, editor, and coding-agent apps: one unit per command started inside the app
 //! (an agent session, a dev server, a test run), with its whole process subtree. Built from the
 //! current collector inventory; no extra sampling, transcripts, or shell history.
-use super::{Inside, Remainder, Unit};
+use super::{Inside, ProcessLabel, Remainder, Unit};
 use crate::types::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -169,12 +169,22 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
     let mut seen: HashSet<u32> = queue.iter().map(|p| p.pid).collect();
     let (mut own_total, mut shells) = (Remainder::default(), Remainder::default());
     let mut roots = Vec::new();
+    let mut wrappers = Vec::new();
+    let mut labels: Vec<ProcessLabel> = Vec::new();
     while let Some(p) = queue.pop() {
+        if is_iterm_server(p, &by_pid) {
+            labels.push(ProcessLabel::new(
+                p,
+                "Terminal session server",
+                "Keeps iTerm sessions running",
+            ));
+        }
         if own(p) {
             own_total.cpu_percent += p.cpu_percent;
             own_total.memory_bytes += p.memory_bytes;
             own_total.process_count += 1;
         } else {
+            wrappers.push(p);
             shells.cpu_percent += p.cpu_percent;
             shells.memory_bytes += p.memory_bytes;
             shells.process_count += 1;
@@ -211,9 +221,35 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
                 }
                 i += 1;
             }
-            unit(root, &tree, &app_name, &registered)
+            let unit = unit(root, &tree, &app_name, &registered);
+            let (title, subtitle) = session_label(&unit, root);
+            // The shells that launched the command belong to its session, not to idle ones.
+            let mut launchers = Vec::new();
+            let mut current = root;
+            while let Some(parent) = current.parent_pid.and_then(|id| by_pid.get(&id)) {
+                if own(parent) || !is_wrapper(parent) || !valid_parent(parent, current) {
+                    break;
+                }
+                launchers.push(*parent);
+                current = parent;
+            }
+            for p in tree.iter().chain(&launchers) {
+                if !labels.iter().any(|l| l.pid == p.pid) {
+                    labels.push(ProcessLabel::new(p, &title, &subtitle));
+                }
+            }
+            unit
         })
         .collect();
+    for p in wrappers {
+        if !labels.iter().any(|l| l.pid == p.pid) {
+            labels.push(ProcessLabel::new(
+                p,
+                "Idle shell",
+                "A terminal shell with nothing running in it",
+            ));
+        }
+    }
     units.sort_by(|a, b| {
         (b.cpu_percent + b.memory_bytes as f32 / 1e9)
             .total_cmp(&(a.cpu_percent + a.memory_bytes as f32 / 1e9))
@@ -241,6 +277,7 @@ pub fn inspect(snapshot: &Snapshot, workload_id: &str, members: &[&ProcessRecord
         .filter(|r| r.process_count > 0)
         .collect();
     inside.captured_at = snapshot.captured_at;
+    inside.labels = labels;
     inside.limits = "Built from the current parent chain. Detached or reparented commands (tmux servers, daemons, background jobs after their shell exits) are not shown here. CPU and memory are the last five-second sample; summed memory may double-count shared pages. A command's name and folder do not prove which task it is doing unless it was registered with jitterbug-run.".into();
     inside
 }
@@ -323,6 +360,33 @@ fn unit(
             .into_iter()
             .find(|p| p.pid == root.pid && p.start_time == root.start_time)
             .map(|p| p.until),
+    }
+}
+
+/// Coding agents whose command name is not what people call them.
+const AGENTS: &[(&str, &str)] = &[
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("gemini", "Gemini CLI"),
+    ("aider", "Aider"),
+    ("opencode", "OpenCode"),
+    ("cursor-agent", "Cursor Agent"),
+];
+
+/// A session's process title: a registered task as registered, a known agent by its product
+/// name ("Claude Code session · repo"), anything else as its command and folder.
+fn session_label(unit: &Unit, root: &ProcessRecord) -> (String, String) {
+    if unit.confidence == "Registered task" {
+        return (unit.title.clone(), "Registered agent task".into());
+    }
+    let name = root.name.to_lowercase();
+    match AGENTS.iter().find(|(command, _)| *command == name) {
+        Some((_, agent)) => (
+            unit.title
+                .replacen(&root.name, &format!("{agent} session"), 1),
+            "Coding agent session".into(),
+        ),
+        None => (unit.title.clone(), "Command session".into()),
     }
 }
 
@@ -484,6 +548,25 @@ mod tests {
     }
 
     #[test]
+    fn the_iterm_server_and_commands_are_named() {
+        let snapshot = iterm();
+        let members = snapshot.processes.iter().collect::<Vec<_>>();
+        let inside = inspect(&snapshot, "iterm", &members);
+        let title = |pid: u32| {
+            inside
+                .labels
+                .iter()
+                .find(|l| l.pid == pid)
+                .map(|l| l.title.as_str())
+        };
+        assert_eq!(title(2), Some("Terminal session server"));
+        assert_eq!(title(6), Some("node"));
+        assert_eq!(title(3), Some("node"));
+        assert_eq!(title(8), Some("python3"));
+        assert_eq!(title(10), Some("Idle shell"));
+    }
+
+    #[test]
     fn incident_attribution_targets_the_command_not_all_iterm_sessions() {
         let snapshot = iterm();
         let first = session_of(&snapshot, 6).unwrap();
@@ -592,6 +675,21 @@ mod tests {
         let own = &inside.remainder[0];
         assert_eq!(own.process_count, 2);
         assert_eq!(inside.remainder[1].process_count, 3);
+        // Every process of the session, and the shells that launched it, carry its name.
+        let title = |pid: u32| {
+            inside
+                .labels
+                .iter()
+                .find(|l| l.pid == pid)
+                .map(|l| l.title.as_str())
+        };
+        for pid in [3, 4, 5, 6] {
+            assert_eq!(title(pid), Some("Claude Code session · feat-x"));
+        }
+        assert_eq!(title(7), Some("Idle shell"));
+        // The app's own processes are named by role in `inspect_with`, not here.
+        assert_eq!(title(1), None);
+        assert_eq!(title(8), None);
     }
 
     #[test]
