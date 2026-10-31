@@ -1,6 +1,6 @@
 //! The most specific action for a workload under pressure, offered in place of quitting the
-//! whole app: close its heaviest browser tab, or pause the heaviest command session running
-//! inside it. `None` means callers fall back to the existing stop option.
+//! whole app: pause (or else close) its heaviest browser tab, or pause the heaviest command
+//! session running inside it. No options means callers fall back to the existing stop option.
 use super::{chrome, lens, sessions, Lens, Unit};
 use crate::{
     automation::{Impact, Proposal},
@@ -25,23 +25,39 @@ fn weight(unit: &Unit, memory: bool) -> f64 {
 
 /// Blocking: a connected browser is measured for about one second.
 pub fn option(snapshot: &Snapshot, workload_id: &str, memory: bool) -> Option<Proposal> {
+    options(snapshot, workload_id, memory).into_iter().next()
+}
+
+/// Every offer for the workload, gentlest first: for a browser tab, pausing it and then
+/// closing it. Blocking like `option`.
+pub fn options(snapshot: &Snapshot, workload_id: &str, memory: bool) -> Vec<Proposal> {
     // A Jitter Snapshot culprit can be one command inside an app: `cmd-<pid>-<start>`.
     if let Some(rest) = workload_id.strip_prefix("cmd-") {
-        let (pid, start) = rest.split_once('-')?;
-        let (pid, start): (u32, u64) = (pid.parse().ok()?, start.parse().ok()?);
+        let Some((pid, start)) = rest.split_once('-') else {
+            return vec![];
+        };
+        let (Ok(pid), Ok(start)) = (pid.parse::<u32>(), start.parse::<u64>()) else {
+            return vec![];
+        };
         return sessions::session_of(snapshot, pid)
             .filter(|u| u.start_time == Some(start) && u.actions.iter().any(|a| a == "pause"))
-            .and_then(|u| pause(snapshot, u));
+            .and_then(|u| pause(snapshot, u))
+            .into_iter()
+            .collect();
     }
-    let members = crate::details::members(snapshot, workload_id).ok()?;
-    let workload = snapshot.workloads.iter().find(|w| w.id == workload_id)?;
+    let (Ok(members), Some(workload)) = (
+        crate::details::members(snapshot, workload_id),
+        snapshot.workloads.iter().find(|w| w.id == workload_id),
+    ) else {
+        return vec![];
+    };
     let total = if memory {
         workload.memory_bytes as f64
     } else {
         workload.cpu_percent as f64
     };
-    match lens(&members) {
-        Lens::Browser => tab(snapshot, workload, &members, memory),
+    let session = match lens(&members) {
+        Lens::Browser => return tab(snapshot, workload, &members, memory),
         Lens::Sessions => sessions::inspect(snapshot, workload_id, &members)
             .units
             .into_iter()
@@ -54,8 +70,7 @@ pub fn option(snapshot: &Snapshot, workload_id: &str, memory: bool) -> Option<Pr
                     u.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= SESSION_CORES
                 };
                 large || (total > 0.0 && weight(u, memory) >= total * SHARE as f64)
-            })
-            .and_then(|u| pause(snapshot, u)),
+            }),
         // A project or command workload: pause the agent or terminal session that owns its
         // heaviest process, when an app launched it.
         Lens::None => members
@@ -71,9 +86,12 @@ pub fn option(snapshot: &Snapshot, workload_id: &str, memory: bool) -> Option<Pr
                 w(a).total_cmp(&w(b))
             })
             .and_then(|hog| sessions::session_of(snapshot, hog.pid))
-            .filter(|u| u.actions.iter().any(|a| a == "pause"))
-            .and_then(|u| pause(snapshot, u)),
-    }
+            .filter(|u| u.actions.iter().any(|a| a == "pause")),
+    };
+    session
+        .and_then(|u| pause(snapshot, u))
+        .into_iter()
+        .collect()
 }
 
 /// A pause offer for one command session unit.
@@ -111,31 +129,45 @@ fn tab(
     workload: &Workload,
     members: &[&ProcessRecord],
     memory: bool,
-) -> Option<Proposal> {
+) -> Vec<Proposal> {
     if !chrome::connected() {
-        return None;
+        return vec![];
     }
     let view = chrome::inspect_connected(snapshot, &workload.id, members);
-    let unit = view
+    // A paused tab already uses no CPU; the heaviest running one is the candidate.
+    let Some(unit) = view
         .units
         .into_iter()
-        .filter(|u| u.kind == "tab")
-        .max_by(|a, b| weight(a, memory).total_cmp(&weight(b, memory)))?;
+        .filter(|u| u.kind == "tab" && u.paused_until.is_none())
+        .max_by(|a, b| weight(a, memory).total_cmp(&weight(b, memory)))
+    else {
+        return vec![];
+    };
     let large = if memory {
         unit.memory_bytes >= TAB_MEMORY
     } else {
         unit.cpu_percent * snapshot.logical_cpus.max(1) as f32 >= 25.0
     };
     if !large {
-        return None;
+        return vec![];
     }
-    close_tab(workload, members, unit)
+    tab_offers(workload, members, unit)
 }
 
-/// A close offer for one measured tab of a browser workload.
-pub fn close_tab(workload: &Workload, members: &[&ProcessRecord], unit: Unit) -> Option<Proposal> {
-    // The renderer stands in for identity; the tab itself is rechecked by address on approval.
-    let process = members
+/// Offers for one tab, gentlest first: pause it when it is in the background, then close it.
+pub fn tab_offers(workload: &Workload, members: &[&ProcessRecord], unit: Unit) -> Vec<Proposal> {
+    let pausable = unit.actions.iter().any(|a| a == "pause_tab");
+    let mut offers = Vec::new();
+    if pausable {
+        offers.extend(pause_tab(workload, members, unit.clone()));
+    }
+    offers.extend(close_tab(workload, members, unit));
+    offers
+}
+
+/// The renderer stands in for identity; the tab itself is rechecked by address on approval.
+fn tab_process(members: &[&ProcessRecord], unit: &Unit) -> Option<ProcessRecord> {
+    members
         .iter()
         .find(|p| Some(p.pid) == unit.pid)
         .or_else(|| {
@@ -144,7 +176,37 @@ pub fn close_tab(workload: &Workload, members: &[&ProcessRecord], unit: Unit) ->
                     .is_none_or(|parent| !members.iter().any(|m| m.pid == parent))
             })
         })
-        .map(|p| (*p).clone())?;
+        .map(|p| (*p).clone())
+}
+
+/// A pause offer for one background tab: its scripts and timers freeze, nothing is lost.
+pub fn pause_tab(workload: &Workload, members: &[&ProcessRecord], unit: Unit) -> Option<Proposal> {
+    let process = tab_process(members, &unit)?;
+    let host = unit.host.clone().unwrap_or_default();
+    Some(Proposal {
+        rationale: format!(
+            "Pause the “{}” tab{}. Its scripts, timers, and media stop until you resume it (automatically after {} minutes); nothing is closed. Its memory stays allocated. The rest of {} keeps running.",
+            unit.title,
+            if host.is_empty() { String::new() } else { format!(" ({host})") },
+            crate::pause::LIMIT_SECONDS / 60,
+            workload.label
+        ),
+        impact: Some(Impact {
+            label: format!("{} tab", unit.title),
+            workload_cpu_percent: unit.cpu_percent,
+            workload_memory_bytes: unit.memory_bytes,
+            process_count: 1,
+            whole_app: false,
+        }),
+        process,
+        action: "pause_tab".into(),
+        unit: Some(unit),
+    })
+}
+
+/// A close offer for one measured tab of a browser workload.
+pub fn close_tab(workload: &Workload, members: &[&ProcessRecord], unit: Unit) -> Option<Proposal> {
+    let process = tab_process(members, &unit)?;
     let host = unit.host.clone().unwrap_or_default();
     Some(Proposal {
         rationale: format!(
@@ -286,6 +348,51 @@ mod tests {
         let by_command = super::option(&s, "cmd-5-5", false).unwrap();
         assert_eq!(by_command.process.pid, 5);
         assert!(super::option(&s, "cmd-5-99", false).is_none());
+    }
+
+    #[test]
+    fn a_background_tab_is_offered_paused_first_and_closed_second() {
+        let renderer = p(
+            7,
+            Some(1),
+            "Google Chrome Helper (Renderer)",
+            "/A/Google Chrome.app/Contents/Frameworks/R",
+            700,
+        );
+        let members = vec![&renderer];
+        let workload = Workload {
+            id: "chrome".into(),
+            label: "Google Chrome".into(),
+            ..Default::default()
+        };
+        let tab = |actions: &[&str]| Unit {
+            id: "T1".into(),
+            kind: "tab".into(),
+            title: "Live blog".into(),
+            detail: "https://news.example.com/live".into(),
+            host: Some("news.example.com".into()),
+            pid: Some(7),
+            memory_bytes: 700 << 20,
+            actions: actions.iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        };
+        let offers = tab_offers(
+            &workload,
+            &members,
+            tab(&["focus_tab", "pause_tab", "close_tab"]),
+        );
+        let actions: Vec<_> = offers.iter().map(|o| o.action.as_str()).collect();
+        assert_eq!(actions, ["pause_tab", "close_tab"]);
+        assert_eq!(offers[0].process.pid, 7);
+        assert!(offers[0]
+            .rationale
+            .starts_with("Pause the “Live blog” tab (news.example.com)."));
+        assert!(offers[0].rationale.contains("nothing is closed"));
+        assert!(offers[1].rationale.starts_with("Close the “Live blog” tab"));
+        // A tab on screen, or one already paused, can only be closed.
+        let on_screen = tab_offers(&workload, &members, tab(&["focus_tab", "close_tab"]));
+        assert_eq!(on_screen.len(), 1);
+        assert_eq!(on_screen[0].action, "close_tab");
     }
 
     #[test]

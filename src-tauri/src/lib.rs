@@ -719,9 +719,18 @@ fn dismiss_automation_case(state: State<'_, AppState>, id: u64) -> Result<(), St
 }
 
 /// Stops only the process the incident offered, after the same identity and policy rechecks.
+/// With `fallback`, applies the firmer option offered after it (closing a tab instead of
+/// pausing it).
 #[tauri::command]
-async fn approve_stop(state: State<'_, AppState>, id: u64) -> Result<(), String> {
-    state.inner().stop(id).await
+async fn approve_stop(
+    state: State<'_, AppState>,
+    id: u64,
+    fallback: Option<bool>,
+) -> Result<(), String> {
+    state
+        .inner()
+        .stop_option(id, fallback.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -901,6 +910,7 @@ pub fn run() {
                             .and_then(|(pid, _)| sample.processes.iter().find(|p| p.pid == pid))
                             .map(|p| p.workload_id.clone());
                         pause::expire();
+                        inside::chrome::expire();
                         if let (Ok(directory), Ok(executable)) =
                             (queue::directory(), std::env::current_exe())
                         {

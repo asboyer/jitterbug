@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
-/// Tabs an agent has seen, so a close request is checked against the reviewed address.
+/// Tabs an agent has seen, so a pause or close request is checked against the reviewed address.
 static TABS: Mutex<Vec<(Unit, String)>> = Mutex::new(Vec::new());
 const TAB_MEMORY: usize = 200;
 const SESSIONS_PER_APP: usize = 5;
@@ -44,6 +44,12 @@ pub fn session_id(unit: &Unit) -> String {
         unit.pid.unwrap_or_default(),
         unit.start_time.unwrap_or_default()
     )
+}
+
+fn parse_tab(id: &str) -> Result<&str, String> {
+    id.strip_prefix("tab:")
+        .filter(|rest| !rest.is_empty())
+        .ok_or_else(|| "Unknown tab ID. Call jitterbug_inspect_app first.".into())
 }
 
 fn parse_session(id: &str) -> Result<(u32, u64), String> {
@@ -110,6 +116,15 @@ fn tab_title(unit: &Unit) -> String {
 }
 
 fn tab_json(unit: &Unit) -> Value {
+    // Pausing is offered only for a tab in the background; a paused tab can only be resumed.
+    let actions: Vec<&str> = if unit.paused_until.is_some() {
+        vec!["resume_tab"]
+    } else {
+        ["pause_tab", "close_tab"]
+            .into_iter()
+            .filter(|a| unit.actions.iter().any(|u| u == a))
+            .collect()
+    };
     json!({
         "unit_id": format!("tab:{}", unit.id),
         "title": tab_title(unit),
@@ -117,12 +132,28 @@ fn tab_json(unit: &Unit) -> Value {
         "cpu_percent_of_machine": round(unit.cpu_percent),
         "memory_mib": mib(unit.memory_bytes),
         "shares_process_with_tabs": unit.shared_with,
-        "actions": ["close_tab"],
+        "resumes_at": unit.paused_until,
+        "actions": actions,
         "confidence": unit.confidence,
     })
 }
 
 fn case_json(case: &Case) -> Value {
+    // While what the request paused is still paused, when it resumes by itself.
+    let resumes_at = case
+        .proposal
+        .as_ref()
+        .and_then(|p| match p.action.as_str() {
+            "pause_tab" => p
+                .unit
+                .as_ref()
+                .and_then(|u| inside::chrome::paused_until(&u.id)),
+            "pause" => crate::pause::list()
+                .into_iter()
+                .find(|q| q.pid == p.process.pid && q.start_time == p.process.start_time)
+                .map(|q| q.until),
+            _ => None,
+        });
     json!({
         "request_id": case.id,
         "status": case.stage,
@@ -130,6 +161,7 @@ fn case_json(case: &Case) -> Value {
         "latest": case.steps.last().map(|s| s.message.clone()),
         "result": case.verification.as_ref().map(|v| v.summary.clone()),
         "waiting_for_person": case.stage == Stage::AwaitingApproval,
+        "resumes_at": resumes_at,
     })
 }
 
@@ -208,12 +240,14 @@ pub fn handle(
             let (pid, start) = parse_session(text("unit_id")?)?;
             Ok(json!({ "message": runtime.agent_resume(pid, start)? }))
         }
-        "close_tab" => {
+        "resume_tab" => {
+            let id = parse_tab(text("unit_id")?)?;
+            Ok(json!({ "message": runtime.agent_resume_tab(id)? }))
+        }
+        "close_tab" | "pause_tab" => {
             let snapshot = snapshot(runtime)?;
             let lineage = lineage(caller);
-            let id = text("unit_id")?
-                .strip_prefix("tab:")
-                .ok_or("Unknown tab ID. Call jitterbug_inspect_app first.")?;
+            let id = parse_tab(text("unit_id")?)?;
             let (mut unit, workload_id) = TABS
                 .lock()
                 .map_err(|_| "Tab list unavailable.")?
@@ -229,8 +263,18 @@ pub fn handle(
                 .find(|w| w.id == workload_id)
                 .ok_or("That browser is no longer running.")?;
             let members = crate::details::members(&snapshot, &workload_id)?;
-            let option = inside::options::close_tab(workload, &members, unit)
-                .ok_or("That tab can no longer be identified.")?;
+            let option = if method == "pause_tab" {
+                if inside::chrome::paused_until(&unit.id).is_some() {
+                    return Err("This tab is already paused.".into());
+                }
+                if !unit.actions.iter().any(|a| a == "pause_tab") {
+                    return Err("This tab is on screen. Only background tabs can be paused; call jitterbug_inspect_app again later.".into());
+                }
+                inside::options::pause_tab(workload, &members, unit)
+            } else {
+                inside::options::close_tab(workload, &members, unit)
+            }
+            .ok_or("That tab can no longer be identified.")?;
             let who = requester(&snapshot, &lineage);
             let case = tauri::async_runtime::block_on(runtime.agent_request(
                 option,
@@ -301,6 +345,14 @@ pub fn overview(snapshot: &Snapshot, lineage: &[(u32, u64)]) -> Result<Value, St
                 "resumes_at": p.until,
             })
         })
+        .chain(inside::chrome::paused().into_iter().map(|p| {
+            json!({
+                "unit_id": format!("tab:{}", p.target_id),
+                "title": p.title,
+                "host": p.host,
+                "resumes_at": p.until,
+            })
+        }))
         .collect();
     Ok(json!({
         "measured_at": snapshot.captured_at,
@@ -316,7 +368,7 @@ pub fn overview(snapshot: &Snapshot, lineage: &[(u32, u64)]) -> Result<Value, St
         "apps": apps,
         "paused": paused,
         "your_session": own_session(snapshot, lineage).map(|u| u.title),
-        "notes": "CPU is a share of the whole machine. Memory is resident memory and may double-count shared pages. Pausing freezes a session and everything it started without closing it; it resumes on request or after 15 minutes. Prefer pausing an idle or low-priority session over anything that loses work.",
+        "notes": "CPU is a share of the whole machine. Memory is resident memory and may double-count shared pages. Pausing freezes a session and everything it started, or a background browser tab, without closing it; it resumes on request or after 15 minutes. Prefer pausing an idle or low-priority session or tab over anything that loses work.",
     }))
 }
 
@@ -453,6 +505,44 @@ mod tests {
             ..tab
         };
         assert_eq!(tab_json(&titled)["title"], "Inbox");
+    }
+
+    #[test]
+    fn tab_actions_offer_pause_before_close_and_resume_when_paused() {
+        let tab = Unit {
+            id: "T1".into(),
+            kind: "tab".into(),
+            title: "Live blog".into(),
+            detail: "https://news.example.com/live".into(),
+            host: Some("news.example.com".into()),
+            actions: vec!["focus_tab".into(), "pause_tab".into(), "close_tab".into()],
+            ..Default::default()
+        };
+        let value = tab_json(&tab);
+        assert_eq!(value["actions"], json!(["pause_tab", "close_tab"]));
+        assert!(value["resumes_at"].is_null());
+        let on_screen = Unit {
+            actions: vec!["focus_tab".into(), "close_tab".into()],
+            ..tab.clone()
+        };
+        assert_eq!(tab_json(&on_screen)["actions"], json!(["close_tab"]));
+        let paused = Unit {
+            actions: vec!["resume_tab".into(), "close_tab".into()],
+            paused_until: Some(1234),
+            ..tab
+        };
+        let value = tab_json(&paused);
+        assert_eq!(value["actions"], json!(["resume_tab"]));
+        assert_eq!(value["resumes_at"], 1234);
+        assert!(!value.to_string().contains("/live"));
+    }
+
+    #[test]
+    fn tab_ids_need_the_tab_prefix() {
+        assert_eq!(parse_tab("tab:ABC").unwrap(), "ABC");
+        assert!(parse_tab("tab:").is_err());
+        assert!(parse_tab("session:5-7").is_err());
+        assert!(parse_tab("ABC").is_err());
     }
 
     #[test]

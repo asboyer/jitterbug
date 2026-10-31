@@ -40,9 +40,11 @@
     const workloadId = $derived(workload.id);
     const browser = $derived(workload.category === 'browser');
     const noun = $derived(browser ? 'tabs' : 'commands');
-    // Tabs without a renderer of their own are discarded (sleeping) or not yet loaded.
-    const sleeping = $derived(view?.units.filter((u) => u.kind === 'tab' && u.pid === null) ?? []);
-    const active = $derived(view?.units.filter((u) => !(u.kind === 'tab' && u.pid === null)) ?? []);
+    // Tabs without a renderer of their own are discarded (sleeping) or not yet loaded. A tab
+    // Jitterbug paused stays in the main list, where it can be resumed.
+    const isSleeping = (u: InsideUnit) => u.kind === 'tab' && u.pid === null && !u.paused_until;
+    const sleeping = $derived(view?.units.filter(isSleeping) ?? []);
+    const active = $derived(view?.units.filter((u) => !isSleeping(u)) ?? []);
     const shown = $derived(showAll ? active : active.slice(0, TOP));
 
     /** `connect` is only true for the person's own request: it may make the browser ask once. */
@@ -94,7 +96,10 @@
         });
     });
 
-    async function tab(unit: InsideUnit, action: 'focus_tab' | 'close_tab') {
+    async function tab(
+        unit: InsideUnit,
+        action: 'focus_tab' | 'pause_tab' | 'resume_tab' | 'close_tab'
+    ) {
         if (demo || tabBusy) return;
         if (action === 'close_tab' && confirming !== unit.id) {
             confirming = unit.id;
@@ -110,6 +115,7 @@
             });
             if (action === 'close_tab' && view)
                 view = { ...view, units: view.units.filter((u) => u.id !== unit.id) };
+            if (action === 'pause_tab' || action === 'resume_tab') await load(false);
         } catch (cause) {
             notice = errorMessage(cause);
         } finally {
@@ -168,7 +174,9 @@
                 >{unit.kind === 'tab'
                     ? (unit.host ?? unit.detail)
                     : unit.detail || unit.confidence}{unit.paused_until
-                    ? ` · paused, resumes by ${until(unit.paused_until)}`
+                    ? unit.kind === 'tab'
+                        ? ` · Paused · resumes ${until(unit.paused_until)}`
+                        : ` · paused, resumes by ${until(unit.paused_until)}`
                     : ''}{unit.shared_with
                     ? ` · shares a process with ${unit.shared_with} other tab${unit.shared_with === 1 ? '' : 's'}`
                     : ''}</small
@@ -184,9 +192,18 @@
                 {#each unit.evidence as line}<p>{line}</p>{/each}
             </InfoTip>
             {#if unit.kind === 'tab'}
-                <button disabled={demo || tabBusy} onclick={() => tab(unit, 'focus_tab')}
-                    >Show</button
-                ><button
+                {#if unit.actions.includes('resume_tab')}<button
+                        class="primary"
+                        disabled={demo || tabBusy}
+                        onclick={() => tab(unit, 'resume_tab')}>Resume</button
+                    >{:else}<button
+                        disabled={demo || tabBusy}
+                        onclick={() => tab(unit, 'focus_tab')}>Show</button
+                    >{/if}{#if unit.actions.includes('pause_tab')}<button
+                        disabled={demo || tabBusy}
+                        title="Freeze this tab's scripts and timers. Nothing is closed; it resumes by itself after 15 minutes. Its memory stays allocated."
+                        onclick={() => tab(unit, 'pause_tab')}>Pause</button
+                    >{/if}<button
                     class="danger-text"
                     disabled={demo || tabBusy}
                     onclick={() => tab(unit, 'close_tab')}
@@ -222,7 +239,7 @@
                     >{view?.status === 'ready'
                         ? view.message
                         : browser
-                          ? 'See which tabs use the CPU and memory, then focus or close one.'
+                          ? 'See which tabs use the CPU and memory, then pause or close one.'
                           : 'Agent sessions, dev servers, and other commands started in this app.'}</span
                 >
             </div>

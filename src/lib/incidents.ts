@@ -217,7 +217,7 @@ export function priorityAfter(): string {
 /** A stop frees what ends: the whole app for its main executable, else that one process. */
 export function stopAfter(option: ActionPopupOption): string {
     const impact = option.impact;
-    if (option.action === 'pause')
+    if (option.action === 'pause' || option.action === 'pause_tab')
         return `Now: ${percent(option.impact?.workload_cpu_percent ?? 0)} CPU · ${memory(option.impact?.workload_memory_bytes ?? 0)}. After: no CPU until resumed; memory stays allocated`;
     if (option.action === 'close_tab')
         return `After: frees about ${percent(impact?.workload_cpu_percent ?? 0)} CPU · ${memory(impact?.workload_memory_bytes ?? 0)}`;
@@ -229,6 +229,8 @@ export function stopAfter(option: ActionPopupOption): string {
 
 export function stopLabel(option: ActionPopupOption): string {
     if (option.action === 'pause') return `Pause ${option.unit?.title ?? option.process.name}`;
+    if (option.action === 'pause_tab')
+        return `Pause the “${option.unit?.title ?? option.process.name}” tab`;
     if (option.action === 'close_tab')
         return `Close the “${option.unit?.title ?? option.process.name}” tab`;
     return option.impact?.whole_app ? `Quit ${option.impact.label}` : `Stop ${option.process.name}`;
@@ -273,6 +275,15 @@ export function actionResult(
                       report.cpu_after === null ? null : percent(report.cpu_after)
                   )} · ${machine}`
                 : 'A fresh measurement was unavailable.',
+            note: '',
+        };
+    }
+    if (report.action === 'pause_tab') {
+        return {
+            title: `Paused the “${name}” tab`,
+            meaning:
+                'Its scripts and timers are frozen, not closed: it resumes when you choose Resume or by itself after 15 minutes. Its memory stays allocated; close the tab to free it.',
+            measured: report.fresh ? machine : 'A fresh measurement was unavailable.',
             note: '',
         };
     }

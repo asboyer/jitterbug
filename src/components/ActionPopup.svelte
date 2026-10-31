@@ -19,7 +19,12 @@
         stopLabel,
         stopWarning,
     } from '../lib/incidents';
-    import type { ActionPopupCase, ActionPopupPayload, AutomationStage } from '../lib/types';
+    import type {
+        ActionPopupCase,
+        ActionPopupOption,
+        ActionPopupPayload,
+        AutomationStage,
+    } from '../lib/types';
 
     // A preset renders one fixed example (the Lab's gallery): played locally, never applied.
     let { preset = null }: { preset?: ActionPopupPayload | null } = $props();
@@ -39,6 +44,8 @@
     let hovering = $state(false);
     // A stop needs a second click within a few seconds.
     let confirming = $state(false);
+    // Closing a tab offered after pausing it needs its own second click.
+    let confirmingFallback = $state(false);
     // The priority change this result offered to undo was restored.
     let restored = $state(false);
     let timers: ReturnType<typeof setTimeout>[] = [];
@@ -60,7 +67,7 @@
     // The option the numbers describe: the priority change if offered, else the stop.
     const subject = $derived(shown ? (shown.proposal ?? shown.alternative) : null);
     const stopping = $derived(
-        ['terminate', 'pause', 'close_tab'].includes(shown?.proposal?.action ?? '')
+        ['terminate', 'pause', 'pause_tab', 'close_tab'].includes(shown?.proposal?.action ?? '')
     );
     const title = $derived.by(() => {
         if (!shown) return '';
@@ -117,7 +124,7 @@
         if (next?.id !== payload?.id) {
             error = '';
             example = null;
-            confirming = false;
+            confirming = confirmingFallback = false;
             restored = false;
             stopTimers();
         }
@@ -202,32 +209,33 @@
             busy = false;
         }
     }
-    async function stop() {
-        if (!shown?.alternative || !asking || busy) return;
-        if (!confirming) {
-            confirming = true;
-            timers.push(setTimeout(() => (confirming = false), 5000));
+    async function stop(fallback = false) {
+        const option = fallback ? shown?.fallback : shown?.alternative;
+        if (!shown || !option || !asking || busy) return;
+        if (!(fallback ? confirmingFallback : confirming)) {
+            if (fallback) confirmingFallback = true;
+            else confirming = true;
+            timers.push(setTimeout(() => (confirming = confirmingFallback = false), 5000));
             return;
         }
-        confirming = false;
+        confirming = confirmingFallback = false;
         error = '';
         if (shown.source !== 'live') {
-            playStopExample(shown);
+            playStopExample(shown, option);
             return;
         }
         busy = true;
         try {
             // Only the offered process is stopped, after fresh identity and policy rechecks.
-            await invoke('approve_stop', { id: shown.id });
+            await invoke('approve_stop', { id: shown.id, fallback });
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
             busy = false;
         }
     }
-    function playStopExample(base: ActionPopupCase) {
+    function playStopExample(base: ActionPopupCase, option: ActionPopupOption) {
         stopTimers();
-        const option = base.alternative!;
         example = { ...base, proposal: option, stage: 'applying' };
         timers.push(
             setTimeout(() => {
@@ -363,17 +371,27 @@
                                     >{stopWarning(shown.alternative)}</span
                                 >{/if}
                         </div>
-                        <button class:danger={confirming} disabled={busy} onclick={stop}
-                            >{confirming
-                                ? 'Confirm'
-                                : shown.alternative.action === 'pause'
-                                  ? 'Pause…'
-                                  : shown.alternative.action === 'close_tab'
-                                    ? 'Close…'
-                                    : shown.alternative.impact?.whole_app
-                                      ? 'Quit…'
-                                      : 'Stop…'}</button
-                        >
+                        <div class="choices">
+                            <button class:danger={confirming} disabled={busy} onclick={() => stop()}
+                                >{confirming
+                                    ? 'Confirm'
+                                    : ['pause', 'pause_tab'].includes(shown.alternative.action)
+                                      ? 'Pause…'
+                                      : shown.alternative.action === 'close_tab'
+                                        ? 'Close…'
+                                        : shown.alternative.impact?.whole_app
+                                          ? 'Quit…'
+                                          : 'Stop…'}</button
+                            >
+                            <!-- Closing the tab is offered second, in the same row. -->
+                            {#if shown.fallback}<button
+                                    class:danger={confirmingFallback}
+                                    disabled={busy}
+                                    title={`${stopLabel(shown.fallback)}. ${stopAfter(shown.fallback)}`}
+                                    onclick={() => stop(true)}
+                                    >{confirmingFallback ? 'Confirm' : 'Close…'}</button
+                                >{/if}
+                        </div>
                     </li>{/if}
             </ul>
         {:else if restored}
@@ -562,6 +580,10 @@
         font-size: 11px;
         padding: 4px 9px;
         flex-shrink: 0;
+    }
+    .options .choices {
+        flex: none;
+        gap: 4px;
     }
     .options .danger {
         background: var(--danger);

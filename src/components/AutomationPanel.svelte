@@ -66,18 +66,20 @@
     // without this explicit, two-step choice.
     const granular = $derived(
         incident.stage === 'awaiting_approval' &&
-            ['pause', 'close_tab'].includes(incident.alternative?.action ?? '')
+            ['pause', 'pause_tab', 'close_tab'].includes(incident.alternative?.action ?? '')
             ? incident.alternative
             : null
     );
     let confirming = $state(false);
-    async function approveGranular() {
-        if (!confirming) {
-            confirming = true;
+    let confirmingFallback = $state(false);
+    async function approveGranular(fallback = false) {
+        if (!(fallback ? confirmingFallback : confirming)) {
+            if (fallback) confirmingFallback = true;
+            else confirming = true;
             return;
         }
-        confirming = false;
-        await perform('approve_stop', { id: incident.id });
+        confirming = confirmingFallback = false;
+        await perform('approve_stop', { id: incident.id, fallback });
     }
     async function perform(command: string, args: Record<string, unknown>) {
         if (!canMutate) return false;
@@ -170,7 +172,9 @@
                         <h3>
                             {granular.action === 'pause'
                                 ? `Pause ${granular.unit?.title ?? granular.process.name}`
-                                : `Close the “${granular.unit?.title ?? granular.process.name}” tab`}
+                                : granular.action === 'pause_tab'
+                                  ? `Pause the “${granular.unit?.title ?? granular.process.name}” tab`
+                                  : `Close the “${granular.unit?.title ?? granular.process.name}” tab`}
                         </h3>
                     </div>
                     {#if incident.origin === 'agent'}<p class="muted">
@@ -181,16 +185,22 @@
                         class:primary={!confirming}
                         class:danger={confirming}
                         disabled={busy || !canMutate}
-                        onclick={approveGranular}
+                        onclick={() => approveGranular()}
                         >{confirming
                             ? 'Confirm'
-                            : granular.action === 'pause'
-                              ? 'Pause…'
-                              : 'Close tab…'}</button
+                            : granular.action === 'close_tab'
+                              ? 'Close tab…'
+                              : 'Pause…'}</button
                     >
+                    {#if incident.fallback}<button
+                            class:danger={confirmingFallback}
+                            disabled={busy || !canMutate}
+                            onclick={() => approveGranular(true)}
+                            >{confirmingFallback ? 'Confirm close' : 'Close tab instead…'}</button
+                        >{/if}
                 </section>
             {/if}
-            {#if incident.report?.action === 'pause' && incident.stage === 'completed'}
+            {#if ['pause', 'pause_tab'].includes(incident.report?.action ?? '') && incident.stage === 'completed'}
                 <button
                     disabled={busy || !canMutate}
                     onclick={() => perform('resume_case', { id: incident.id })}>Resume now</button

@@ -90,19 +90,24 @@ fn related(cases: &VecDeque<Case>, workload: Option<&str>, at: u64) -> Option<u6
         .map(|c| c.id)
 }
 
-/// The most specific alternative for a workload: close its heaviest tab or pause the command
-/// session using it, else stop a supported process. Never applied without approval.
+/// The most specific alternative for a workload: pause its heaviest tab (with closing it as
+/// the fallback) or pause the command session using it, else stop a supported process. Never
+/// applied without approval.
 async fn alternative(
     snapshot: &Snapshot,
     workload: &str,
     memory: bool,
-) -> Option<automation::Proposal> {
+) -> (Option<automation::Proposal>, Option<automation::Proposal>) {
     let (sample, id) = (snapshot.clone(), workload.to_string());
-    tokio::task::spawn_blocking(move || crate::inside::options::option(&sample, &id, memory))
-        .await
-        .ok()
-        .flatten()
-        .or_else(|| automation::stop_option(snapshot, workload))
+    let mut offers =
+        tokio::task::spawn_blocking(move || crate::inside::options::options(&sample, &id, memory))
+            .await
+            .unwrap_or_default()
+            .into_iter();
+    match offers.next() {
+        Some(first) => (Some(first), offers.next()),
+        None => (automation::stop_option(snapshot, workload), None),
+    }
 }
 
 pub struct Runtime {
@@ -390,6 +395,7 @@ impl Runtime {
                         "The observed problem has cleared. No process changes were needed.",
                     );
                     c.alternative = None;
+                    c.fallback = None;
                 })?;
             }
         }
@@ -754,19 +760,19 @@ impl Runtime {
             case.trigger.kind,
             automation::Kind::MemoryPressure | automation::Kind::MemoryGrowth
         );
-        let alternative = match (&case.trigger.target, &case.trigger.kind) {
+        let (alternative, fallback) = match (&case.trigger.target, &case.trigger.kind) {
             (Some(t), automation::Kind::AppUnresponsive) => {
-                automation::stop_option(&snapshot, &t.workload_id)
+                (automation::stop_option(&snapshot, &t.workload_id), None)
             }
             (Some(t), _) => alternative(&snapshot, &t.workload_id, memory).await,
-            (None, _) => None,
+            (None, _) => (None, None),
         };
         if proposal.is_none() && alternative.is_none() {
             self.update(id, |c| c.transition(Stage::Completed, "Investigation complete. No supported change fits this incident. Review the diagnosis; protected processes and app helpers need a different intervention."))?;
             return Ok(());
         }
         let automatic = proposal.as_ref().is_some_and(|p| policy.allows(p));
-        self.update(id, |c| { c.proposal = proposal; c.alternative = alternative; c.transition(Stage::AwaitingApproval,
+        self.update(id, |c| { c.proposal = proposal; c.alternative = alternative; c.fallback = fallback; c.transition(Stage::AwaitingApproval,
             if automatic { "This workload has permission for automatic priority changes. Rechecking live evidence before acting." }
             else { "A change is available. Approve it once, or allow future automatic priority changes for this workload." }); })?;
         if automatic {
@@ -894,9 +900,9 @@ impl Runtime {
             .findings
             .iter()
             .any(|f| f.kind == jitter::FindingKind::MemoryThrash && f.workload_id == culprit);
-        let alternative = match &culprit {
+        let (alternative, fallback) = match &culprit {
             Some(workload) => alternative(&snapshot, workload, memory).await,
-            None => None,
+            None => (None, None),
         };
         if proposal.is_none() && alternative.is_none() {
             self.update(id, |c| c.transition(Stage::Completed, "Analysis complete. No in-app change fits these findings; review the suggestions."))?;
@@ -906,6 +912,7 @@ impl Runtime {
         self.update(id, |c| {
             c.proposal = proposal;
             c.alternative = alternative;
+            c.fallback = fallback;
             c.transition(
                 Stage::AwaitingApproval,
                 "A change is available for the culprit. It needs your approval.",
@@ -1027,6 +1034,10 @@ impl Runtime {
     }
     /// Approve the offered stop. Always an explicit choice: never automatic, never remembered.
     pub async fn stop(self: &Arc<Self>, id: u64) -> Result<(), String> {
+        self.stop_option(id, false).await
+    }
+    /// Approve the offered stop, or with `fallback` the firmer option offered after it.
+    pub async fn stop_option(self: &Arc<Self>, id: u64, fallback: bool) -> Result<(), String> {
         let _guard = self
             .action
             .try_lock()
@@ -1035,10 +1046,13 @@ impl Runtime {
         if case.source != "live" || case.stage != Stage::AwaitingApproval {
             return Err("This incident has no pending live action.".into());
         }
-        let stop = case
-            .alternative
-            .ok_or("No stop was offered for this incident.")?;
-        if matches!(stop.action.as_str(), "pause" | "close_tab") {
+        let stop = if fallback {
+            case.fallback
+        } else {
+            case.alternative
+        }
+        .ok_or("No stop was offered for this incident.")?;
+        if matches!(stop.action.as_str(), "pause" | "pause_tab" | "close_tab") {
             return self.granular(id, stop).await;
         }
         let before = self.snapshot()?;
@@ -1100,7 +1114,7 @@ impl Runtime {
             }
         }
     }
-    /// Pause a command session or close a tab, then measure with a fresh sample.
+    /// Pause a command session, or pause or close a tab, then measure with a fresh sample.
     async fn granular(
         self: &Arc<Self>,
         id: u64,
@@ -1112,12 +1126,15 @@ impl Runtime {
             .ok_or("The offered target is unavailable.")?;
         let before = self.snapshot()?;
         let pausing = option.action == "pause";
+        let tab_pause = option.action == "pause_tab";
         self.update(id, |c| {
             c.proposal = Some(option.clone());
             c.transition(
                 Stage::Applying,
                 if pausing {
                     "Rechecking ownership and pausing the whole command."
+                } else if tab_pause {
+                    "Checking the tab still shows the same page in the background, then pausing it."
                 } else {
                     "Checking the tab still shows the same page, then closing it."
                 },
@@ -1125,6 +1142,7 @@ impl Runtime {
         })?;
         let (pid, start) = (option.process.pid, option.process.start_time);
         let target = unit.clone();
+        let tab_action = option.action.clone();
         let result = tokio::task::spawn_blocking(move || {
             if pausing {
                 crate::pause::pause(pid, start, &target.title).map(|p| {
@@ -1136,7 +1154,7 @@ impl Runtime {
                     )
                 })
             } else {
-                crate::inside::chrome::act(&target.id, &target.detail, "close_tab")
+                crate::inside::chrome::act(&target.id, &target.detail, &tab_action)
             }
         })
         .await
@@ -1201,6 +1219,10 @@ impl Runtime {
                 "Paused. Its memory stays allocated until it resumes; macOS can compress or swap it meanwhile. Choose Resume when you want it back, or it resumes by itself in {} minutes.",
                 crate::pause::LIMIT_SECONDS / 60
             ),
+            (false, true) if tab_pause => format!(
+                "The tab is paused: its scripts and timers stop until you resume it, or by themselves in {} minutes. Its memory stays allocated; close the tab to free it.",
+                crate::pause::LIMIT_SECONDS / 60
+            ),
             (false, true) => "The tab is closed. The browser releases that renderer's memory shortly; compare available memory before and after.".into(),
         };
         self.update(id, |c| {
@@ -1210,6 +1232,8 @@ impl Runtime {
                 Stage::Completed,
                 if pausing {
                     "The command is paused and follow-up evidence is available."
+                } else if tab_pause {
+                    "The tab is paused and follow-up evidence is available."
                 } else {
                     "The tab was closed and follow-up evidence is available."
                 },
@@ -1237,10 +1261,10 @@ impl Runtime {
             .unit
             .as_ref()
             .ok_or("The request names no tab or session.")?;
-        let verb = if option.action == "pause" {
-            "pause"
-        } else {
-            "close the tab"
+        let verb = match option.action.as_str() {
+            "pause" => "pause",
+            "pause_tab" => "pause the tab",
+            _ => "close the tab",
         };
         // Agent text is untrusted: bounded, single-line, shown as a quotation.
         let clean = |text: &str, limit: usize| -> String {
@@ -1277,7 +1301,7 @@ impl Runtime {
                 .lock()
                 .map_err(|_| "Incident state unavailable.")?;
             // While the person has paused actions, even a reversible pause waits for them.
-            let automatic = option.action == "pause"
+            let automatic = matches!(option.action.as_str(), "pause" | "pause_tab")
                 && policy.agent_pause_without_asking
                 && book.monitor.snoozed_until <= now();
             // One open request per target, and a bounded rate, so a looping agent cannot
@@ -1358,19 +1382,41 @@ impl Runtime {
         crate::pause::resume(pid, start_time)
     }
 
+    /// Resume a tab for an agent: only one an agent's request paused, and only that pause.
+    pub fn agent_resume_tab(&self, target_id: &str) -> Result<String, String> {
+        let paused_at = crate::inside::chrome::paused()
+            .into_iter()
+            .find(|p| p.target_id == target_id)
+            .map(|p| p.paused_at)
+            .ok_or("This tab is not paused. It may have resumed by itself or been closed.")?;
+        let requested = self
+            .cases()?
+            .iter()
+            .any(|c| c.origin == Origin::Agent && agent_paused_tab(c, target_id, paused_at));
+        if !requested {
+            return Err(
+                "Only tabs paused at an agent's request can be resumed by an agent. Ask the person to resume this one in Jitterbug.".into(),
+            );
+        }
+        crate::inside::chrome::resume(target_id)
+    }
+
     /// Current state of one incident, for an agent following its request.
     pub fn request(&self, id: u64) -> Result<Case, String> {
         self.case(id)
     }
 
-    /// Resume the command an incident paused.
+    /// Resume the command or tab an incident paused.
     pub fn resume(&self, id: u64) -> Result<String, String> {
         let case = self.case(id)?;
         let paused = case
             .proposal
-            .filter(|p| p.action == "pause")
+            .filter(|p| matches!(p.action.as_str(), "pause" | "pause_tab"))
             .ok_or("This incident paused nothing.")?;
-        let message = crate::pause::resume(paused.process.pid, paused.process.start_time)?;
+        let message = match (&paused.unit, paused.action.as_str()) {
+            (Some(tab), "pause_tab") => crate::inside::chrome::resume(&tab.id)?,
+            _ => crate::pause::resume(paused.process.pid, paused.process.start_time)?,
+        };
         self.update(id, |c| {
             c.steps.push(automation::Step {
                 at: now(),
@@ -1868,6 +1914,15 @@ impl Runtime {
     }
 }
 
+/// Whether this case paused the tab, and the tab's current pause (made at `paused_at`) is the
+/// one it made: the person may have resumed it and paused it again since.
+fn agent_paused_tab(case: &Case, target_id: &str, paused_at: u64) -> bool {
+    case.proposal.as_ref().is_some_and(|p| {
+        p.action == "pause_tab" && p.unit.as_ref().is_some_and(|u| u.id == target_id)
+    }) && (case.detected_at..=case.steps.last().map_or(case.detected_at, |s| s.at))
+        .contains(&paused_at)
+}
+
 fn secure_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| "Cannot create a secure restore preview token.")?;
@@ -2177,6 +2232,36 @@ mod tests {
         crate::pause::resume(pid, start).unwrap();
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn agents_resume_only_the_tab_pause_their_request_made() {
+        let mut case = automation::simulated_case(100).unwrap();
+        let process = case
+            .evidence
+            .as_ref()
+            .and_then(|e| e.processes.first())
+            .cloned()
+            .unwrap();
+        case.proposal = Some(automation::Proposal {
+            process,
+            action: "pause_tab".into(),
+            rationale: String::new(),
+            impact: None,
+            unit: Some(crate::inside::Unit {
+                id: "T1".into(),
+                kind: "tab".into(),
+                ..Default::default()
+            }),
+        });
+        let (start, end) = (case.detected_at, case.steps.last().unwrap().at);
+        assert!(agent_paused_tab(&case, "T1", start));
+        assert!(agent_paused_tab(&case, "T1", end));
+        assert!(!agent_paused_tab(&case, "T2", start));
+        // Paused again by the person after the request finished.
+        assert!(!agent_paused_tab(&case, "T1", end + 60));
+        case.proposal.as_mut().unwrap().action = "close_tab".into();
+        assert!(!agent_paused_tab(&case, "T1", start));
     }
 
     #[tokio::test]

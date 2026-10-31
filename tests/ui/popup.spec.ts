@@ -104,14 +104,24 @@ test('quitting needs a second click and reports before and after', async ({ page
     );
 });
 
-test('a tab offer closes only that tab and a session offer pauses without closing', async ({
+test('a tab offer pauses the tab first, closes only that tab second, and a session offer pauses without closing', async ({
     page,
 }) => {
     await page.clock.install();
     await page.goto('/?view=popup&example=tab');
     let popup = page.getByRole('region', { name: 'Jitterbug needs you' });
-    await expect(popup).toContainText('Close the “Video call” tab');
-    await expect(popup).toContainText('The rest of Example Browser stays open.');
+    const options = popup.locator('.options li');
+    await expect(options.nth(1)).toContainText('Pause the “Video call” tab');
+    await expect(options.nth(1)).toContainText('nothing is closed');
+    // Closing is offered second, after pausing.
+    await expect(options.nth(1).getByRole('button')).toHaveText(['Pause…', 'Close…']);
+    await popup.getByRole('button', { name: 'Pause…', exact: true }).click();
+    await popup.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.clock.runFor(4000);
+    await expect(popup).toContainText('Paused the “Video call” tab');
+    await expect(popup).toContainText('memory stays allocated');
+    await page.goto('/?view=popup&example=tab');
+    popup = page.getByRole('region', { name: 'Jitterbug needs you' });
     await popup.getByRole('button', { name: 'Close…', exact: true }).click();
     await popup.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.clock.runFor(4000);

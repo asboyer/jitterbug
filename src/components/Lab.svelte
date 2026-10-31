@@ -188,11 +188,13 @@
     const toolFor: Record<string, string> = {
         pause: 'jitterbug_pause_session',
         resume: 'jitterbug_resume_session',
+        pause_tab: 'jitterbug_pause_tab',
+        resume_tab: 'jitterbug_resume_tab',
         close_tab: 'jitterbug_close_tab',
     };
     function act(unit: Unit, action: string) {
         const args: Record<string, unknown> = { unit_id: unit.unit_id };
-        if (action !== 'resume') args.reason = reason;
+        if (action !== 'resume' && action !== 'resume_tab') args.reason = reason;
         void tool(toolFor[action], args);
     }
 </script>

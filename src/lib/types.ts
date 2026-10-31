@@ -492,6 +492,13 @@ export interface AutomationCase {
         rationale: string;
         unit?: { title: string; kind: 'tab' | 'session' } | null;
     } | null;
+    /** A firmer option offered after the alternative: closing a tab it would pause. */
+    fallback?: {
+        process: ProcessRecord;
+        action: string;
+        rationale: string;
+        unit?: { title: string; kind: 'tab' | 'session' } | null;
+    } | null;
     report: ActionReport | null;
     verification: {
         summary: string;
@@ -518,7 +525,7 @@ export interface ActionImpact {
 }
 
 export interface ActionPopupOption {
-    action: 'lower_priority' | 'terminate' | 'pause' | 'close_tab';
+    action: 'lower_priority' | 'terminate' | 'pause' | 'pause_tab' | 'close_tab';
     process: { name: string; cpu_percent: number; memory_bytes: number };
     impact: ActionImpact | null;
     /** For a stop, pause, or tab close: what it does, in plain words. */
@@ -542,6 +549,8 @@ export interface ActionPopupCase {
     };
     proposal: ActionPopupOption | null;
     alternative: ActionPopupOption | null;
+    /** Offered after the alternative: closing the tab it would pause. */
+    fallback?: ActionPopupOption | null;
     report: {
         fresh: boolean;
         after: true | null;

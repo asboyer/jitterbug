@@ -29,7 +29,7 @@ pub struct Unit {
     pub actions: Vec<String>,
     pub evidence: Vec<String>,
     pub confidence: String,
-    /// When a paused session resumes by itself.
+    /// When a paused session or tab resumes by itself.
     pub paused_until: Option<u64>,
 }
 

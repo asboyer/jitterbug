@@ -459,9 +459,9 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
                 : null,
         alternative: !process
             ? null
-            : example === 'tab' || example === 'agent'
+            : example === 'tab'
               ? {
-                    action: 'close_tab',
+                    action: 'pause_tab',
                     process,
                     impact: {
                         label: 'Video call tab',
@@ -470,29 +470,60 @@ export function demoActionPopup(example: string | null = null): ActionPopupCase 
                         process_count: 1,
                         whole_app: false,
                     },
-                    closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                    closes: 'Pause the “Video call” tab (meet.example.com). Its scripts, timers, and media stop until you resume it (automatically after 15 minutes); nothing is closed. Its memory stays allocated. The rest of Example Browser keeps running.',
                     unit: { title: 'Video call', kind: 'tab' },
                 }
-              : example === 'pause'
+              : example === 'agent'
                 ? {
-                      action: 'pause',
+                      action: 'close_tab',
                       process,
                       impact: {
-                          label: 'claude · feat-search in Example Editor',
-                          workload_cpu_percent: 31,
-                          workload_memory_bytes: 2.1 * 1024 ** 3,
-                          process_count: 7,
+                          label: 'Video call tab',
+                          workload_cpu_percent: 9.4,
+                          workload_memory_bytes: 640 * 1024 ** 2,
+                          process_count: 1,
                           whole_app: false,
                       },
-                      closes: 'Pause claude · feat-search in Example Editor: its 7 processes stop using CPU until you resume it (automatically after 15 minutes). Nothing is closed.',
-                      unit: { title: 'claude · feat-search in Example Editor', kind: 'session' },
+                      closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                      unit: { title: 'Video call', kind: 'tab' },
                   }
-                : {
-                      action: 'terminate',
+                : example === 'pause'
+                  ? {
+                        action: 'pause',
+                        process,
+                        impact: {
+                            label: 'claude · feat-search in Example Editor',
+                            workload_cpu_percent: 31,
+                            workload_memory_bytes: 2.1 * 1024 ** 3,
+                            process_count: 7,
+                            whole_app: false,
+                        },
+                        closes: 'Pause claude · feat-search in Example Editor: its 7 processes stop using CPU until you resume it (automatically after 15 minutes). Nothing is closed.',
+                        unit: { title: 'claude · feat-search in Example Editor', kind: 'session' },
+                    }
+                  : {
+                        action: 'terminate',
+                        process,
+                        impact: impact ? { ...impact, whole_app: true } : null,
+                        closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
+                    },
+        // Closing is offered after pausing, never in its place.
+        fallback:
+            process && example === 'tab'
+                ? {
+                      action: 'close_tab',
                       process,
-                      impact: impact ? { ...impact, whole_app: true } : null,
-                      closes: `Quit ${label}. Every ${label} window closes, including any unsaved work.`,
-                  },
+                      impact: {
+                          label: 'Video call tab',
+                          workload_cpu_percent: 9.4,
+                          workload_memory_bytes: 640 * 1024 ** 2,
+                          process_count: 1,
+                          whole_app: false,
+                      },
+                      closes: 'Close the “Video call” tab (meet.example.com). Anything running in it ends, such as a call, video, or unsaved form input. The rest of Example Browser stays open.',
+                      unit: { title: 'Video call', kind: 'tab' },
+                  }
+                : null,
         report: null,
         verification: null,
         origin: example === 'agent' ? 'agent' : 'automatic',
@@ -517,7 +548,8 @@ export function demoInside(workload: Workload, snapshot: Snapshot): InsideView {
         cpu: number,
         mem: number,
         shared = 0,
-        pid: number | null = null
+        pid: number | null = null,
+        pausedUntil: number | null = null
     ) => ({
         id,
         kind: 'tab' as const,
@@ -530,10 +562,14 @@ export function demoInside(workload: Workload, snapshot: Snapshot): InsideView {
         shared_with: shared,
         pid,
         start_time: pid === null ? null : (members[0]?.start_time ?? null),
-        actions: ['focus_tab', 'close_tab'],
+        actions: pausedUntil
+            ? ['resume_tab', 'close_tab']
+            : pid === null
+              ? ['focus_tab', 'close_tab']
+              : ['focus_tab', 'pause_tab', 'close_tab'],
         evidence: ['Synthetic example: no browser was contacted.'],
         confidence: 'Matched by CPU time',
-        paused_until: null,
+        paused_until: pausedUntil,
     });
     const session = (
         id: string,
@@ -573,7 +609,7 @@ export function demoInside(workload: Workload, snapshot: Snapshot): InsideView {
         source: browser ? 'Browser DevTools' : 'Process tree',
         status: 'ready',
         message: browser
-            ? '4 tabs measured over one second.'
+            ? '5 tabs measured over one second.'
             : '2 commands running inside the app.',
         setup: [],
         units: browser
@@ -582,6 +618,16 @@ export function demoInside(workload: Workload, snapshot: Snapshot): InsideView {
                   tab('d2', 'Browser game', 'games.example.com', 6.1, 410, 0, 9102),
                   tab('d3', 'Docs', 'docs.example.com', 0.2, 180, 1, 9103),
                   tab('d4', 'Mail', 'mail.example.com', 0.1, 150, 1, 9103),
+                  tab(
+                      'd7',
+                      'News live blog',
+                      'news.example.com',
+                      0,
+                      220,
+                      0,
+                      9108,
+                      Math.floor(Date.now() / 1000) + 11 * 60
+                  ),
                   tab('d5', 'Recipes', 'recipes.example.com', 0, 0),
                   tab('d6', 'Travel plans', 'travel.example.com', 0, 0),
               ]

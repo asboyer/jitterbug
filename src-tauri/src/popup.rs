@@ -123,6 +123,7 @@ pub fn view(case: &Case, more: usize, undo: Option<u64>) -> Value {
         },
         "proposal": case.proposal.as_ref().map(option),
         "alternative": case.alternative.as_ref().map(option),
+        "fallback": case.fallback.as_ref().map(option),
         // Shares of total CPU capacity, as everywhere in the app.
         "report": case.report.as_ref().map(|r| json!({
             "fresh": r.fresh,
@@ -133,11 +134,15 @@ pub fn view(case: &Case, more: usize, undo: Option<u64>) -> Value {
             "cpu_after": r.after.as_ref().map(|a| a.cpu_percent),
             "memory_before": r.before.memory_bytes,
             "memory_after": r.after.as_ref().map(|a| a.memory_bytes),
-            // A paused command can be resumed from the popup until it resumes by itself.
-            "resumable": r.action == "pause"
-                && case.proposal.as_ref().is_some_and(|p| {
-                    crate::pause::is_paused(p.process.pid, p.process.start_time)
-                }),
+            // A paused command or tab can be resumed from the popup until it resumes by itself.
+            "resumable": case.proposal.as_ref().is_some_and(|p| match r.action.as_str() {
+                "pause" => crate::pause::is_paused(p.process.pid, p.process.start_time),
+                "pause_tab" => p
+                    .unit
+                    .as_ref()
+                    .is_some_and(|u| crate::inside::chrome::paused_until(&u.id).is_some()),
+                _ => false,
+            }),
             "undo": undo.filter(|_| r.action == "lower_priority"),
         })),
         "verification": case.verification.as_ref().map(|v| json!({
@@ -175,7 +180,7 @@ fn option(p: &Proposal) -> Value {
             "memory_bytes": p.process.memory_bytes,
         },
         "impact": p.impact,
-        "closes": matches!(p.action.as_str(), "terminate" | "pause" | "close_tab")
+        "closes": matches!(p.action.as_str(), "terminate" | "pause" | "pause_tab" | "close_tab")
             .then_some(&p.rationale),
         // A tab or command session: its title and kind only.
         "unit": p.unit.as_ref().map(|u| json!({ "title": u.title, "kind": u.kind })),
@@ -727,6 +732,47 @@ mod tests {
         }
         case.report.as_mut().unwrap().action = "terminate".into();
         assert!(view(&case, 0, Some(7))["report"]["undo"].is_null());
+    }
+
+    #[test]
+    fn a_tab_case_offers_pausing_first_and_closing_second_without_identity() {
+        let mut case = waiting(1, 100);
+        let process = case.proposal.as_ref().unwrap().process.clone();
+        let tab = |action: &str| Proposal {
+            process: crate::types::ProcessRecord {
+                executable: Some("/private/example/Chrome Helper".into()),
+                ..process.clone()
+            },
+            action: action.into(),
+            rationale: format!("{action} the “Live blog” tab."),
+            impact: None,
+            unit: Some(crate::inside::Unit {
+                id: "TARGET-1".into(),
+                kind: "tab".into(),
+                title: "Live blog".into(),
+                detail: "https://news.example.com/private-path".into(),
+                pid: Some(4242),
+                ..Default::default()
+            }),
+        };
+        case.alternative = Some(tab("pause_tab"));
+        case.fallback = Some(tab("close_tab"));
+        let payload = view(&case, 0, None);
+        assert_eq!(payload["alternative"]["action"], "pause_tab");
+        assert_eq!(payload["fallback"]["action"], "close_tab");
+        assert_eq!(payload["alternative"]["unit"]["title"], "Live blog");
+        assert!(payload["alternative"]["closes"].is_string());
+        let text = payload.to_string();
+        for private in [
+            "/private",
+            "pid",
+            "start_time",
+            "4242",
+            "TARGET-1",
+            "private-path",
+        ] {
+            assert!(!text.contains(private), "{private} leaked");
+        }
     }
 
     #[test]

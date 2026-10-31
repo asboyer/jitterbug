@@ -19,6 +19,12 @@ test('browser workloads list tabs automatically with demo actions disabled', asy
     await expect(inside).toContainText('Recipes');
     await expect(inside).toContainText('shares a process with 1 other tab');
     await expect(inside.getByRole('button', { name: 'Close tab…' }).first()).toBeDisabled();
+    // A background tab can be paused; a paused one shows when it resumes and offers Resume.
+    await expect(inside.getByRole('button', { name: 'Pause', exact: true }).first()).toBeDisabled();
+    const paused = inside.getByRole('listitem').filter({ hasText: 'News live blog' });
+    await expect(paused).toContainText(/Paused · resumes \d/);
+    await expect(paused.getByRole('button', { name: 'Resume' })).toBeVisible();
+    await expect(paused.getByRole('button', { name: 'Pause', exact: true })).toHaveCount(0);
     await expect(inside.getByText('Synthetic example · About these readings')).toBeVisible();
     await expect(inside).toContainText('Closing a tab discards unsaved form input');
     await expect(inside.locator('.reading-notes p')).not.toBeVisible();

@@ -186,7 +186,7 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default)]
     pub impact: Option<Impact>,
-    /// The tab or command session a granular action targets (pause, close_tab).
+    /// The tab or command session a granular action targets (pause, pause_tab, close_tab).
     #[serde(default)]
     pub unit: Option<crate::inside::Unit>,
 }
@@ -281,6 +281,9 @@ pub struct Case {
     /// A stop the user can choose instead, shown with what it would free and what it closes.
     #[serde(default)]
     pub alternative: Option<Proposal>,
+    /// A firmer option offered after `alternative`: closing a tab the alternative would pause.
+    #[serde(default)]
+    pub fallback: Option<Proposal>,
     pub report: Option<ActionReport>,
     pub verification: Option<Verification>,
     pub automatic: bool,
@@ -307,6 +310,7 @@ impl Case {
             diagnosis: None,
             proposal: None,
             alternative: None,
+            fallback: None,
             report: None,
             verification: None,
             automatic: false,
