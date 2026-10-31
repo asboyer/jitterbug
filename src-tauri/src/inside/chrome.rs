@@ -4,7 +4,7 @@
 //! report its renderer's cumulative CPU time (`Performance.getMetrics` → `ProcessTime`), and
 //! `SystemInfo.getProcessInfo` reports the same counter per PID. Reading both twice, bracketed in
 //! time, identifies the tab's PID; its memory then comes from the normal collector inventory.
-use super::{host, Inside, Remainder, Unit};
+use super::{host, Inside, ProcessLabel, Remainder, Unit};
 use crate::types::*;
 use serde_json::{json, Value};
 use std::{
@@ -27,7 +27,7 @@ pub const BROWSERS: &[&str] = &[
     "vivaldi",
 ];
 
-const SOURCE: &str = "Browser DevTools";
+pub const SOURCE: &str = "Browser DevTools";
 const WINDOW: Duration = Duration::from_secs(1);
 /// Counter granularity: one tab's reading must fall inside its process's bracket.
 const EPSILON: f64 = 0.000_2;
@@ -476,6 +476,7 @@ fn measure_tabs(
     let mut units = Vec::new();
     let mut attributed: std::collections::HashSet<u32> = Default::default();
     let mut remainder: HashMap<&'static str, Remainder> = HashMap::new();
+    let mut roles: Vec<(u32, &str)> = Vec::new();
     let mut verified = 0;
     for m in &measured {
         // The endpoint must belong to this workload, not another browser or profile.
@@ -575,12 +576,8 @@ fn measure_tabs(
                 if attributed.contains(pid) {
                     continue;
                 }
-                let label = match kind.as_str() {
-                    "browser" => "Browser window, tab strip, and downloads",
-                    "GPU" => "Graphics (GPU process, shared by all tabs)",
-                    "renderer" => "Extensions, background pages, and workers",
-                    _ => "Network, storage, audio, and utility services",
-                };
+                let label = role(kind).0;
+                roles.push((*pid, kind));
                 let entry = remainder.entry(label).or_default();
                 entry.cpu_percent += core_share(*pid, a, d)
                     .map(|s| s * 100.0 / cores)
@@ -636,11 +633,102 @@ fn measure_tabs(
             if units.len() == 1 { "" } else { "s" }
         ),
     );
+    inside.labels = labels(snapshot, &units, &roles);
     inside.units = units;
     inside.remainder = remainder;
     inside.measured_seconds = WINDOW.as_secs_f32();
     inside.limits = "Tab CPU is measured over the last second; memory is the tab's renderer process from the last five-second sample. Tabs that share a renderer are split by an estimate. The GPU, network, and browser processes serve every tab and are shown separately. Discarded/sleeping tabs use no renderer. Titles and addresses stay on this computer.".into();
     inside
+}
+
+/// A browser process kind as (summary row label, (process title, subtitle)).
+pub fn role(kind: &str) -> (&'static str, (&'static str, &'static str)) {
+    match kind {
+        "browser" => (
+            "Browser window, tab strip, and downloads",
+            ("Browser window", "Windows, tab strip, and downloads"),
+        ),
+        "GPU" => (
+            "Graphics (GPU process, shared by all tabs)",
+            ("Graphics (shared by all tabs)", "Draws every tab on screen"),
+        ),
+        "renderer" => (
+            "Extensions, background pages, and workers",
+            ("Extensions", "Extensions, background pages, and workers"),
+        ),
+        _ => (
+            "Network, storage, audio, and utility services",
+            (
+                "Network & storage",
+                "Network, storage, audio, and utility services",
+            ),
+        ),
+    }
+}
+
+/// Name each measured process: a renderer by the tab(s) it runs, the rest by their role.
+fn labels(snapshot: &Snapshot, units: &[Unit], roles: &[(u32, &str)]) -> Vec<ProcessLabel> {
+    let by_pid: HashMap<u32, &ProcessRecord> =
+        snapshot.processes.iter().map(|p| (p.pid, p)).collect();
+    let mut tabs: Vec<(u32, Vec<&Unit>)> = Vec::new();
+    for unit in units.iter().filter(|u| u.kind == "tab") {
+        let Some(pid) = unit.pid else { continue };
+        match tabs.iter_mut().find(|(p, _)| *p == pid) {
+            Some((_, group)) => group.push(unit),
+            None => tabs.push((pid, vec![unit])),
+        }
+    }
+    let mut out = Vec::new();
+    for (pid, mut group) in tabs {
+        let Some(process) = by_pid.get(&pid) else {
+            continue;
+        };
+        // The tab holding most of the process's memory names it first.
+        group.sort_by_key(|u| std::cmp::Reverse(u.memory_bytes));
+        let mut hosts: Vec<&str> = Vec::new();
+        // An extension page's "host" is an opaque extension ID, not a site.
+        for host in group
+            .iter()
+            .filter(|u| !u.detail.starts_with("chrome-extension://"))
+            .filter_map(|u| u.host.as_deref())
+        {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+        let title = match group.as_slice() {
+            [one] => one.title.clone(),
+            many => {
+                let names: Vec<String> = many.iter().take(2).map(|u| short(&u.title)).collect();
+                format!(
+                    "{} tabs: {}{}",
+                    many.len(),
+                    names.join(", "),
+                    if many.len() > 2 { ", …" } else { "" }
+                )
+            }
+        };
+        let subtitle = match hosts.len() {
+            0..=3 => hosts.join(", "),
+            n => format!("{} and {} more", hosts[..2].join(", "), n - 2),
+        };
+        out.push(ProcessLabel::new(process, title, subtitle));
+    }
+    for (pid, kind) in roles {
+        if let Some(process) = by_pid.get(pid) {
+            let (title, subtitle) = role(kind).1;
+            out.push(ProcessLabel::new(process, title, subtitle));
+        }
+    }
+    out
+}
+
+fn short(title: &str) -> String {
+    if title.chars().count() <= 32 {
+        return title.into();
+    }
+    let cut: String = title.chars().take(31).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// Focus or close a tab after confirming it still shows the address the person reviewed.
@@ -734,6 +822,69 @@ mod tests {
         let url = format!("https://meet.google.com/abc?{}", "x".repeat(500));
         assert_eq!(detail(&url).chars().count(), DETAIL_LIMIT);
         assert_eq!(detail(&detail(&url)), detail(&url));
+    }
+
+    #[test]
+    fn renderers_are_named_by_their_tabs_and_the_rest_by_role() {
+        let process = |pid: u32| ProcessRecord {
+            pid,
+            start_time: 100 + pid as u64,
+            name: "Google Chrome Helper (Renderer)".into(),
+            ..Default::default()
+        };
+        let snapshot = Snapshot {
+            processes: (1..=6).map(process).collect(),
+            ..Default::default()
+        };
+        let tab = |title: &str, url: &str, pid: Option<u32>, memory: u64| Unit {
+            kind: "tab".into(),
+            title: title.into(),
+            detail: url.into(),
+            host: host(url),
+            pid,
+            memory_bytes: memory,
+            ..Default::default()
+        };
+        let units = vec![
+            tab(
+                "lofi hip hop radio",
+                "https://www.youtube.com/watch?v=x",
+                Some(1),
+                400,
+            ),
+            tab("Docs", "https://docs.example.com/d/1", Some(2), 300),
+            tab("Mail", "https://mail.example.com/", Some(2), 200),
+            tab("Calendar", "https://calendar.example.com/", Some(2), 100),
+            tab("Sleeping", "https://example.org/", None, 0),
+            // A tab whose renderer exited since the inventory sample is not labeled.
+            tab("Gone", "https://gone.example.com/", Some(9), 50),
+            tab(
+                "Viewer",
+                "chrome-extension://abcdef/viewer.html",
+                Some(6),
+                10,
+            ),
+        ];
+        let labels = labels(
+            &snapshot,
+            &units,
+            &[(3, "GPU"), (4, "renderer"), (5, "utility")],
+        );
+        let titled = |pid: u32| labels.iter().find(|l| l.pid == pid).unwrap();
+        assert_eq!(labels.len(), 6);
+        assert_eq!(titled(1).title, "lofi hip hop radio");
+        assert_eq!(titled(1).subtitle, "www.youtube.com");
+        assert_eq!(titled(1).start_time, 101);
+        assert_eq!(titled(2).title, "3 tabs: Docs, Mail, …");
+        assert_eq!(
+            titled(2).subtitle,
+            "docs.example.com, mail.example.com, calendar.example.com"
+        );
+        assert_eq!(titled(3).title, "Graphics (shared by all tabs)");
+        assert_eq!(titled(4).title, "Extensions");
+        assert_eq!(titled(5).title, "Network & storage");
+        assert_eq!(titled(6).subtitle, "");
+        assert!(short(&"x".repeat(80)).ends_with('…'));
     }
 
     #[test]

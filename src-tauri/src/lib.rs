@@ -231,15 +231,20 @@ fn get_workload_details(
 async fn get_inside_view(
     state: State<'_, AppState>,
     workload_id: String,
+    connect: Option<bool>,
 ) -> Result<inside::Inside, String> {
     let snapshot = state
         .snapshot
         .read()
         .map_err(|_| "Telemetry unavailable.")?
         .clone();
-    tauri::async_runtime::spawn_blocking(move || inside::inspect(&snapshot, &workload_id))
-        .await
-        .map_err(|_| "Inside view unavailable.")?
+    // Automatic loads pass `connect: false`: only an explicit request may make a browser ask.
+    let connect = connect.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || {
+        inside::inspect_with(&snapshot, &workload_id, connect)
+    })
+    .await
+    .map_err(|_| "Inside view unavailable.")?
 }
 
 #[tauri::command]
