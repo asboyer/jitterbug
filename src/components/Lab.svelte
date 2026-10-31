@@ -1,10 +1,12 @@
 <script lang="ts">
-    // Development Lab: the Inside panel, the action popup, and an agent console on live data.
+    // Development Lab: the Inside panel, agent sessions, the action popup, and an agent console
+    // on live data.
     // Everything here goes through the same commands, socket, and approvals as the real app.
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
     import ActionPopup from './ActionPopup.svelte';
+    import AgentSessions from './AgentSessions.svelte';
     import InsidePanel from './InsidePanel.svelte';
     import { demoActionPopup } from '../lib/demo';
     import { errorMessage, memory, percent } from '../lib/format';
@@ -23,6 +25,7 @@
     let requests = $state<number[]>([]);
     let reason = $state('Testing from the Jitterbug Lab.');
     let sequence = 0;
+    let area = $state<'inside' | 'sessions'>('inside');
 
     const workloads = $derived(
         [...(snapshot?.workloads ?? [])].sort((a, b) => b.cpu_percent - a.cpu_percent)
@@ -149,17 +152,34 @@
 
     <section class="column">
         <div class="head">
-            <h2>Inside</h2>
-            <select bind:value={workloadId}>
-                {#each workloads as w (w.id)}
-                    <option value={w.id}
-                        >{w.label} · {percent(w.cpu_percent)} · {memory(w.memory_bytes)}</option
-                    >
-                {/each}
-            </select>
+            <div class="tabs" role="tablist">
+                <button
+                    role="tab"
+                    aria-selected={area === 'inside'}
+                    class:active={area === 'inside'}
+                    onclick={() => (area = 'inside')}>Inside</button
+                >
+                <button
+                    role="tab"
+                    aria-selected={area === 'sessions'}
+                    class:active={area === 'sessions'}
+                    onclick={() => (area = 'sessions')}>Agent sessions</button
+                >
+            </div>
+            {#if area === 'inside'}
+                <select bind:value={workloadId}>
+                    {#each workloads as w (w.id)}
+                        <option value={w.id}
+                            >{w.label} · {percent(w.cpu_percent)} · {memory(w.memory_bytes)}</option
+                        >
+                    {/each}
+                </select>
+            {/if}
         </div>
         <div class="scroll">
-            {#if snapshot && workload}
+            {#if area === 'sessions'}
+                <AgentSessions />
+            {:else if snapshot && workload}
                 {#key workload.id}
                     <InsidePanel
                         {snapshot}
@@ -314,8 +334,22 @@
         gap: 8px;
         flex-wrap: wrap;
     }
-    .head h2 {
+    .head h2,
+    .tabs {
         flex: 1;
+    }
+    .tabs {
+        display: flex;
+        gap: 4px;
+    }
+    .tabs button {
+        font-weight: 600;
+        border-color: transparent;
+        background: transparent;
+    }
+    .tabs button.active {
+        background: var(--accent-soft);
+        color: var(--accent);
     }
     .scroll {
         flex: 1;
