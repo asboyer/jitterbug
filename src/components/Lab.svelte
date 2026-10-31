@@ -260,49 +260,52 @@
                 Exactly what the floating popup shows now. Empty while nothing needs you.
             </p>
             <div class="frame live"><ActionPopup /></div>
+            <div class="lowered" aria-label="Currently lowered">
+                <h3>Currently lowered</h3>
+                {#if lowered?.changes.length}
+                    <ul>
+                        {#each lowered.changes as change (change.id)}
+                            <li>
+                                <span class="title">
+                                    <span>{change.label}</span>
+                                    <small class="muted">
+                                        {change.process} · {since(change.at)} · {sources[
+                                            change.source
+                                        ]} · nice
+                                        {change.previous} → {change.lowered_to}
+                                    </small>
+                                </span>
+                                <button class="small" onclick={() => restorePriority(change)}
+                                    >Restore</button
+                                >
+                            </li>
+                        {/each}
+                    </ul>
+                {:else}
+                    <p class="muted small">Nothing Jitterbug lowered is still running.</p>
+                {/if}
+                <h3>Always lower</h3>
+                {#if lowered?.rules.length}
+                    <ul>
+                        {#each lowered.rules as rule (rule.workload_id)}
+                            <li>
+                                <span class="title">{rule.label}</span>
+                                <button class="small" onclick={() => removeRule(rule)}
+                                    >Remove</button
+                                >
+                            </li>
+                        {/each}
+                    </ul>
+                {:else}
+                    <p class="muted small">No saved rules.</p>
+                {/if}
+            </div>
             <h3>Examples</h3>
             <p class="muted small">Played locally; nothing is applied.</p>
             {#each examples as example (example.name)}
                 <h4>{example.name}</h4>
                 <div class="frame"><ActionPopup preset={example.payload} /></div>
             {/each}
-        </div>
-        <div class="lowered" aria-label="Currently lowered">
-            <h3>Currently lowered</h3>
-            {#if lowered?.changes.length}
-                <ul>
-                    {#each lowered.changes as change (change.id)}
-                        <li>
-                            <span class="title">
-                                <span>{change.label}</span>
-                                <small class="muted">
-                                    {change.process} · {since(change.at)} · {sources[change.source]} ·
-                                    nice
-                                    {change.previous} → {change.lowered_to}
-                                </small>
-                            </span>
-                            <button class="small" onclick={() => restorePriority(change)}
-                                >Restore</button
-                            >
-                        </li>
-                    {/each}
-                </ul>
-            {:else}
-                <p class="muted small">Nothing Jitterbug lowered is still running.</p>
-            {/if}
-            <h3>Always lower</h3>
-            {#if lowered?.rules.length}
-                <ul>
-                    {#each lowered.rules as rule (rule.workload_id)}
-                        <li>
-                            <span class="title">{rule.label}</span>
-                            <button class="small" onclick={() => removeRule(rule)}>Remove</button>
-                        </li>
-                    {/each}
-                </ul>
-            {:else}
-                <p class="muted small">No saved rules.</p>
-            {/if}
         </div>
     </section>
 
@@ -451,10 +454,11 @@
         width: 360px;
         height: 300px;
     }
-    .frame.live:empty::before {
-        content: 'Nothing to show.';
-        color: var(--muted);
-        font-size: 12px;
+    .frame.live {
+        height: auto;
+    }
+    .frame.live:has(:global(.action-popup)) {
+        height: 300px;
     }
     .frame :global(.action-popup) {
         height: 100%;
