@@ -36,6 +36,11 @@ pub struct Session {
     pub agent: Option<String>,
     /// The root command's name.
     pub command: String,
+    /// How the Inside view names it: a registered task, a Claude Code session's own name, or
+    /// the command and folder.
+    pub title: String,
+    /// A coding agent's own state: `working` or `idle` (waiting for the person).
+    pub status: Option<String>,
     /// The registered task title, when the session was started through `jitterbug-run`.
     pub task: Option<String>,
     /// Working directory with the home folder shortened to `~`.
@@ -53,6 +58,12 @@ pub struct Session {
     /// Identity for pause and resume only; not for display.
     pub pid: u32,
     pub start_time: u64,
+}
+
+impl Session {
+    pub fn key(&self) -> (u32, u64) {
+        (self.pid, self.start_time)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -181,6 +192,8 @@ fn session(
         app: app.to_string(),
         agent,
         command: root.name.clone(),
+        title: unit.title.clone(),
+        status: unit.agent_status.clone(),
         task: registration.map(|(task, _)| task.to_string()),
         folder: if path.as_os_str().is_empty() {
             String::new()
@@ -793,6 +806,8 @@ mod tests {
             app: app.into(),
             agent: agent.map(String::from),
             command: "x".into(),
+            title: String::new(),
+            status: None,
             task: None,
             folder: String::new(),
             path: String::new(),

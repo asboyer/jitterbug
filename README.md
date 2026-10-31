@@ -12,6 +12,9 @@ Windows has live telemetry, with gaps in native diagnostics and actions.
 - **Catch a slowdown:** press **⌘⇧J** on Mac or **Ctrl+Shift+J** on Windows for a Jitter Snapshot.
 - **Act on the cause:** review an optimization, pause a command session, or inspect supported
   Chromium tabs. Pausing retains memory; it does not close the command.
+- **Keep running agents from freezing the computer:** turn on **Pause agents when the computer
+  is strained** and, while memory or CPU stays tight, Jitterbug pauses the busiest working agent session and
+  resumes held sessions one at a time once there is room. Sessions waiting for you keep running.
 - **Coordinate agents:** attribute registered tasks and let heavy checks take turns across sessions.
 - **Save system settings:** capture a Mac settings baseline and preview a rollback.
 

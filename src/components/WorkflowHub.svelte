@@ -1,6 +1,7 @@
 <script lang="ts">
     import { invoke } from '@tauri-apps/api/core';
     import HarnessBadge from './HarnessBadge.svelte';
+    import HeldAgents from './HeldAgents.svelte';
     import Icon from './Icon.svelte';
     import InfoTip from './InfoTip.svelte';
     import TaskDetail from './TaskDetail.svelte';
@@ -137,6 +138,7 @@
             <span style:width={`${Math.min(100, Math.max(0, cpu))}%`}></span>
         </div>
     </div>
+    {#if snapshot.governor}<HeldAgents governor={snapshot.governor} {demo} />{/if}
     {#if protectedNow}<div class="protection-strip">
             <Icon name="app" size={16} /><strong>Making room for your apps</strong><span
                 >Until {new Date(protectedUntil * 1000).toLocaleTimeString([], {

@@ -105,6 +105,12 @@
                 bind:checked={policy.enabled}
             />
             <SettingSwitch
+                title="Pause agents when the computer is strained"
+                description="When memory or CPU stays tight, pause the busiest working agent session and resume it once there is room. Sessions waiting for you, and the last one working, keep running."
+                bind:checked={policy.hold_agents}
+                disabled={!policy.enabled}
+            />
+            <SettingSwitch
                 title="Investigate with AI"
                 description="Use your intelligent model when a problem persists. Cloud costs may apply."
                 bind:checked={policy.model_analysis}

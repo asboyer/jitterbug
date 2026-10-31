@@ -8,6 +8,7 @@
     import Icon from './Icon.svelte';
     import AppIcon from './AppIcon.svelte';
     import ActivityGraph from './ActivityGraph.svelte';
+    import HeldAgents from './HeldAgents.svelte';
 
     const desktop = isTauri();
     let snapshot: Snapshot | null = $state(desktop ? null : demoSnapshot());
@@ -106,6 +107,11 @@
                 >{snapshot.platform.thermal ?? ''}</span
             >
         </div>
+        {#if snapshot.governor}<HeldAgents
+                governor={snapshot.governor}
+                demo={snapshot.source === 'demo'}
+                compact
+            />{/if}
         <div class="quick-history"><ActivityGraph {snapshot} /></div>
         <div class="quick-snapshot">
             <button onclick={snapshotNow} title="Record what happened around this moment"
