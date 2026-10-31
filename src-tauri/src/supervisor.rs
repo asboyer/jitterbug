@@ -1629,15 +1629,12 @@ impl Runtime {
         let paused = crate::pause::list();
         match governor.decide(sample, &sessions, &paused, enabled, snoozed, now()) {
             crate::governor::Step::Idle => {}
-            crate::governor::Step::Pause {
-                pid,
-                start_time,
-                title,
-                reason,
-            } => match crate::pause::pause(pid, start_time, &title) {
-                Ok(record) => governor.paused(&record, title, reason),
-                Err(_) => governor.refused(pid, start_time, now()),
-            },
+            crate::governor::Step::Pause(held) => {
+                match crate::pause::pause(held.pid, held.start_time, &held.title) {
+                    Ok(record) => governor.paused(&record, held),
+                    Err(_) => governor.refused(held.pid, held.start_time, now()),
+                }
+            }
             crate::governor::Step::Resume(held) => {
                 for h in held {
                     // Gone or already resumed is fine: either way it is no longer held.

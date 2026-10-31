@@ -239,6 +239,7 @@ export function demoSnapshot(pressure = false): Snapshot {
                     reason: 'memory was running out',
                     paused_at: time - 90,
                     until: time - 90 + 15 * 60,
+                    cpu_percent: 24,
                 },
             ],
             note: '',

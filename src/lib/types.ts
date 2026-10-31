@@ -323,6 +323,7 @@ export interface Governor {
         reason: string;
         paused_at: number;
         until: number;
+        cpu_percent: number;
     }[];
     note: string;
 }

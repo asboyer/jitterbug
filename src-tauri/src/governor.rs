@@ -20,6 +20,9 @@ const SETTLE_SECONDS: u64 = 15;
 const RESUME_GAP_SECONDS: u64 = 30;
 /// A session the person resumed, or one that could not be paused, is left alone this long.
 const RESPECT_SECONDS: u64 = 10 * 60;
+/// A held session resumes only if its CPU at pause time, added to the current load, stays
+/// under this share of total CPU: resuming into a saturated processor just pauses it again.
+const RESUME_CPU_PERCENT: f32 = 85.0;
 /// Share of total CPU that counts as working for an agent without its own status.
 const BUSY_CPU_PERCENT: f32 = 3.0;
 const MIB: u64 = 1024 * 1024;
@@ -80,6 +83,8 @@ pub struct Held {
     pub paused_at: u64,
     /// When the pause expires on its own if there is still no room.
     pub until: u64,
+    /// Its share of total CPU when it was paused: what resuming it would add back.
+    pub cpu_percent: f32,
 }
 
 /// What the person sees: whether it is on and what it is holding.
@@ -94,12 +99,8 @@ pub struct View {
 #[derive(Debug, PartialEq)]
 pub enum Step {
     Idle,
-    Pause {
-        pid: u32,
-        start_time: u64,
-        title: String,
-        reason: String,
-    },
+    /// Pause this session; its times are filled in by `paused` once the pause is in place.
+    Pause(Held),
     Resume(Vec<Held>),
 }
 
@@ -231,36 +232,44 @@ impl Governor {
             };
             self.tight = 0;
             self.last_change = now;
-            return Step::Pause {
+            return Step::Pause(Held {
                 pid: session.pid,
                 start_time: session.start_time,
                 title: session.title.clone(),
                 reason: strain.reason().into(),
-            };
+                cpu_percent: session.cpu_percent,
+                ..Default::default()
+            });
         }
-        if self.calm >= CALM_SAMPLES
-            && !self.held.is_empty()
-            && now >= self.last_change + RESUME_GAP_SECONDS
-        {
-            self.calm = 0;
-            self.last_change = now;
-            let next = self.held.remove(0);
-            self.note = format!("Resumed {}: there is room again.", next.title);
-            return Step::Resume(vec![next]);
+        if self.calm >= CALM_SAMPLES && now >= self.last_change + RESUME_GAP_SECONDS {
+            // Oldest first, skipping any whose load would saturate the processor again.
+            let fits = self
+                .held
+                .iter()
+                .position(|h| sample.cpu_percent + h.cpu_percent < RESUME_CPU_PERCENT);
+            if let Some(index) = fits {
+                self.calm = 0;
+                self.last_change = now;
+                let next = self.held.remove(index);
+                self.note = format!("Resumed {}: there is room again.", next.title);
+                return Step::Resume(vec![next]);
+            }
         }
         Step::Idle
     }
 
     /// Record a pause the step asked for once it is in place.
-    pub fn paused(&mut self, record: &Paused, title: String, reason: String) {
-        self.note = format!("Paused {title} because {reason}. It resumes when there is room.");
+    pub fn paused(&mut self, record: &Paused, held: Held) {
+        self.note = format!(
+            "Paused {} because {}. It resumes when there is room.",
+            held.title, held.reason
+        );
         self.held.push(Held {
             pid: record.pid,
             start_time: record.start_time,
-            title,
-            reason,
             paused_at: record.paused_at,
             until: record.until,
+            ..held
         });
     }
 
@@ -328,6 +337,14 @@ mod tests {
         }
     }
 
+    fn held(title: &str, cpu: f32) -> Held {
+        Held {
+            title: title.into(),
+            cpu_percent: cpu,
+            ..Default::default()
+        }
+    }
+
     /// Run samples until a non-idle step, at five-second intervals from `now`.
     fn run(
         g: &mut Governor,
@@ -364,9 +381,9 @@ mod tests {
             Step::Idle
         );
         match run(&mut g, &tight, &sessions, &[], &mut now, 1) {
-            Step::Pause { pid, reason, .. } => {
-                assert_eq!(pid, 11);
-                assert_eq!(reason, "memory was running out");
+            Step::Pause(held) => {
+                assert_eq!(held.pid, 11);
+                assert_eq!(held.reason, "memory was running out");
             }
             other => panic!("expected a pause, got {other:?}"),
         }
@@ -381,11 +398,11 @@ mod tests {
             session(11, None, 30.0, 1),
         ];
         let hot = sample(8, 95.0);
-        let Step::Pause { pid, .. } = run(&mut g, &hot, &sessions, &[], &mut now, 3) else {
+        let Step::Pause(Held { pid, .. }) = run(&mut g, &hot, &sessions, &[], &mut now, 3) else {
             panic!("expected a pause");
         };
         assert_eq!(pid, 10);
-        g.paused(&record(10, now), "S10".into(), "x".into());
+        g.paused(&record(10, now), held("S10", 0.0));
         sessions[0].paused_until = Some(now + 900);
         // Only one working session is left: it keeps running however long the strain lasts.
         assert_eq!(
@@ -399,8 +416,8 @@ mod tests {
         let mut g = Governor::default();
         let mut now = 1_000;
         let paused = [record(10, 990), record(11, 995)];
-        g.paused(&paused[0], "first".into(), "x".into());
-        g.paused(&paused[1], "second".into(), "x".into());
+        g.paused(&paused[0], held("first", 0.0));
+        g.paused(&paused[1], held("second", 0.0));
         let sessions = [session(10, None, 0.0, 1), session(11, None, 0.0, 1)];
         let roomy = sample(8, 20.0);
         let Step::Resume(first) = run(&mut g, &roomy, &sessions, &paused, &mut now, 10) else {
@@ -420,7 +437,7 @@ mod tests {
     fn a_session_the_person_resumed_is_left_alone() {
         let mut g = Governor::default();
         let mut now = 1_000;
-        g.paused(&record(10, now), "S10".into(), "x".into());
+        g.paused(&record(10, now), held("S10", 0.0));
         let sessions = [
             session(10, Some("working"), 50.0, 8),
             session(11, Some("working"), 10.0, 1),
@@ -428,7 +445,7 @@ mod tests {
         ];
         // The pause is gone before it expired while the session still runs.
         let tight = sample(1, 95.0);
-        let Step::Pause { pid, .. } = run(&mut g, &tight, &sessions, &[], &mut now, 5) else {
+        let Step::Pause(Held { pid, .. }) = run(&mut g, &tight, &sessions, &[], &mut now, 5) else {
             panic!("expected a pause");
         };
         assert_ne!(pid, 10);
@@ -439,8 +456,8 @@ mod tests {
     fn turning_it_off_resumes_everything_it_holds() {
         let mut g = Governor::default();
         let paused = [record(10, 990), record(11, 995)];
-        g.paused(&paused[0], "a".into(), "x".into());
-        g.paused(&paused[1], "b".into(), "x".into());
+        g.paused(&paused[0], held("a", 0.0));
+        g.paused(&paused[1], held("b", 0.0));
         let Step::Resume(all) = g.decide(&sample(1, 99.0), &[], &paused, false, false, 1_000)
         else {
             panic!("expected every held session to resume");
@@ -464,5 +481,26 @@ mod tests {
         }
         assert!(!g.wants_sessions(&sample(8, 20.0)));
         assert!(g.wants_sessions(&hot));
+    }
+
+    #[test]
+    fn a_session_whose_load_would_saturate_the_processor_stays_held() {
+        let mut g = Governor::default();
+        let mut now = 1_000;
+        let paused = [record(10, 990), record(11, 995)];
+        g.paused(&paused[0], held("heavy", 45.0));
+        g.paused(&paused[1], held("light", 10.0));
+        let sessions = [session(10, None, 0.0, 1), session(11, None, 0.0, 1)];
+        // 55% now: the heavy one would bring it to 100%, the light one to 65%.
+        let busy = sample(8, 55.0);
+        let Step::Resume(first) = run(&mut g, &busy, &sessions, &paused, &mut now, 10) else {
+            panic!("expected the light session to resume");
+        };
+        assert_eq!(first[0].title, "light");
+        assert_eq!(
+            run(&mut g, &busy, &sessions, &paused[..1], &mut now, 40),
+            Step::Idle
+        );
+        assert_eq!(g.view(true).held.len(), 1);
     }
 }
