@@ -535,6 +535,34 @@ pub fn conditions(s: &Snapshot, policy: &Policy) -> Vec<Trigger> {
             }
         }
     }
+    // Copies of one command (parallel jobs, agent workers) can each sit at the per-app bar and
+    // flicker under it while together holding the machine. Judge them as one load.
+    if contended {
+        let mut copies: std::collections::BTreeMap<&str, Vec<&Workload>> = Default::default();
+        for w in s.workloads.iter().filter(|w| Some(w.id.as_str()) != front) {
+            copies.entry(w.label.as_str()).or_default().push(w);
+        }
+        for (label, members) in copies.into_iter().filter(|(_, m)| m.len() >= 2) {
+            let cpu: f32 = members.iter().map(|w| w.cpu_percent).sum();
+            let core_cpu = cpu * s.logical_cpus.max(1) as f32;
+            if cpu < policy.app_cpu_percent || core_cpu < policy.app_cpu_core_percent {
+                continue;
+            }
+            let busiest = members
+                .iter()
+                .max_by(|a, b| a.cpu_percent.total_cmp(&b.cpu_percent))
+                .copied();
+            found.push(Trigger {
+                cpu_floor_percent: None,
+                memory_floor_bytes: None,
+                key: format!("app-cpu-copies:{label}"),
+                kind: Kind::AppCpu,
+                title: format!("{} {label} processes are using sustained CPU", members.len()),
+                reason: format!("{} separate {label} processes together exceeded {:.0}% of total capacity and {:.0}% on a one-core scale. The busiest one is selected; the others may be doing the same work. High usage may be legitimate work.", members.len(), policy.app_cpu_percent, policy.app_cpu_core_percent),
+                target: busiest.map(target),
+            });
+        }
+    }
     // A stalled window is more specific than simultaneous resource thresholds.
     found.sort_by_key(|trigger| trigger.kind != Kind::AppUnresponsive);
     found
@@ -1450,6 +1478,39 @@ pub(crate) mod tests {
         s.frontmost_workload = Some("fixture".into());
         s.workloads[0].unresponsive = Some(true);
         assert_eq!(conditions(&s, &p)[0].kind, Kind::AppUnresponsive);
+    }
+
+    #[test]
+    fn copies_of_one_command_are_judged_together() {
+        let p = Policy::default();
+        // Six one-core jobs, each just under the per-app bar.
+        let mut s = sample(100, 12.4);
+        let copy = s.workloads[0].clone();
+        s.workloads = (0..6)
+            .map(|i| Workload {
+                id: format!("cmd-{i}"),
+                label: "python3".into(),
+                cpu_percent: 12.4 - i as f32 * 0.1,
+                ..copy.clone()
+            })
+            .collect();
+        s.cpu_percent = 78.0;
+        let found = conditions(&s, &p);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "app-cpu-copies:python3");
+        assert_eq!(
+            found[0].title,
+            "6 python3 processes are using sustained CPU"
+        );
+        assert_eq!(found[0].target.as_ref().unwrap().workload_id, "cmd-0");
+        // With headroom, or when idle, copies are not an alert.
+        s.cpu_percent = 40.0;
+        assert!(conditions(&s, &p).is_empty());
+        s.cpu_percent = 78.0;
+        for w in &mut s.workloads {
+            w.cpu_percent = 0.5;
+        }
+        assert!(conditions(&s, &p).is_empty());
     }
 
     #[test]
