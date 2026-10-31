@@ -5,7 +5,7 @@
 //! Samples every five seconds like the app, lets the governor pause and resume real agent
 //! sessions, and prints each sample's CPU, strain, and what is held. State goes to a temporary
 //! folder, never the app's own. Anything still held is resumed on exit.
-use jitterbug_lib::{collector::Collector, governor, pause, settings::Settings, supervisor};
+use jitterbug_lib::{collector::Collector, pause, settings::Settings, supervisor};
 use std::{sync::Arc, time::Duration};
 
 fn arg(name: &str) -> Option<u64> {
@@ -33,11 +33,11 @@ fn main() {
         let view = runtime.govern(&sample).expect("governor");
         let held: Vec<&str> = view.held.iter().map(|h| h.title.as_str()).collect();
         println!(
-            "{:>4}s cpu {:>5.1}% mem free {:>4.1}% strain {:<12} held {:?}",
+            "{:>4}s cpu {:>5.1}% mem free {:>4.1}% os {:<8} held {:?}",
             started.elapsed().as_secs(),
             sample.cpu_percent,
             100.0 * sample.memory_available_bytes as f64 / sample.memory_total_bytes.max(1) as f64,
-            format!("{:?}", governor::strain(&sample)),
+            sample.platform.memory_pressure.as_deref().unwrap_or("-"),
             held
         );
         if view.note != note {

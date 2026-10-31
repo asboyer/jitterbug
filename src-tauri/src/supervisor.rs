@@ -1621,11 +1621,12 @@ impl Runtime {
         let enabled = policy.enabled && policy.hold_agents;
         let snoozed = self.snoozed_until()? > now();
         let mut governor = self.governor.lock().map_err(|_| "Governor unavailable.")?;
-        let sessions = if enabled && governor.wants_sessions(sample) {
+        let mut sessions = if enabled && governor.wants_sessions(sample) {
             crate::agent_sessions::discover(sample)
         } else {
             vec![]
         };
+        crate::governor::measure_footprints(sample, &mut sessions);
         let paused = crate::pause::list();
         match governor.decide(sample, &sessions, &paused, enabled, snoozed, now()) {
             crate::governor::Step::Idle => {}

@@ -78,6 +78,20 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
     macos::process_cpu_ns(pid, start_time)
 }
 
+/// A process's physical footprint (resident plus compressed), checked against its start time.
+/// `None` where unavailable; callers fall back to resident memory.
+pub fn footprint(pid: u32, start_time: u64) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::footprint(pid, start_time)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, start_time);
+        None
+    }
+}
+
 /// Whether macOS confirms the process is in background mode that another process set: the
 /// kernel's flag plus a throttled base priority. `None` when the process exited, its PID was
 /// reused, it cannot be read, or the platform has no background mode.

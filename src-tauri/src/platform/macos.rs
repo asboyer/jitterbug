@@ -259,6 +259,23 @@ pub fn process_cpu_ns(pid: u32, start_time: u64) -> Option<u64> {
     task_cpu_ns(pid)
 }
 
+/// Physical footprint in bytes: resident plus compressed memory, as Activity Monitor's Memory
+/// column counts it. Resident size alone hides memory macOS has compressed.
+pub fn footprint(pid: u32, start_time: u64) -> Option<u64> {
+    if bsd_info(pid)?.pbi_start_tvsec != start_time {
+        return None;
+    }
+    let mut info: libc::rusage_info_v0 = unsafe { mem::zeroed() };
+    let read = unsafe {
+        libc::proc_pid_rusage(
+            pid as libc::c_int,
+            libc::RUSAGE_INFO_V0,
+            (&mut info as *mut libc::rusage_info_v0).cast(),
+        )
+    };
+    (read == 0).then_some(info.ri_phys_footprint)
+}
+
 /// CPU time (ns) and launch timestamp (Mach absolute time) in one `proc_pid_rusage` call.
 fn usage(pid: u32) -> Option<(u64, u64)> {
     let mut info: libc::rusage_info_v0 = unsafe { mem::zeroed() };

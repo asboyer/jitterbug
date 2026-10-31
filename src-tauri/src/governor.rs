@@ -23,6 +23,13 @@ const RESPECT_SECONDS: u64 = 10 * 60;
 /// A held session resumes only if its CPU at pause time, added to the current load, stays
 /// under this share of total CPU: resuming into a saturated processor just pauses it again.
 const RESUME_CPU_PERCENT: f32 = 85.0;
+/// A session paused again this soon after the governor resumed it is held longer each time.
+const REPAUSE_WINDOW_SECONDS: u64 = 2 * 60;
+const FIRST_BACKOFF_SECONDS: u64 = 60;
+const MAX_BACKOFF_SECONDS: u64 = 10 * 60;
+/// Under memory strain, only an agent whose memory grew at least this much since the previous
+/// sample is paused: pausing stops growth but frees nothing, so a steady session is no help.
+const GROWING_BYTES: u64 = 32 * MIB;
 /// Share of total CPU that counts as working for an agent without its own status.
 const BUSY_CPU_PERCENT: f32 = 3.0;
 const MIB: u64 = 1024 * 1024;
@@ -53,9 +60,16 @@ fn os_memory_pressure(s: &Snapshot) -> bool {
     )
 }
 
-/// What is tight right now, memory first: it is what freezes the whole computer.
-pub fn strain(s: &Snapshot) -> Option<Strain> {
-    if os_memory_pressure(s) || available(s) < 0.10 || s.swap_growth_bytes > 256 * MIB {
+/// What is tight right now, memory first: it is what freezes the whole computer. A pause stops
+/// growth but frees nothing, so memory counts only while it is still getting worse: swap
+/// growing, or available memory falling since the previous sample. macOS can report a warning
+/// level for minutes after growth stops; pausing more sessions then would not help.
+pub fn strain(s: &Snapshot, previous_available: Option<u64>) -> Option<Strain> {
+    let falling = previous_available.is_some_and(|before| {
+        before.saturating_sub(s.memory_available_bytes) >= s.memory_total_bytes / 100
+    }) || s.swap_growth_bytes > 64 * MIB;
+    let tight = os_memory_pressure(s) || available(s) < 0.10;
+    if (tight && falling) || s.swap_growth_bytes > 256 * MIB {
         Some(Strain::Memory)
     } else if s.sample_ready && s.cpu_percent >= 90.0 {
         Some(Strain::Cpu)
@@ -64,11 +78,13 @@ pub fn strain(s: &Snapshot) -> Option<Strain> {
     }
 }
 
-/// Clear room, well below the strain thresholds, so a resume does not tip it straight back.
+/// Clear room, above the strain thresholds, so a resume does not tip it straight back. Held
+/// sessions keep their memory, so the memory margin is modest: growth after a resume is what
+/// matters, and a session that tips it back is held longer next time.
 fn calm(s: &Snapshot) -> bool {
     s.sample_ready
-        && !os_memory_pressure(s)
-        && available(s) >= 0.18
+        && s.platform.memory_pressure.as_deref() != Some("critical")
+        && available(s) >= 0.15
         && s.swap_growth_bytes < 64 * MIB
         && s.cpu_percent < 70.0
 }
@@ -85,6 +101,8 @@ pub struct Held {
     pub until: u64,
     /// Its share of total CPU when it was paused: what resuming it would add back.
     pub cpu_percent: f32,
+    /// Minimum time held before it may resume: longer each time a resume tipped it back.
+    pub backoff_seconds: u64,
 }
 
 /// What the person sees: whether it is on and what it is holding.
@@ -112,6 +130,12 @@ pub struct Governor {
     held: Vec<Held>,
     /// Sessions left alone until the given time.
     respected: Vec<((u32, u64), u64)>,
+    /// Available memory in the previous sample, to tell growth from a steady tight state.
+    previous_available: Option<u64>,
+    /// Each listed session's memory in the previous sample, to find the one growing.
+    previous_memory: std::collections::HashMap<(u32, u64), u64>,
+    /// Sessions the governor resumed: when, and the backoff they were held under.
+    resumed: Vec<((u32, u64), u64, u64)>,
     note: String,
 }
 
@@ -126,7 +150,7 @@ fn busy(s: &Session) -> bool {
 impl Governor {
     /// Whether this sample needs the agent sessions listed: only under strain or while holding.
     pub fn wants_sessions(&self, sample: &Snapshot) -> bool {
-        !self.held.is_empty() || strain(sample).is_some()
+        !self.held.is_empty() || strain(sample, self.previous_available).is_some()
     }
 
     pub fn view(&self, enabled: bool) -> View {
@@ -169,7 +193,8 @@ impl Governor {
         }
     }
 
-    /// Decide one step for this sample. `sessions` may be empty when `wants_sessions` was false.
+    /// Decide one step for this sample. `sessions` may be empty when `wants_sessions` was false;
+    /// their `memory_bytes` should be each session's physical footprint where available.
     pub fn decide(
         &mut self,
         sample: &Snapshot,
@@ -183,7 +208,17 @@ impl Governor {
             return Step::Idle;
         }
         self.reconcile(sessions, paused, now);
+        let previous_memory = std::mem::replace(
+            &mut self.previous_memory,
+            sessions.iter().map(|s| (s.key(), s.memory_bytes)).collect(),
+        );
+        let growth = |s: &Session| {
+            previous_memory
+                .get(&s.key())
+                .map_or(0, |before| s.memory_bytes.saturating_sub(*before))
+        };
         if !enabled {
+            self.previous_available = Some(sample.memory_available_bytes);
             self.tight = 0;
             self.calm = 0;
             if self.held.is_empty() {
@@ -192,7 +227,8 @@ impl Governor {
             self.note = "Turned off: every held session resumed.".into();
             return Step::Resume(std::mem::take(&mut self.held));
         }
-        let strain = strain(sample);
+        let strain = strain(sample, self.previous_available);
+        self.previous_available = Some(sample.memory_available_bytes);
         match strain {
             Some(_) => {
                 self.tight += 1;
@@ -223,8 +259,9 @@ impl Governor {
                 .into_iter()
                 .filter(|s| s.actions.iter().any(|a| a == "pause"))
                 .filter(|s| !self.respected(s.key(), now))
+                .filter(|s| strain == Strain::Cpu || growth(s) >= GROWING_BYTES)
                 .max_by(|a, b| match strain {
-                    Strain::Memory => a.memory_bytes.cmp(&b.memory_bytes),
+                    Strain::Memory => growth(a).cmp(&growth(b)),
                     Strain::Cpu => a.cpu_percent.total_cmp(&b.cpu_percent),
                 });
             let Some(session) = pick else {
@@ -232,25 +269,40 @@ impl Governor {
             };
             self.tight = 0;
             self.last_change = now;
+            self.resumed
+                .retain(|(_, at, _)| now < at + REPAUSE_WINDOW_SECONDS);
+            let backoff = self
+                .resumed
+                .iter()
+                .find(|(id, _, _)| *id == session.key())
+                .map_or(0, |(_, _, last)| {
+                    (last * 2).clamp(FIRST_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
+                });
             return Step::Pause(Held {
                 pid: session.pid,
                 start_time: session.start_time,
                 title: session.title.clone(),
                 reason: strain.reason().into(),
                 cpu_percent: session.cpu_percent,
+                backoff_seconds: backoff,
                 ..Default::default()
             });
         }
         if self.calm >= CALM_SAMPLES && now >= self.last_change + RESUME_GAP_SECONDS {
-            // Oldest first, skipping any whose load would saturate the processor again.
-            let fits = self
-                .held
-                .iter()
-                .position(|h| sample.cpu_percent + h.cpu_percent < RESUME_CPU_PERCENT);
+            // Oldest first, skipping any still backing off or whose load would saturate the
+            // processor again.
+            let fits = self.held.iter().position(|h| {
+                now >= h.paused_at + h.backoff_seconds
+                    && sample.cpu_percent + h.cpu_percent < RESUME_CPU_PERCENT
+            });
             if let Some(index) = fits {
                 self.calm = 0;
                 self.last_change = now;
                 let next = self.held.remove(index);
+                self.resumed
+                    .retain(|(id, _, _)| *id != (next.pid, next.start_time));
+                self.resumed
+                    .push(((next.pid, next.start_time), now, next.backoff_seconds));
                 self.note = format!("Resumed {}: there is room again.", next.title);
                 return Step::Resume(vec![next]);
             }
@@ -276,6 +328,48 @@ impl Governor {
     /// A pause the operating system or the pause rules refused is not retried for a while.
     pub fn refused(&mut self, pid: u32, start_time: u64, now: u64) {
         self.respect((pid, start_time), now);
+    }
+}
+
+/// Replace each session's resident memory with its tree's physical footprint where the platform
+/// reports one: macOS compresses memory under pressure, which hides it from resident size.
+pub fn measure_footprints(sample: &Snapshot, sessions: &mut [Session]) {
+    if sessions.is_empty() || !cfg!(target_os = "macos") {
+        return;
+    }
+    let resident: std::collections::HashMap<(u32, u64), u64> = sample
+        .processes
+        .iter()
+        .map(|p| ((p.pid, p.start_time), p.memory_bytes))
+        .collect();
+    let mut children: std::collections::HashMap<u32, Vec<&crate::types::ProcessRecord>> =
+        std::collections::HashMap::new();
+    for p in &sample.processes {
+        if let Some(parent) = p.parent_pid.filter(|parent| *parent != p.pid) {
+            children.entry(parent).or_default().push(p);
+        }
+    }
+    for session in sessions {
+        let mut stack = vec![(session.pid, session.start_time)];
+        let mut total = 0u64;
+        let mut seen = 0usize;
+        while let Some((pid, start_time)) = stack.pop() {
+            seen += 1;
+            if seen > 512 {
+                break;
+            }
+            // A process that just exited or cannot be read counts at its resident size.
+            let bytes = crate::platform::footprint(pid, start_time)
+                .or_else(|| resident.get(&(pid, start_time)).copied())
+                .unwrap_or(0);
+            total = total.saturating_add(bytes);
+            for child in children.get(&pid).into_iter().flatten() {
+                if child.start_time >= start_time {
+                    stack.push((child.pid, child.start_time));
+                }
+            }
+        }
+        session.memory_bytes = total;
     }
 }
 
@@ -365,28 +459,53 @@ mod tests {
     }
 
     #[test]
-    fn sustained_memory_strain_pauses_the_largest_working_session() {
+    fn memory_strain_pauses_the_working_session_that_is_growing_fastest() {
         let mut g = Governor::default();
         let mut now = 1_000;
-        let sessions = [
-            session(10, Some("working"), 20.0, 2),
-            session(11, Some("working"), 5.0, 6),
-            // Biggest of all, but waiting for the person: never paused.
-            session(12, Some("idle"), 0.0, 9),
+        let mut tight = sample(1, 50.0);
+        tight.swap_growth_bytes = 128 * MIB;
+        let mut sessions = vec![
+            // Largest, but steady: pausing it frees nothing.
+            session(10, Some("working"), 20.0, 6),
+            session(11, Some("working"), 5.0, 1),
+            session(12, Some("working"), 5.0, 1),
+            // Growing fastest, but waiting for the person: never paused.
+            session(13, Some("idle"), 0.0, 1),
         ];
-        let tight = sample(1, 50.0);
-        now += 5;
+        let mut steps = vec![];
+        for _ in 0..3 {
+            now += 5;
+            steps.push(g.decide(&tight, &sessions, &[], true, false, now));
+            sessions[1].memory_bytes += 512 * MIB;
+            sessions[2].memory_bytes += 128 * MIB;
+            sessions[3].memory_bytes += GIB;
+        }
+        let paused: Vec<_> = steps
+            .into_iter()
+            .filter_map(|s| match s {
+                Step::Pause(held) => Some(held),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paused.len(), 1);
+        assert_eq!(paused[0].pid, 11);
+        assert_eq!(paused[0].reason, "memory was running out");
+    }
+
+    #[test]
+    fn memory_strain_with_no_agent_growing_pauses_nothing() {
+        let mut g = Governor::default();
+        let mut now = 1_000;
+        let mut tight = sample(1, 50.0);
+        tight.swap_growth_bytes = 300 * MIB;
+        let sessions = [
+            session(10, Some("working"), 20.0, 6),
+            session(11, Some("working"), 5.0, 1),
+        ];
         assert_eq!(
-            g.decide(&tight, &sessions, &[], true, false, now),
+            run(&mut g, &tight, &sessions, &[], &mut now, 10),
             Step::Idle
         );
-        match run(&mut g, &tight, &sessions, &[], &mut now, 1) {
-            Step::Pause(held) => {
-                assert_eq!(held.pid, 11);
-                assert_eq!(held.reason, "memory was running out");
-            }
-            other => panic!("expected a pause, got {other:?}"),
-        }
     }
 
     #[test]
@@ -502,5 +621,79 @@ mod tests {
             Step::Idle
         );
         assert_eq!(g.view(true).held.len(), 1);
+    }
+
+    #[test]
+    fn a_session_that_tips_it_back_after_a_resume_is_held_longer_each_time() {
+        let mut g = Governor::default();
+        let mut now = 1_000;
+        let sessions = [
+            session(10, Some("working"), 10.0, 8),
+            session(11, Some("working"), 10.0, 1),
+        ];
+        let mut tight = sample(1, 50.0);
+        tight.swap_growth_bytes = 128 * MIB;
+        let roomy = sample(4, 20.0);
+        let mut backoffs = vec![];
+        for _ in 0..4 {
+            let mut growing = sessions.clone();
+            let mut step = Step::Idle;
+            for _ in 0..10 {
+                now += 5;
+                growing[0].memory_bytes += 256 * MIB;
+                step = g.decide(&tight, &growing, &[], true, false, now);
+                if step != Step::Idle {
+                    break;
+                }
+            }
+            let Step::Pause(held) = step else {
+                panic!("expected a pause");
+            };
+            assert_eq!(held.pid, 10);
+            backoffs.push(held.backoff_seconds);
+            let record = record(10, now);
+            g.paused(&record, held);
+            let paused_at = now;
+            let mut held_sessions = sessions.clone();
+            held_sessions[0].paused_until = Some(record.until);
+            let Step::Resume(_) = run(&mut g, &roomy, &held_sessions, &[record], &mut now, 200)
+            else {
+                panic!("expected a resume");
+            };
+            assert!(now >= paused_at + backoffs.last().unwrap());
+        }
+        assert_eq!(backoffs, [0, 60, 120, 240]);
+    }
+
+    #[test]
+    fn steady_tight_memory_pauses_nothing_more_and_still_lets_held_sessions_resume() {
+        let mut g = Governor::default();
+        let mut now = 1_000;
+        let sessions = [
+            session(10, Some("working"), 10.0, 4),
+            session(11, Some("working"), 10.0, 2),
+        ];
+        // macOS still reports a warning, but nothing is growing: no pause helps.
+        let mut steady = sample(3, 20.0);
+        steady.platform.memory_pressure = Some("warning".into());
+        assert_eq!(strain(&steady, Some(steady.memory_available_bytes)), None);
+        assert_eq!(
+            run(&mut g, &steady, &sessions, &[], &mut now, 10),
+            Step::Idle
+        );
+        // Still falling: that is strain.
+        assert_eq!(
+            strain(&steady, Some(steady.memory_available_bytes + GIB)),
+            Some(Strain::Memory)
+        );
+        // A held session resumes under a lingering warning once there is a margin.
+        let record = record(10, now);
+        g.paused(&record, held("held", 5.0));
+        let mut roomy = sample(4, 20.0);
+        roomy.platform.memory_pressure = Some("warning".into());
+        let Step::Resume(back) = run(&mut g, &roomy, &sessions, &[record], &mut now, 10) else {
+            panic!("expected a resume");
+        };
+        assert_eq!(back[0].title, "held");
     }
 }
