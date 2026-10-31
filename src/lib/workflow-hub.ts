@@ -62,6 +62,13 @@ export function workflowRows(queue: ValidationQueue, snapshot: Snapshot): Workfl
     for (const job of queue.jobs) {
         const workflow = snapshot.agent_workflows.find((w) => w.task_id === job.id);
         const active = ['running', 'starting'].includes(job.stage);
+        const sample =
+            job.last_sample &&
+            queue.resources.ready &&
+            job.last_sample.captured_at === queue.resources.captured_at &&
+            (snapshot.source === 'demo' || Math.abs(now - job.last_sample.captured_at) <= 15)
+                ? job.last_sample
+                : null;
         const complete = !['running', 'starting', 'queued', 'interrupted'].includes(job.stage);
         rows.push({
             id: job.id,
@@ -84,15 +91,19 @@ export function workflowRows(queue: ValidationQueue, snapshot: Snapshot): Workfl
             cpu:
                 active && workflow?.observed_samples
                     ? workflow.cpu_percent
-                    : !active && job.observed_samples
-                      ? job.peak_cpu_percent
-                      : null,
+                    : active && sample
+                      ? sample.cpu_percent
+                      : !active && job.observed_samples
+                        ? job.peak_cpu_percent
+                        : null,
             memory:
                 active && workflow?.observed_samples
                     ? workflow.memory_bytes
-                    : !active && job.observed_samples
-                      ? job.peak_memory_bytes
-                      : null,
+                    : active && sample
+                      ? sample.memory_bytes
+                      : !active && job.observed_samples
+                        ? job.peak_memory_bytes
+                        : null,
             peak: !active,
             detail: job.hold_reason ?? job.message,
             action: job.stage === 'queued' ? (job.held ? 'resume_job' : 'hold_job') : null,
@@ -228,6 +239,30 @@ export function demoControl(
                     ? 'Other apps are busy. Upcoming checks are waiting.'
                     : 'Pressure eased.';
             break;
+        case 'demo_parallel':
+            // Explicit, synthetic demonstration of learned capacity sharing.
+            queue.paused = false;
+            control.protected_until = null;
+            queue.resources.cpu_percent = 36;
+            queue.resources.captured_at = now;
+            for (const item of queue.jobs.slice(0, 2)) {
+                item.stage = 'running';
+                item.held = false;
+                item.hold_reason = null;
+                item.started_at = now - 15;
+                item.ended_at = null;
+                item.observed_samples = 3;
+                item.peak_cpu_percent = 12;
+                item.peak_memory_bytes = 800 * 1024 ** 2;
+                item.last_sample = {
+                    captured_at: now,
+                    cpu_percent: item.id === 'demo-1' ? 8 : 5,
+                    memory_bytes: 800 * 1024 ** 2,
+                };
+            }
+            if (queue.scheduling) queue.scheduling.learned_profiles = 2;
+            message = 'Simulated: two familiar checks are sharing spare capacity.';
+            break;
         case 'demo_checkpoint':
             control.sessions.forEach((item) => {
                 item.waiting = item.pause_requested;
@@ -266,6 +301,41 @@ export function demoControl(
             message = 'Next eligible check started.';
         }
     }
+    const running = queue.jobs.filter((item) =>
+        ['running', 'starting'].includes(item.stage)
+    ).length;
+    const waiting = queue.jobs.filter((item) => item.stage === 'queued').length;
+    const paused = queue.paused || !!control.protected_until;
+    const blocked = queue.resources.cpu_percent >= (control.goal === 'responsive' ? 55 : 70);
+    const learned = queue.scheduling?.learned_profiles ?? 0;
+    const state = paused
+        ? 'paused'
+        : blocked && waiting
+          ? 'waiting'
+          : running > 1
+            ? 'parallel'
+            : running && !learned
+              ? 'learning'
+              : running
+                ? 'running'
+                : 'ready';
+    queue.scheduling = {
+        running,
+        waiting,
+        learned_profiles: learned,
+        cpu_ceiling: control.goal === 'responsive' ? 55 : 70,
+        memory_reserve_bytes: queue.resources.total_bytes / 5,
+        state,
+        title: {
+            paused: 'Keeping room for your apps',
+            waiting: 'Waiting for room',
+            parallel: 'Putting spare capacity to work',
+            learning: 'Learning this check',
+            running: 'Work is moving',
+            ready: 'Ready for your next task',
+        }[state],
+        detail: message.startsWith('Simulated:') ? message : `Simulated: ${message}`,
+    };
     control.events = [...control.events, { at: now, message }].slice(-24);
     return queue;
 }

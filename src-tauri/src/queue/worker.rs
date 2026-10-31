@@ -47,15 +47,10 @@ pub fn run(directory: &Path, id: &str) -> Result<(), String> {
     );
     let allowed = transaction(directory, |s| {
         let reason = s
-            .resources
-            .block_reason(original.profile.memory_bytes)
-            .or_else(|| s.goal_block())
-            .or_else(|| {
-                s.jobs
-                    .iter()
-                    .find(|j| j.id == id)
-                    .and_then(|j| s.job_hold(j))
-            });
+            .jobs
+            .iter()
+            .find(|j| j.id == id)
+            .and_then(|j| s.admission_reason(j));
         let approved = s.profiles.contains(&original.profile);
         let job = s
             .jobs
@@ -80,6 +75,7 @@ pub fn run(directory: &Path, id: &str) -> Result<(), String> {
         if s.paused || reason.is_some() {
             job.stage = Stage::Queued;
             job.worker = None;
+            job.last_sample = None;
             job.message = reason.unwrap_or_else(|| "New jobs are paused.".into());
             return Ok(false);
         }

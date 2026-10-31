@@ -4,6 +4,7 @@
     import Icon from './Icon.svelte';
     import InfoTip from './InfoTip.svelte';
     import TaskDetail from './TaskDetail.svelte';
+    import HardwareCapacity from './HardwareCapacity.svelte';
     import { workflowRows } from '../lib/workflow-hub';
     import { memory, percent, errorMessage } from '../lib/format';
     import type { ValidationQueue } from '../lib/queue';
@@ -42,7 +43,6 @@
     } | null>(null);
     const demo = $derived(snapshot.source === 'demo');
     const rows = $derived(queue ? workflowRows(queue, snapshot) : []);
-    const cpu = $derived(demo && queue ? queue.resources.cpu_percent : snapshot.cpu_percent);
     const current = $derived(rows.filter((row) => !row.complete));
     const recent = $derived(rows.filter((row) => row.complete));
     const protectedUntil = $derived(queue?.control?.protected_until ?? 0);
@@ -112,31 +112,13 @@
                     : 'on'}</button
             >
             <InfoTip label="About auto-balance"
-                >Admits approved checks one at a time when there is room. Pausing holds new checks;
-                running work finishes. Keep responsive reserves more CPU headroom. No model runs
-                continuously.</InfoTip
+                >Shares capacity between up to two familiar, approved checks when there is room.
+                Pausing holds new checks; running work finishes. Keep responsive reserves more CPU
+                headroom. No model runs continuously.</InfoTip
             >
         </div>
     </header>
-    <div class="hub-capacity">
-        <div>
-            <span
-                ><Icon name="cpu" size={14} /> CPU
-                <strong>{percent(cpu)}</strong></span
-            ><span>Available memory <strong>{memory(snapshot.memory_available_bytes)}</strong></span
-            >
-        </div>
-        <div
-            class="capacity-track"
-            role="meter"
-            aria-label="Total CPU usage"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            aria-valuenow={cpu}
-        >
-            <span style:width={`${Math.min(100, Math.max(0, cpu))}%`}></span>
-        </div>
-    </div>
+    <HardwareCapacity {queue} {snapshot} />
     {#if protectedNow}<div class="protection-strip">
             <Icon name="app" size={16} /><strong>Making room for your apps</strong><span
                 >Until {new Date(protectedUntil * 1000).toLocaleTimeString([], {
@@ -341,7 +323,9 @@
                 >{(queue?.resources.cpu_percent ?? 0) >= 85
                     ? 'Clear spike'
                     : 'Resource spike'}</button
-            ><button onclick={() => oncontrol('demo_checkpoint')}>Next checkpoint</button>
+            ><button onclick={() => oncontrol('demo_parallel')}>Share spare capacity</button><button
+                onclick={() => oncontrol('demo_checkpoint')}>Next checkpoint</button
+            >
         </div>{/if}
 </section>
 
@@ -394,38 +378,6 @@
     }
     .auto-toggle span.off {
         background: var(--muted);
-    }
-    .hub-capacity {
-        margin-bottom: 20px;
-    }
-    .hub-capacity > div:first-child {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        font-size: 12px;
-        color: var(--muted);
-    }
-    .hub-capacity span {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-    }
-    .hub-capacity strong {
-        color: var(--text);
-        font-weight: 500;
-        font-variant-numeric: tabular-nums;
-    }
-    .capacity-track {
-        height: 4px;
-        border-radius: 4px;
-        margin-top: 10px;
-        background: var(--track);
-        overflow: hidden;
-    }
-    .capacity-track span {
-        height: 100%;
-        background: var(--accent);
-        transition: width 220ms;
     }
     .hub-toolbar {
         margin: 18px 0 24px;
