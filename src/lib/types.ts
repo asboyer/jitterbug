@@ -696,6 +696,8 @@ export interface InsideUnit {
     evidence: string[];
     confidence: string;
     paused_until: number | null;
+    /** A coding agent's own state, e.g. Claude Code's `working` or `idle`. */
+    agent_status?: string | null;
 }
 
 export interface ProcessLabel {

@@ -31,6 +31,9 @@ pub struct Unit {
     pub confidence: String,
     /// When a paused session resumes by itself.
     pub paused_until: Option<u64>,
+    /// A coding agent's own state: `working` or `idle` (waiting for the person).
+    #[serde(default)]
+    pub agent_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

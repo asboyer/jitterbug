@@ -320,6 +320,14 @@ fn unit(
         tree.iter()
             .any(|p| a.root_pid == p.pid && a.root_start_time == p.start_time)
     });
+    // A Claude Code session's own name (set with /rename) and whether it is working.
+    let claude = tree
+        .iter()
+        .find_map(|p| crate::claude_sessions::lookup(p.pid, p.start_time));
+    if let Some(status) = claude.as_ref().and_then(|c| c.status.as_deref()) {
+        evidence.push(format!("Claude Code reports this session as {status}."));
+    }
+    let named = claude.as_ref().and_then(|c| c.name.clone());
     let (title, confidence) = match session {
         Some((task, agent)) => {
             evidence.push(format!(
@@ -329,6 +337,17 @@ fn unit(
             (
                 format!("{} · {}", task.task_title, agent.agent),
                 "Registered task".to_string(),
+            )
+        }
+        None if named.is_some() => {
+            let name = named.clone().unwrap_or_default();
+            (
+                if folder.is_empty() {
+                    format!("{name} · Claude Code")
+                } else {
+                    format!("{name} · Claude Code · {folder}")
+                },
+                "Named Claude Code session".to_string(),
             )
         }
         None if folder.is_empty() => (root.name.clone(), "Process tree".to_string()),
@@ -360,6 +379,7 @@ fn unit(
             .into_iter()
             .find(|p| p.pid == root.pid && p.start_time == root.start_time)
             .map(|p| p.until),
+        agent_status: claude.and_then(|c| c.status),
     }
 }
 
@@ -376,7 +396,7 @@ const AGENTS: &[(&str, &str)] = &[
 /// A session's process title: a registered task as registered, a known agent by its product
 /// name ("Claude Code session · repo"), anything else as its command and folder.
 fn session_label(unit: &Unit, root: &ProcessRecord) -> (String, String) {
-    if unit.confidence == "Registered task" {
+    if unit.confidence == "Registered task" || unit.confidence == "Named Claude Code session" {
         return (unit.title.clone(), "Registered agent task".into());
     }
     let name = root.name.to_lowercase();
