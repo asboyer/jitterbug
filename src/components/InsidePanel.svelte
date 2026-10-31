@@ -233,12 +233,13 @@
                     </div>
                 {/each}
             </div>
-            <p class="footnote">
-                {demo ? 'Synthetic example. ' : ''}{view.limits}
-                {view.units.some((u) => u.kind === 'tab')
-                    ? 'Closing a tab discards unsaved form input in it.'
-                    : ''}
-            </p>
+            <details class="reading-notes">
+                <summary>{demo ? 'Synthetic example · ' : ''}About these readings</summary>
+                <p class="footnote">{view.limits}</p>
+            </details>
+            {#if view.units.some((u) => u.kind === 'tab')}
+                <p class="footnote">Closing a tab discards unsaved form input in it.</p>
+            {/if}
         {/if}
     </section>
 {/if}
@@ -315,7 +316,15 @@
     .empty {
         padding: 8px;
     }
+    .reading-notes {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 12px;
+    }
+    .reading-notes summary {
+        cursor: pointer;
+    }
     .footnote {
-        margin-bottom: 0;
+        margin: 8px 0 0;
     }
 </style>

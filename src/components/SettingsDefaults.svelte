@@ -206,6 +206,8 @@
         if (!desktop) return;
         restoreId = id;
         result = null;
+        historyOpen = true;
+        await tick();
         await perform(async () => {
             preview = await invoke<SystemRestorePreview>('preview_system_restore', { id });
         });

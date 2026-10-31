@@ -1,14 +1,26 @@
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import Icon from './Icon.svelte';
+    import SettingSwitch from './SettingSwitch.svelte';
     import { errorMessage } from '../lib/format';
     import type { Bootstrap, JitterTally } from '../lib/types';
     let {
         bootstrap,
         desktop,
         onrefresh,
-    }: { bootstrap: Bootstrap; desktop: boolean; onrefresh: () => Promise<void> } = $props();
+        section,
+        visible,
+    }: {
+        bootstrap: Bootstrap;
+        desktop: boolean;
+        onrefresh: () => Promise<void>;
+        section: 'assistance' | 'connections';
+        visible: boolean;
+    } = $props();
     let policy = $state(untrack(() => $state.snapshot(bootstrap.settings.automation)));
+    let savedPolicy = $state(untrack(() => JSON.stringify(bootstrap.settings.automation)));
+    let dirty = $derived(JSON.stringify(policy) !== savedPolicy);
     let busy = $state(false);
     let status = $state('');
     let error = $state('');
@@ -40,14 +52,15 @@
             status = 'Preview only. No automation policy was changed.';
             return;
         }
+        const submitted = $state.snapshot(policy);
         busy = true;
         error = '';
         try {
-            await invoke('save_automation_policy', { policy });
+            await invoke('save_automation_policy', { policy: submitted });
             await onrefresh();
             await loadTally();
-            status =
-                'Automation policy saved. Permissions are rechecked immediately before every action.';
+            savedPolicy = JSON.stringify(submitted);
+            status = 'Preferences saved.';
         } catch (cause) {
             error = errorMessage(cause);
         } finally {
@@ -64,232 +77,355 @@
     }
 </script>
 
-<section class="panel settings-panel" aria-label="Automatic assistance policy">
-    <h2>Automatic assistance</h2>
-    <label class="toggle"
-        ><input type="checkbox" bind:checked={policy.enabled} /> Detect and investigate resource incidents
-        in the background</label
-    >
-    <label class="toggle"
-        ><input type="checkbox" bind:checked={policy.model_analysis} /> Ask the intelligent model automatically
-        after a sustained incident</label
-    >
-    <label class="toggle"
-        ><input type="checkbox" bind:checked={policy.action_popups} /> Show action popups over other apps</label
-    >
-    <p class="muted">
-        When a suggestion needs your approval and Jitterbug is in the background, a small popup
-        appears at the top right of your screen without taking focus. It shows the same suggestion
-        as the Inbox; nothing is applied until you choose an action.
-    </p>
-    <p class="muted">
-        Investigations may use your cloud provider. Process changes need your permission.
-    </p>
-    <label class="toggle"
-        ><input type="checkbox" bind:checked={policy.agent_control} /> Let connected agents see what each
-        app runs and ask to pause sessions or close tabs</label
-    >
-    <label class="toggle"
-        ><input
-            type="checkbox"
-            bind:checked={policy.agent_pause_without_asking}
-            disabled={!policy.agent_control}
-        /> Agents may pause sessions without asking</label
-    >
-    <p class="muted">
-        Agents connect through <code>jitterbug-run control-mcp</code>. Each request appears here and
-        in the popup; closing a tab always asks. Pauses are reversible and resume by themselves
-        after 15 minutes. An agent can never pause its own session.
-    </p>
-    <details class="policy-details">
-        <summary>Alert thresholds & privacy</summary>
-        <p class="muted">
-            Alerts need a sustained problem. Ordinary app wake-ups and memory growth alone stay
-            quiet. A macOS app that stops responding can alert even at low CPU.
-        </p>
-        <div class="automation-fields">
-            <label
-                >Whole-machine CPU threshold (%)<input
-                    type="number"
-                    min="50"
-                    max="100"
-                    bind:value={policy.system_cpu_percent}
-                /></label
-            >
-            <label
-                >Memory fallback threshold (%)<input
-                    type="number"
-                    min="5"
-                    max="30"
-                    bind:value={policy.available_memory_percent}
-                /></label
-            >
-            <label
-                >Minimum app CPU (% of total capacity)<input
-                    type="number"
-                    min="5"
-                    max="100"
-                    bind:value={policy.app_cpu_percent}
-                /></label
-            >
-            <label
-                >App CPU threshold (100% = one core)<input
-                    type="number"
-                    min="50"
-                    max="1600"
-                    bind:value={policy.app_cpu_core_percent}
-                /></label
-            >
-            <label
-                >Consecutive samples (5s each)<input
-                    type="number"
-                    min="3"
-                    max="12"
-                    bind:value={policy.sustained_samples}
-                /></label
-            >
-            <label
-                >Cooldown per trigger (seconds)<input
-                    type="number"
-                    min="60"
-                    max="3600"
-                    bind:value={policy.cooldown_seconds}
-                /></label
-            >
-            <label
-                >Investigations per hour (this session)<input
-                    type="number"
-                    min="1"
-                    max="12"
-                    bind:value={policy.max_investigations_per_hour}
-                /></label
-            >
+<div hidden={!visible} class="automation-settings">
+    {#if section === 'assistance'}
+        <section class="preference-card" aria-label="Automatic assistance policy">
+            <div class="preference-heading">
+                <span class="preference-icon"><Icon name="activity" size={20} /></span>
+                <div>
+                    <h2>Stay ahead of slowdowns</h2>
+                    <p>Choose when Jitterbug steps in.</p>
+                </div>
+            </div>
+            <SettingSwitch
+                title="Watch for slowdowns"
+                description="Detect sustained pressure and investigate in the background."
+                bind:checked={policy.enabled}
+            />
+            <SettingSwitch
+                title="Investigate with AI"
+                description="Use your intelligent model when a problem persists. Cloud costs may apply."
+                bind:checked={policy.model_analysis}
+            />
+            <SettingSwitch
+                title="Show action popups"
+                description="Bring suggestions to you while you work in other apps."
+                bind:checked={policy.action_popups}
+            />
+        </section>
+        <div class="preference-disclosures">
+            <details class="preference-detail">
+                <summary>
+                    <span class="detail-name"><Icon name="activity" /> Jitter Snapshot</span>
+                    <span class="detail-value"
+                        >{policy.jitter_mode === 'auto' ? '60-second look-back' : 'On demand'} · {shortcut}</span
+                    >
+                </summary>
+                <div class="detail-body">
+                    <p class="muted">
+                        Press <kbd>{shortcut}</kbd> when something feels slow. Review what changed before
+                        taking action.
+                    </p>
+                    <fieldset class="snapshot-modes">
+                        <legend>Capture mode</legend>
+                        <label class:active={policy.jitter_mode === 'auto'}>
+                            <input type="radio" bind:group={policy.jitter_mode} value="auto" />
+                            <span
+                                ><strong>Look back</strong><small
+                                    >Keep the preceding 60 seconds available.</small
+                                ></span
+                            >
+                        </label>
+                        <label class:active={policy.jitter_mode === 'snapshot_only'}>
+                            <input
+                                type="radio"
+                                bind:group={policy.jitter_mode}
+                                value="snapshot_only"
+                            />
+                            <span
+                                ><strong>Only when I ask</strong><small
+                                    >Record the next 15 seconds. No background sampler.</small
+                                ></span
+                            >
+                        </label>
+                    </fieldset>
+                    <SettingSwitch
+                        title="Take snapshots automatically"
+                        description="Capture short hitches as well as sustained incidents. Requires look-back mode."
+                        bind:checked={policy.auto_snapshots}
+                        disabled={policy.jitter_mode !== 'auto'}
+                    />
+                    <details class="inline-help">
+                        <summary>Sampling & history</summary>
+                        <p>
+                            Look-back sampling keeps 120 one-second readings in memory.
+                            Snapshot-only mode cannot recover what happened before you pressed. {#if tally}The
+                                sampler is {tally.sampling ? 'running' : 'stopped'}.{/if}
+                        </p>
+                        <p>
+                            Only workload names and counts are saved privately on this device. A
+                            workload appearing in three of your last six snapshots can offer a
+                            priority permission.
+                        </p>
+                        {#each tally?.entries.slice(0, 8) ?? [] as entry}
+                            <div class="local-model">
+                                <span>{entry.label}</span><span class="muted"
+                                    >{entry.count} snapshots</span
+                                >
+                            </div>
+                        {:else}
+                            <p class="muted">No workloads in snapshot history.</p>
+                        {/each}
+                        <button disabled={!desktop || !tally?.entries.length} onclick={clearTally}
+                            >Clear snapshot history</button
+                        >
+                    </details>
+                </div>
+            </details>
+            <details class="preference-detail">
+                <summary>
+                    <span class="detail-name"
+                        ><Icon name="settings" /> Automatic priority changes</span
+                    >
+                    <span class="detail-value"
+                        >{policy.rules.length
+                            ? `${policy.rules.length} approved`
+                            : 'None allowed'}</span
+                    >
+                </summary>
+                <div class="detail-body">
+                    <p class="muted">
+                        Approve individual workloads from a suggestion. Automatic priority changes
+                        never stop an app.
+                    </p>
+                    {#each policy.rules as rule}
+                        <div class="local-model">
+                            <span>{rule.label} · lower priority</span><button
+                                onclick={() => {
+                                    policy.rules = policy.rules.filter(
+                                        (r) => r.workload_id !== rule.workload_id
+                                    );
+                                }}>Remove permission</button
+                            >
+                        </div>
+                    {:else}
+                        <p class="muted">No workloads have permission yet.</p>
+                    {/each}
+                    <p class="muted">
+                        Lower priority gives competing work more CPU time. It does not cap CPU or
+                        free memory. Restoring priority may need OS privileges; automatic rollback
+                        is not guaranteed.
+                    </p>
+                </div>
+            </details>
+            <details class="preference-detail">
+                <summary>
+                    <span class="detail-name"><Icon name="cpu" /> Thresholds & privacy</span>
+                    <span class="detail-value"
+                        >{policy.system_cpu_percent}% CPU · {policy.sustained_samples * 5}s
+                        sustained</span
+                    >
+                </summary>
+                <div class="detail-body">
+                    <p class="muted">
+                        Ordinary wake-ups and memory growth alone stay quiet. On macOS, an
+                        unresponsive app can alert even at low CPU.
+                    </p>
+                    <div class="automation-fields">
+                        <label
+                            >Whole-machine CPU threshold (%)<input
+                                type="number"
+                                min="50"
+                                max="100"
+                                bind:value={policy.system_cpu_percent}
+                            /></label
+                        >
+                        <label
+                            >Memory fallback threshold (%)<input
+                                type="number"
+                                min="5"
+                                max="30"
+                                bind:value={policy.available_memory_percent}
+                            /></label
+                        >
+                        <label
+                            >Minimum app CPU (% of total capacity)<input
+                                type="number"
+                                min="5"
+                                max="100"
+                                bind:value={policy.app_cpu_percent}
+                            /></label
+                        >
+                        <label
+                            >App CPU threshold (100% = one core)<input
+                                type="number"
+                                min="50"
+                                max="1600"
+                                bind:value={policy.app_cpu_core_percent}
+                            /></label
+                        >
+                        <label
+                            >Consecutive samples (5s each)<input
+                                type="number"
+                                min="3"
+                                max="12"
+                                bind:value={policy.sustained_samples}
+                            /></label
+                        >
+                        <label
+                            >Cooldown per trigger (seconds)<input
+                                type="number"
+                                min="60"
+                                max="3600"
+                                bind:value={policy.cooldown_seconds}
+                            /></label
+                        >
+                        <label
+                            >Investigations per hour (this session)<input
+                                type="number"
+                                min="1"
+                                max="12"
+                                bind:value={policy.max_investigations_per_hour}
+                            /></label
+                        >
+                    </div>
+                    <details class="inline-help">
+                        <summary>How alerts are filtered</summary>
+                        <p>
+                            Unusual CPU activity must exceed the app minimum, reach 3× its recent
+                            baseline, and rise by five percentage points of total capacity. Repeated
+                            alerts wait for recovery, cooldown, and a global 60-second gap.
+                        </p>
+                        <p>
+                            Memory alerts need 30 seconds of OS memory pressure or swap growth above
+                            256 MiB per sample. Without a native pressure reading, available memory
+                            must fall below both the fallback threshold and 2 GiB. Critical OS
+                            pressure uses a 10-second minimum. Your consecutive-sample limit also
+                            applies.
+                        </p>
+                        <p>
+                            Memory alerts cover the whole computer. Another alert requires a minute
+                            of recovery and at least 15 minutes since the last. Incident history
+                            stays in memory.
+                        </p>
+                    </details>
+                    <details class="inline-help">
+                        <summary>What is sent to a model</summary>
+                        <p>
+                            Selected app/process names and resource history. Paths, environment
+                            variables, transcripts and raw stack samples stay local. Your AI mode,
+                            spending ceiling and local resource limits always apply.
+                        </p>
+                    </details>
+                </div>
+            </details>
         </div>
-        <p class="muted">
-            Unusual CPU activity must exceed the app minimum, reach 3× its recent baseline, and rise
-            by five percentage points of total capacity. Repeated alerts wait for recovery,
-            cooldown, and a global 60-second gap. Incident history is kept only in memory.
-        </p>
-        <details>
-            <summary>When memory alerts appear</summary>
-            <p class="muted">
-                App memory growth alone stays quiet. Alerts need 30 seconds of OS memory pressure or
-                swap growth above 256 MiB per sample. Without a native pressure reading, available
-                memory must fall below both the fallback threshold and 2 GiB. Critical OS pressure
-                uses the faster 10-second minimum. Your consecutive-sample limit also applies.
+    {:else}
+        <section class="preference-card" aria-label="Agent access">
+            <div class="preference-heading">
+                <span class="preference-icon"><Icon name="code" size={20} /></span>
+                <div>
+                    <h2>Connected agents</h2>
+                    <p>Give agents a view of the work on this computer.</p>
+                </div>
+            </div>
+            <SettingSwitch
+                title="Allow agent access"
+                description="Let local agents inspect apps and request session pauses or tab closures."
+                bind:checked={policy.agent_control}
+            />
+            <p class="consent-note">
+                <Icon name="info" size={15} /> App labels, folder names and tab titles may reach the agent’s
+                model provider.
             </p>
-            <p class="muted">
-                Memory alerts cover the whole computer, with growing apps included as context.
-                Another alert requires a full minute of recovery and at least 15 minutes since the
-                last one.
+            <SettingSwitch
+                title="Allow pauses without asking"
+                description="Agents may pause sessions automatically. Paused sessions resume after 15 minutes."
+                bind:checked={policy.agent_pause_without_asking}
+                disabled={!policy.agent_control}
+            />
+            <p class="consent-note">
+                Closing a tab always requires approval. Pausing stops CPU work; it keeps memory
+                allocated.
             </p>
-        </details>
+            <details class="inline-help">
+                <summary>Connection setup & permissions</summary>
+                <p>
+                    Connect with <code>jitterbug-run control-mcp</code> on macOS or Linux. Windows control
+                    is not available. Any process running as your OS user can connect when access is enabled.
+                </p>
+                <p>
+                    Agents receive bounded app, session and tab labels, folder basenames and tab
+                    hosts. Full paths, URLs, command lines and page content are excluded.
+                </p>
+                <p>
+                    An agent cannot pause its own session. Snoozing blocks automatic pauses;
+                    requests still need your saved permissions. Agents can resume only pauses
+                    requested by that agent. Pauses keep RAM allocated and expire after 15 minutes.
+                </p>
+            </details>
+        </section>
+    {/if}
+    <div class="preference-footer">
+        <span class="muted">{dirty ? 'Unsaved changes' : 'Changes apply when you save.'}</span>
+        <button class="primary" disabled={busy} onclick={save}
+            >{busy ? 'Saving…' : 'Save preferences'}</button
+        >
+    </div>
+    {#if bootstrap.automation_snoozed_until > Date.now() / 1000}
         <p class="muted">
-            Models receive selected app/process names and resource history. Paths, environment
-            variables, transcripts and raw stack samples stay local. Your mode, spending ceiling and
-            local model resource limits apply.
-        </p>
-    </details>
-    <h3>Workloads allowed to change priority automatically</h3>
-    <p>Allow priority changes from a suggestion. Jitterbug never stops an app automatically.</p>
-    {#each policy.rules as rule}
-        <div class="local-model">
-            <span>{rule.label} · lower priority only</span><button
-                onclick={() => {
-                    policy.rules = policy.rules.filter((r) => r.workload_id !== rule.workload_id);
-                }}>Remove permission</button
-            >
-        </div>
-    {/each}
-    {#if !policy.rules.length}<p class="muted">
-            No automatic process changes are allowed yet.
-        </p>{/if}
-    <p class="footnote">
-        Lower priority helps competing work; it is not a CPU cap or a memory fix. Restoring priority
-        can require OS privileges, so Jitterbug does not promise automatic rollback.
-    </p>
-    <h3>Jitter Snapshot</h3>
-    <p>
-        Press <kbd>{shortcut}</kbd>, choose <strong>Jitter Snapshot</strong> in the menu-bar menu, or
-        use the quick view when something feels slow. Jitterbug shows what changed around that moment
-        and what you can try. Suggestions always wait for your approval.
-    </p>
-    <label class="toggle"
-        ><input
-            type="checkbox"
-            bind:checked={policy.auto_snapshots}
-            disabled={policy.jitter_mode !== 'auto'}
-        /> Take snapshots automatically</label
-    >
-    <p class="muted">
-        Off: snapshots happen only when you ask. On: automatic alerts also capture the surrounding
-        seconds, and short hitches are reported. Needs look-back sampling.
-    </p>
-    <fieldset class="jitter-mode">
-        <legend>Sampling</legend>
-        <label class="toggle"
-            ><input type="radio" bind:group={policy.jitter_mode} value="auto" /> Look back: sample once
-            per second in memory so a snapshot includes the 60 seconds before you press</label
-        >
-        <label class="toggle"
-            ><input type="radio" bind:group={policy.jitter_mode} value="snapshot_only" /> Only after I
-            press: no background sampling; record the 15 seconds after you press</label
-        >
-    </fieldset>
-    <p class="muted">
-        Look back keeps the last 120 one-second samples in memory only and costs well under 1% of
-        one core. Only after I press has no background cost but cannot see what happened before.
-        {#if tally}Sampler is {tally.sampling ? 'running' : 'stopped'}.{/if}
-    </p>
-    <h3>Snapshot history</h3>
-    <p class="muted">
-        Workload names and counts only, stored privately on this computer. When the same workload
-        comes up in three of your last six snapshots, its review offers the lower-priority
-        permission.
-    </p>
-    {#each tally?.entries.slice(0, 8) ?? [] as entry}
-        <div class="local-model">
-            <span>{entry.label}</span><span class="muted"
-                >{entry.count} {entry.count === 1 ? 'snapshot' : 'snapshots'}</span
-            >
-        </div>
-    {/each}
-    {#if !tally?.entries.length}<p class="muted">
-            No snapshots have implicated a workload yet.
-        </p>{/if}
-    <button disabled={!desktop || !tally?.entries.length} onclick={clearTally}
-        >Clear snapshot history</button
-    >
-    {#if bootstrap.automation_snoozed_until > Date.now() / 1000}<p>
             Paused until {new Date(bootstrap.automation_snoozed_until * 1000).toLocaleTimeString()}
             <button disabled={!desktop} onclick={resume}>Resume now</button>
-        </p>{/if}
-    <button class="primary" disabled={busy} onclick={save}>Save automation policy</button>
+        </p>
+    {/if}
     {#if status}<p class="success" role="status">{status}</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-</section>
+</div>
 
 <style>
-    .policy-details {
-        margin: 18px 0 22px;
+    .automation-settings[hidden] {
+        display: none;
     }
-    .policy-details > summary {
-        padding: 6px 0;
-        font-weight: 500;
-    }
-    .policy-details[open] > summary {
-        margin-bottom: 12px;
-    }
-    .jitter-mode {
+    .snapshot-modes {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
         border: 0;
         padding: 0;
-        margin: 0 0 8px;
+        margin: 16px 0 0;
+    }
+    .snapshot-modes legend {
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 12px;
+    }
+    .snapshot-modes label {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        cursor: pointer;
+    }
+    .snapshot-modes label.active {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+    }
+    .snapshot-modes label span {
         display: grid;
         gap: 6px;
     }
-    .jitter-mode legend {
-        font-size: 11px;
+    .snapshot-modes small {
         color: var(--muted);
-        margin-bottom: 4px;
+        line-height: 1.5;
+    }
+    .consent-note {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+        margin: 0 0 12px;
+    }
+    .consent-note :global(svg) {
+        flex-shrink: 0;
+        margin-top: 2px;
+    }
+    @media (max-width: 680px) {
+        .snapshot-modes {
+            grid-template-columns: 1fr;
+        }
     }
 </style>

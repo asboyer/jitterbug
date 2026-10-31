@@ -15,7 +15,11 @@ test('browser workloads list tabs on request with demo actions disabled', async 
     await expect(inside.getByRole('listitem').first()).toContainText('Video call');
     await expect(inside).toContainText('shares a process with 1 other tab');
     await expect(inside.getByRole('button', { name: 'Close tab…' }).first()).toBeDisabled();
-    await expect(inside).toContainText('Synthetic example.');
+    await expect(inside.getByText('Synthetic example · About these readings')).toBeVisible();
+    await expect(inside).toContainText('Closing a tab discards unsaved form input');
+    await expect(inside.locator('.reading-notes p')).not.toBeVisible();
+    await inside.getByText('Synthetic example · About these readings').click();
+    await expect(inside.locator('.reading-notes p')).toBeVisible();
 });
 
 test('editor workloads list commands with pause, and other apps show no inside view', async ({
