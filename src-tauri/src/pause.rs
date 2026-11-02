@@ -60,20 +60,20 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
     paused: Vec::new(),
 });
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static TEST_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct TestGuard;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for TestGuard {
     fn drop(&mut self) {
         TEST_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn test_guard() -> TestGuard {
     while TEST_ACTIVE
         .compare_exchange(
