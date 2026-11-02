@@ -1,4 +1,5 @@
 <script lang="ts">
+    import './sessions.css';
     import { onMount, tick } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -14,6 +15,7 @@
     import type { ValidationQueue as QueueState } from './lib/queue';
     import Workloads from './components/Workloads.svelte';
     import AgentWorkflows from './components/AgentWorkflows.svelte';
+    import Sessions from './components/Sessions.svelte';
     import ValidationQueue from './components/ValidationQueue.svelte';
     import IncidentInbox from './components/IncidentInbox.svelte';
     import WorkloadDetails from './components/WorkloadDetails.svelte';
@@ -121,6 +123,7 @@
         { id: 'dashboard', label: 'Activity', icon: 'activity' },
         { id: 'workloads', label: 'Workloads', icon: 'app' },
         { id: 'agents', label: 'Agent tasks', icon: 'code' },
+        { id: 'sessions', label: 'Sessions', icon: 'play' },
         { id: 'queue', label: 'Validation queue', icon: 'queue' },
         { id: 'inbox', label: 'Inbox', icon: 'inbox' },
         { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -732,6 +735,8 @@
             {/if}
             {#if page === 'settings'}
                 <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
+            {:else if page === 'sessions'}
+                <Sessions />
             {:else if page === 'inbox'}
                 <div class="page-heading">
                     <div>

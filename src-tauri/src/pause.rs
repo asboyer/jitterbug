@@ -60,6 +60,35 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
     paused: Vec::new(),
 });
 
+#[cfg(all(test, unix))]
+static TEST_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(all(test, unix))]
+pub(crate) struct TestGuard;
+
+#[cfg(all(test, unix))]
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        TEST_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn test_guard() -> TestGuard {
+    while TEST_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::Acquire,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_err()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    TestGuard
+}
+
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -80,6 +109,50 @@ fn system() -> System {
             .with_exe(UpdateKind::Always),
     );
     system
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn wait_for_test_tree(pid: u32) -> Vec<(u32, u64)> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let system = system();
+        if let Some(root) = system.process(Pid::from_u32(pid)) {
+            let members = tree(&system, root);
+            if members.len() >= 2 {
+                return members;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let observed = system
+                .processes()
+                .iter()
+                .filter_map(|(candidate_pid, process)| {
+                    (candidate_pid.as_u32() == pid
+                        || process.parent().map(Pid::as_u32) == Some(pid))
+                    .then_some((
+                        candidate_pid.as_u32(),
+                        process.parent().map(Pid::as_u32),
+                        process.start_time(),
+                        process.name().to_string_lossy().into_owned(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            panic!("test process tree did not start: {observed:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn spawn_test_tree() -> std::process::Child {
+    std::process::Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "pause::tests::process_tree_fixture"])
+        .env("JITTERBUG_PROCESS_TREE_FIXTURE", "parent")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("process tree fixture")
 }
 
 #[cfg(unix)]
@@ -463,7 +536,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn process_tree_fixture() {
+        match std::env::var("JITTERBUG_PROCESS_TREE_FIXTURE").as_deref() {
+            Ok("parent") => {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "pause::tests::process_tree_fixture"])
+                    .env("JITTERBUG_PROCESS_TREE_FIXTURE", "child")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                let _ = child.wait();
+            }
+            Ok("child") => std::thread::sleep(Duration::from_secs(30)),
+            _ => {}
+        }
+    }
+
+    #[test]
     fn only_a_shell_running_the_command_as_its_own_job_is_held() {
+        let _test = test_guard();
         use std::os::unix::process::CommandExt;
         let me = std::process::id();
         // A job: the command leads its own group, apart from its parent's.
@@ -494,14 +587,11 @@ mod tests {
 
     #[test]
     fn a_tree_pauses_and_resumes_together_and_jitterbug_is_protected() {
-        // sh → sleep: the root and its child must both stop and both continue.
-        let mut child = Command::new("sh")
-            .args(["-c", "sleep 30 & wait"])
-            .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        let _test = test_guard();
+        // A real parent → child tree must both stop and continue.
+        let mut child = spawn_test_tree();
         let pid = child.id();
+        wait_for_test_tree(pid);
         let system = system();
         let root = system.process(Pid::from_u32(pid)).unwrap();
         let start = root.start_time();
@@ -556,13 +646,10 @@ mod tests {
 
     #[test]
     fn stopped_jobs_and_parts_of_a_pause_are_not_paused_again() {
-        let mut child = Command::new("sh")
-            .args(["-c", "sleep 30 & wait"])
-            .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        let _test = test_guard();
+        let mut child = spawn_test_tree();
         let pid = child.id();
+        wait_for_test_tree(pid);
         let start = system().process(Pid::from_u32(pid)).unwrap().start_time();
         let paused = pause(pid, start, "tree").unwrap();
         let (cpid, cstart) = paused.members[1];
@@ -589,6 +676,7 @@ mod tests {
 
     #[test]
     fn a_shell_shared_by_two_pauses_resumes_only_after_both() {
+        let _test = test_guard();
         let (mut a, apid, astart) = sleeper();
         let (mut b, bpid, bstart) = sleeper();
         let (mut sh, spid, sstart) = sleeper();
@@ -620,6 +708,7 @@ mod tests {
 
     #[test]
     fn a_watchdog_resumes_work_on_its_own_and_cancels_cleanly() {
+        let _test = test_guard();
         let (mut a, apid, astart) = sleeper();
         let (mut b, bpid, bstart) = sleeper();
         for p in [apid, bpid] {
