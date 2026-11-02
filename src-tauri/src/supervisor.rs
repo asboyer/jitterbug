@@ -2421,6 +2421,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn agents_cannot_resume_a_pause_the_person_made_after_their_request() {
+        let _test = crate::pause::test_guard();
         use std::process::{Command, Stdio};
         let mut child = Command::new("sleep")
             .arg("30")
@@ -3249,7 +3250,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn an_approved_pause_stops_the_whole_command_and_resume_continues_it() {
-        use std::process::{Command, Stdio};
+        let _test = crate::pause::test_guard();
+        use std::process::Command;
         fn stopped(pid: u32) -> bool {
             let out = Command::new("ps")
                 .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -3257,13 +3259,9 @@ mod tests {
                 .unwrap();
             String::from_utf8_lossy(&out.stdout).trim().starts_with('T')
         }
-        let mut child = Command::new("sh")
-            .args(["-c", "sleep 30 & wait"])
-            .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        let mut child = crate::pause::spawn_test_tree();
         let pid = child.id();
+        crate::pause::wait_for_test_tree(pid);
         let mut system = sysinfo::System::new();
         system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         let start = system

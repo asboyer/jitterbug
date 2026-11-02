@@ -235,9 +235,19 @@ pub(crate) mod tests {
                 .spawn()
                 .unwrap();
             let pid = child.id();
-            let mut system = System::new();
-            system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
-            let start = system.process(Pid::from_u32(pid)).unwrap().start_time();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let start = loop {
+                let mut system = System::new();
+                system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+                if let Some(process) = system.process(Pid::from_u32(pid)) {
+                    break process.start_time();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "stand-in process did not start"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
             (Self(child, directory), pid, start)
         }
     }
@@ -299,14 +309,28 @@ pub(crate) mod tests {
                 .parse::<i32>()
                 .unwrap()
         };
+        let wait_for_priority = |expected| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let actual = ps();
+                if actual == expected {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "priority stayed at {actual}, expected {expected}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
         let before = ps();
         assert!(before > 4, "{before}");
         assert_eq!(set_background(&[(pid, start)], true), [Ok(())]);
         assert_eq!(crate::platform::in_background(pid, start), Some(true));
-        assert_eq!(ps(), 4);
+        wait_for_priority(4);
         assert_eq!(set_background(&[(pid, start)], false), [Ok(())]);
         assert_eq!(crate::platform::in_background(pid, start), Some(false));
-        assert_eq!(ps(), before);
+        wait_for_priority(before);
         // The single-process action uses the same mechanism.
         execute(pid, start, "lower_priority").unwrap();
         assert_eq!(crate::platform::in_background(pid, start), Some(true));
