@@ -496,6 +496,60 @@ async fn open_folder_in_vscode(folder: String) -> Result<String, String> {
         .map_err(|_| "VS Code is unavailable.")?
 }
 
+/// A web address safe to hand to the default browser: https only, no spaces or control
+/// characters, so it can never be read as a flag or a local file.
+fn web_link(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    (url.len() <= 2048
+        && !rest.is_empty()
+        && !rest.starts_with('/')
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control()))
+    .then_some(url)
+}
+
+/// Open a source link the person clicked in their default browser.
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    let url = web_link(&url).ok_or("Only https links can be opened.")?;
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("/usr/bin/open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Could not open the browser.".into())
+}
+
+#[cfg(test)]
+mod link_tests {
+    #[test]
+    fn only_plain_https_links_open() {
+        assert!(
+            super::web_link("https://support.mozilla.org/kb/firefox-uses-too-much-memory")
+                .is_some()
+        );
+        for bad in [
+            "http://example.com",
+            "file:///etc/passwd",
+            "https://",
+            "https:///x",
+            "-a Calculator",
+            "https://a.com/ b",
+            "javascript:alert(1)",
+        ] {
+            assert!(super::web_link(bad).is_none(), "{bad}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn tab_action(target_id: String, url: String, action: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || inside::chrome::act(&target_id, &url, &action))
@@ -1538,6 +1592,7 @@ pub fn run() {
             launch_agent_session,
             open_folder_in_vscode,
             tab_action,
+            open_link,
             explain_application,
             summarize_agent_task,
             get_agent_task_summary,
