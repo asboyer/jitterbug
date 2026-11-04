@@ -119,7 +119,7 @@
               ? profile.text
               : process && workload
                 ? processRole(process, workload.label)
-                : profile?.source === 'reference'
+                : profile && profile.source !== 'inference'
                   ? profile.text
                   : workload
                     ? appFallback(workload)

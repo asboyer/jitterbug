@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(b.reserve_at(0.01, 5.0, 87_400).unwrap(), DAILY_REQUESTS + 1);
         assert!(b.status().unwrap().reserved_usd > before);
         assert!(b
-            .reserve_at(0.01, 0.10, 174_000)
+            .reserve_at(0.01, 0.02, 174_000)
             .unwrap_err()
             .contains("budget"));
         let _ = std::fs::remove_dir_all(path);

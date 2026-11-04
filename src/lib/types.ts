@@ -339,12 +339,15 @@ export interface ProcessRecord {
     actions: string[];
     disk_read_bytes: number;
     disk_written_bytes: number;
+    /** What started this process, e.g. "Started by Codex" or "Opened by you or at login". */
+    origin?: string;
 }
 
 export interface AppProfile {
     sources?: { title: string; url: string }[];
     text: string;
-    source: 'reference' | 'inference' | 'model' | 'demo';
+    /** `local`: read on this computer (bundle metadata, Electron package, manual page). */
+    source: 'reference' | 'local' | 'inference' | 'model' | 'demo';
     provider: string | null;
     model: string | null;
     generated_at: number | null;

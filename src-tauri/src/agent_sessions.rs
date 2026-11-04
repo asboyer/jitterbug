@@ -19,6 +19,9 @@ pub(crate) const AGENTS: &[(&str, &str)] = &[
     ("aider", "Aider"),
     ("cursor-agent", "Cursor Agent"),
     ("gemini", "Gemini CLI"),
+    ("opencode", "OpenCode"),
+    ("goose", "Goose"),
+    ("amp", "Amp"),
 ];
 
 /// Runtimes and wrappers that may carry an agent as their direct child (an npm shim's `node`,
@@ -96,14 +99,19 @@ fn normalized(name: &str) -> String {
 /// The agent key a process is, by name or executable. Claude Code's native install runs from
 /// `…/claude/versions/<version>`, so a version-named executable there counts too.
 pub fn agent_of(p: &ProcessRecord) -> Option<&'static str> {
+    agent_key(&p.name, p.executable.as_deref())
+}
+
+/// The agent key for a process name and, when readable, its executable path.
+pub(crate) fn agent_key(name: &str, executable: Option<&Path>) -> Option<&'static str> {
     let by_name = |name: &str| {
         let name = normalized(name);
         AGENTS.iter().find(|(key, _)| *key == name).map(|(k, _)| *k)
     };
-    if let Some(key) = by_name(&p.name) {
+    if let Some(key) = by_name(name) {
         return Some(key);
     }
-    let executable = p.executable.as_deref()?;
+    let executable = executable?;
     if let Some(key) = executable
         .file_name()
         .and_then(|n| n.to_str())
@@ -114,6 +122,14 @@ pub fn agent_of(p: &ProcessRecord) -> Option<&'static str> {
     let parent = executable.parent()?;
     (parent.file_name()? == "versions" && parent.parent().and_then(Path::file_name)? == "claude")
         .then_some("claude")
+}
+
+/// The name people know an agent by ("Claude Code" for `claude`).
+pub(crate) fn agent_display(key: &str) -> &'static str {
+    AGENTS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or("Coding agent", |(_, d)| *d)
 }
 
 fn display(key: &str) -> String {
@@ -877,7 +893,7 @@ mod tests {
                 process_count: 1,
                 unresponsive: None,
                 history: vec![],
-                ..Default::default()
+                origin: None,
             }],
             ..Default::default()
         };
