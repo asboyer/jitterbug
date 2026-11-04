@@ -347,6 +347,7 @@
         {#if workload}<AppIcon
                 workloadId={workload.id}
                 category={workload.category}
+                label={workload.label}
                 size={40}
             />{:else}<span class="assistant-mark"><Logo size={26} live /></span>{/if}
         <div class="heading">

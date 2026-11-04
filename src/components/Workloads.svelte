@@ -315,6 +315,7 @@
                         ><AppIcon
                             workloadId={row.workload.id}
                             category={row.workload.category}
+                            label={row.workload.label}
                             size={30}
                         /><span class="identity-copy"
                             ><span class="name-line"

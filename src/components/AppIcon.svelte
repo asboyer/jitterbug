@@ -1,19 +1,33 @@
 <script lang="ts">
     import { applicationIcon } from '../lib/icons';
     import Icon from './Icon.svelte';
+    import claude from '../assets/harnesses/claude.svg';
+    import openai from '../assets/harnesses/openai.svg';
+    import meta from '../assets/harnesses/meta.svg';
 
     let {
         workloadId,
         category = 'other',
         size = 32,
         demo = false,
+        label = '',
     }: {
         workloadId: string;
         category?: string;
+        label?: string;
         size?: number;
         demo?: boolean;
     } = $props();
     let url: string | null = $state(null);
+    // Coding agents have no app bundle of their own: show the agent's mark on a tile.
+    const agent = $derived.by(() => {
+        if (category !== 'agent') return null;
+        const name = label.toLowerCase();
+        if (name.includes('claude')) return claude;
+        if (name.includes('codex')) return openai;
+        if (name.includes('muse') || name.includes('meta')) return meta;
+        return null;
+    });
     $effect(() => {
         let cancelled = false;
         url = null;
@@ -28,10 +42,22 @@
 </script>
 
 <span class="app-icon" style={`width:${size}px;height:${size}px`} aria-hidden="true">
-    {#if url}<img src={url} alt="" width={size} height={size} />
+    {#if agent}<span class="agent-tile"
+            ><img
+                src={agent}
+                alt=""
+                width={Math.round(size * 0.58)}
+                height={Math.round(size * 0.58)}
+            /></span
+        >
+    {:else if url}<img src={url} alt="" width={size} height={size} />
     {:else}<span class="fallback"
             ><Icon
-                name={category === 'project' ? 'code' : category === 'model' ? 'model' : 'app'}
+                name={category === 'project' || category === 'agent'
+                    ? 'code'
+                    : category === 'model'
+                      ? 'model'
+                      : 'app'}
                 size={Math.round(size * 0.65)}
             /></span
         >{/if}
@@ -48,6 +74,19 @@
         width: 100%;
         height: 100%;
         object-fit: contain;
+    }
+    .agent-tile {
+        width: 86%;
+        height: 86%;
+        border-radius: 22%;
+        background: #2f2f34;
+        box-shadow: inset 0 0 0 0.5px #ffffff26;
+        display: grid;
+        place-items: center;
+    }
+    .agent-tile img {
+        width: 58%;
+        height: 58%;
     }
     .fallback {
         display: flex;
