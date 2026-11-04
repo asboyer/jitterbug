@@ -35,6 +35,6 @@ export const tourSteps = [
         page: 'monitor',
         target: 'settings',
         title: 'You choose the boundaries',
-        body: 'Settings controls local or cloud AI, spending limits, and automatic permissions. Jitterbug never automatically stops processes. You can replay this tour from the sidebar.',
+        body: 'The AI page sets local or frontier models and spending limits; Settings holds automatic permissions and agent connections. Jitterbug never automatically stops processes. You can replay this tour from the sidebar.',
     },
 ] as const;

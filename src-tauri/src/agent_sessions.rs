@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub const LAUNCHABLE: &[&str] = &["claude", "codex", "aider", "gemini"];
 
 /// Executable names recognized as coding agents, with the name people know them by.
-const AGENTS: &[(&str, &str)] = &[
+pub(crate) const AGENTS: &[(&str, &str)] = &[
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("aider", "Aider"),

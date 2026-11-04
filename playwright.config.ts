@@ -13,6 +13,16 @@ export default defineConfig({
         viewport: { width: 1120, height: 760 },
         colorScheme: 'dark',
         trace: 'retain-on-failure',
+        // Specs that mock the desktop app start as returning users; onboarding has its own spec.
+        storageState: {
+            cookies: [],
+            origins: [
+                {
+                    origin: baseURL,
+                    localStorage: [{ name: 'jitterbug.onboarding.v1.done', value: '1' }],
+                },
+            ],
+        },
     },
     webServer: {
         command: `npm run dev -- --port ${port}`,

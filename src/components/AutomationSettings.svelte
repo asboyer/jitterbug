@@ -36,9 +36,57 @@
             error = errorMessage(cause);
         }
     }
+    let runner = $state<string | null>(null);
+    let copied = $state('');
+    let client = $state<'claude' | 'codex' | 'json'>('claude');
     onMount(() => {
         void loadTally();
+        if (desktop)
+            void invoke<string | null>('get_agent_runner')
+                .then((path) => {
+                    runner = path;
+                })
+                .catch(() => {});
     });
+    const quote = (path: string) =>
+        /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
+    const launcher = $derived(runner ?? '/path/to/jitterbug-run');
+    const setups = $derived([
+        {
+            id: 'claude',
+            label: 'Claude Code',
+            command: `claude mcp add jitterbug-control -- ${quote(launcher)} control-mcp`,
+        },
+        {
+            id: 'codex',
+            label: 'Codex',
+            command: `codex mcp add jitterbug-control -- ${quote(launcher)} control-mcp`,
+        },
+        {
+            id: 'json',
+            label: 'Other clients',
+            command: JSON.stringify(
+                {
+                    mcpServers: {
+                        'jitterbug-control': { command: launcher, args: ['control-mcp'] },
+                    },
+                },
+                null,
+                2
+            ),
+        },
+    ]);
+    async function copy(id: string, text: string) {
+        try {
+            await navigator.clipboard.writeText(text);
+            copied = id;
+            setTimeout(() => {
+                if (copied === id) copied = '';
+            }, 2000);
+        } catch {
+            error = 'Copy failed. Select the text instead.';
+        }
+    }
     async function clearTally() {
         if (!desktop) return;
         try {
@@ -91,14 +139,8 @@
 
 <div hidden={!visible} class="automation-settings">
     {#if section === 'assistance'}
-        <section class="preference-card" aria-label="Automatic assistance policy">
-            <div class="preference-heading">
-                <span class="preference-icon"><Icon name="activity" size={20} /></span>
-                <div>
-                    <h2>Stay ahead of slowdowns</h2>
-                    <p>Choose when Jitterbug steps in.</p>
-                </div>
-            </div>
+        <section class="settings-group" aria-label="Automatic assistance policy">
+            <h2>When Jitterbug steps in</h2>
             <SettingSwitch
                 title="Watch for slowdowns"
                 description="Detect sustained pressure and investigate in the background."
@@ -326,14 +368,17 @@
             </details>
         </div>
     {:else}
-        <section class="preference-card" aria-label="Agent access">
-            <div class="preference-heading">
-                <span class="preference-icon"><Icon name="code" size={20} /></span>
-                <div>
-                    <h2>Connected agents</h2>
-                    <p>Give agents a view of the work on this computer.</p>
-                </div>
-            </div>
+        <section class="settings-group" aria-label="Agent access">
+            <h2>
+                Coding agents · MCP<span
+                    class="integration-status"
+                    class:configured={policy.agent_control}
+                    >{policy.agent_control ? 'On' : 'Off'}</span
+                >
+            </h2>
+            <p class="group-note">
+                Let Claude Code, Codex and other agents see what uses this computer.
+            </p>
             <SettingSwitch
                 title="Allow agent access"
                 description="Let local agents inspect apps and request session pauses or tab closures."
@@ -353,6 +398,40 @@
                 Closing a tab always requires approval. Pausing stops CPU work; it keeps memory
                 allocated.
             </p>
+            <details class="inline-help" open={policy.agent_control}>
+                <summary>Connect an agent</summary>
+                <p>
+                    Run once in a terminal, with Jitterbug open. Works on macOS and Linux.
+                    {#if desktop && !runner}<strong
+                            >Build <code>jitterbug-run</code> first and replace the path.</strong
+                        >{/if}
+                </p>
+                <div class="setup-clients" role="tablist" aria-label="Agent">
+                    {#each setups as setup}
+                        <button
+                            role="tab"
+                            aria-selected={client === setup.id}
+                            onclick={() => (client = setup.id as typeof client)}
+                            >{setup.label}</button
+                        >
+                    {/each}
+                </div>
+                {#each setups.filter((setup) => setup.id === client) as setup (setup.id)}
+                    <div class="setup-command" role="tabpanel">
+                        <pre><code>{setup.command}</code></pre>
+                        <button
+                            class="copy-button"
+                            aria-label={`Copy ${setup.label} setup`}
+                            onclick={() => copy(setup.id, setup.command)}
+                            >{copied === setup.id ? 'Copied' : 'Copy'}</button
+                        >
+                    </div>
+                {/each}
+                <p class="muted">
+                    Validation queue tools are separate: set them up per check from a workload’s
+                    Manage panel.
+                </p>
+            </details>
             <details class="inline-help">
                 <summary>Connection setup & permissions</summary>
                 <p>
