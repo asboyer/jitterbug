@@ -1,5 +1,6 @@
 export function memory(bytes: number): string {
-    if (bytes >= 1024 ** 3) {
+    // 1000 MB and up reads as GB, so a value never prints as a four-digit MB figure.
+    if (bytes >= 1000 * 1024 ** 2) {
         return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
     }
     return `${Math.round(bytes / 1024 ** 2)} MB`;
