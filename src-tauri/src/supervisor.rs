@@ -2,8 +2,8 @@
 use crate::{
     actions,
     automation::{self, AssignedBy, Assignment, Bucket, Case, Monitor, Origin, Policy, Stage},
-    budget, details, jitter, priorities, profiles, providers, settings, settings_history, storage,
-    system_settings,
+    budget, details, jitter, optimized_sessions, priorities, profiles, providers, settings,
+    settings_history, storage, system_settings,
     types::*,
 };
 use std::{
@@ -128,7 +128,12 @@ pub struct Runtime {
     book: Mutex<Book>,
     priorities: Mutex<priorities::Ledger>,
     governor: Mutex<crate::governor::Governor>,
+    pub optimized: Mutex<optimized_sessions::Store>,
     publish: Publish,
+}
+
+fn optimization_stage_busy(stage: &Stage) -> bool {
+    matches!(stage, Stage::Applying | Stage::Verifying)
 }
 
 /// One app in the priorities view: names and counts only, no process identity.
@@ -219,6 +224,8 @@ impl Runtime {
         settings_writer: SettingsWriter,
         native: Arc<dyn system_settings::NativeSettings>,
     ) -> Arc<Self> {
+        let optimized = optimized_sessions::Store::load(directory.clone())
+            .expect("Optimized session state is unavailable");
         Arc::new(Self {
             snapshot: Arc::new(RwLock::new(Snapshot::default())),
             settings: Mutex::new(settings),
@@ -237,8 +244,185 @@ impl Runtime {
             book: Mutex::new(Book::default()),
             priorities: Mutex::new(priorities::Ledger::default()),
             governor: Mutex::new(crate::governor::Governor::default()),
+            optimized: Mutex::new(optimized),
             publish,
         })
+    }
+
+    pub fn optimized_sessions(&self) -> Result<Vec<optimized_sessions::Session>, String> {
+        Ok(self
+            .optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.")?
+            .sessions()
+            .to_vec())
+    }
+
+    pub fn delete_optimized_session(&self, id: &str) -> Result<(), String> {
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.".to_string())?
+            .delete(id)
+    }
+
+    pub async fn create_optimized_session(
+        &self,
+        name: &str,
+        goal: &str,
+    ) -> Result<optimized_sessions::Session, String> {
+        let _inference = self
+            .inference
+            .try_lock()
+            .map_err(|_| "Another AI request is already running. Try again when it finishes.")?;
+        let settings = self
+            .settings
+            .lock()
+            .map_err(|_| "AI settings are unavailable.")?
+            .clone();
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Live telemetry is unavailable.")?
+            .clone();
+        let keep_awake_allowed = crate::session_permissions::allowed_settings(&self.directory)?
+            .contains(&optimized_sessions::Setting::KeepAwake);
+        let proposal = self
+            .engine
+            .session_profile(&settings, &snapshot, name, goal, keep_awake_allowed)
+            .await?;
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.")?
+            .create_proposed(name, goal, proposal)
+    }
+
+    pub async fn repropose_optimized_session(
+        &self,
+        id: &str,
+    ) -> Result<optimized_sessions::Session, String> {
+        let _inference = self
+            .inference
+            .try_lock()
+            .map_err(|_| "Another AI request is already running. Try again when it finishes.")?;
+        let settings = self
+            .settings
+            .lock()
+            .map_err(|_| "AI settings are unavailable.")?
+            .clone();
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Live telemetry is unavailable.")?
+            .clone();
+        let (name, goal) = {
+            let store = self
+                .optimized
+                .lock()
+                .map_err(|_| "Optimized session state unavailable.")?;
+            let session = store
+                .sessions()
+                .iter()
+                .find(|session| session.id == id)
+                .ok_or("Optimization session not found.")?;
+            (session.name.clone(), session.goal.clone())
+        };
+        let keep_awake_allowed = crate::session_permissions::allowed_settings(&self.directory)?
+            .contains(&optimized_sessions::Setting::KeepAwake);
+        let proposal = self
+            .engine
+            .session_profile(&settings, &snapshot, &name, &goal, keep_awake_allowed)
+            .await?;
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.")?
+            .update_proposal(id, proposal)
+    }
+
+    fn optimization_automation_busy(&self) -> Result<bool, String> {
+        Ok(self
+            .book
+            .lock()
+            .map_err(|_| "Incident state unavailable.")?
+            .cases
+            .iter()
+            .any(|case| optimization_stage_busy(&case.stage)))
+    }
+
+    pub fn start_optimized_session(
+        &self,
+        id: &str,
+        explicit_opt_in: bool,
+    ) -> Result<optimized_sessions::Session, String> {
+        let _guard = self
+            .action
+            .try_lock()
+            .map_err(|_| "Another native action is in progress. Please wait.")?;
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.".to_string())?
+            .clone();
+        let allowed = crate::session_permissions::allowed_settings(&self.directory)?;
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.".to_string())?
+            .start_restricted(
+                id,
+                explicit_opt_in,
+                &snapshot,
+                self.optimization_automation_busy()?,
+                Some(&allowed),
+            )
+    }
+
+    pub fn pause_optimized_session(&self, id: &str) -> Result<optimized_sessions::Session, String> {
+        let _guard = self
+            .action
+            .try_lock()
+            .map_err(|_| "Another native action is in progress. Please wait.")?;
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.".to_string())?
+            .pause(id)
+    }
+
+    pub fn reapply_optimized_session(
+        &self,
+        id: &str,
+        explicit_opt_in: bool,
+    ) -> Result<optimized_sessions::Session, String> {
+        let _guard = self
+            .action
+            .try_lock()
+            .map_err(|_| "Another native action is in progress. Please wait.")?;
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| "Telemetry unavailable.".to_string())?
+            .clone();
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.".to_string())?
+            .reapply_best(
+                id,
+                explicit_opt_in,
+                &snapshot,
+                self.optimization_automation_busy()?,
+            )
+    }
+
+    pub fn restore_optimized_session(
+        &self,
+        id: &str,
+    ) -> Result<optimized_sessions::Session, String> {
+        let _guard = self
+            .action
+            .try_lock()
+            .map_err(|_| "Another native action is in progress. Please wait.")?;
+        self.optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.".to_string())?
+            .restore_original(id)
     }
 
     fn persist_settings(
@@ -311,7 +495,12 @@ impl Runtime {
             .lock()
             .map_err(|_| "Settings unavailable.")?
             .clone();
-        let profile = self.engine.app_profile(&settings, &snapshot, &app).await?;
+        let profile = providers::purpose(
+            "app_explanation",
+            None,
+            self.engine.app_profile(&settings, &snapshot, &app),
+        )
+        .await?;
         self.profiles
             .lock()
             .map_err(|_| "Profile cache unavailable.")?
@@ -403,6 +592,20 @@ impl Runtime {
             .map_err(|_| "Telemetry unavailable.")? = sample.clone();
         if sample.source != "live" {
             return Ok(None);
+        }
+        let _action_guard = match self.action.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => return Ok(None),
+        };
+        {
+            let mut optimized = self
+                .optimized
+                .lock()
+                .map_err(|_| "Optimized session state unavailable.")?;
+            optimized.observe(sample)?;
+            if optimized.monitoring_or_owned() {
+                return Ok(None);
+            }
         }
         let policy = self.policy()?;
         // Keep a finished memory warning from lingering after the machine recovers.
@@ -766,9 +969,10 @@ impl Runtime {
             } else {
                 "Why is my computer struggling? Investigate this automatic resource alert and explain one useful next step. No action has been applied yet.".into()
             };
-            let reply = self
-                .engine
-                .chat_with_capture(
+            let reply = providers::purpose(
+                "investigation",
+                Some(id),
+                self.engine.chat_with_capture(
                     &settings,
                     &snapshot,
                     vec![providers::ChatMessage {
@@ -783,8 +987,9 @@ impl Runtime {
                     },
                     None,
                     case.jitter.as_ref().map(|j| j.model_context()),
-                )
-                .await?;
+                ),
+            )
+            .await?;
             self.update(id, |c| {
                 c.evidence = reply.investigation.clone().or(c.evidence.clone());
                 c.diagnosis = Some(reply);
@@ -899,9 +1104,10 @@ impl Runtime {
             } else {
                 "rules"
             };
-            let mut reply = self
-                .engine
-                .chat_with_capture(
+            let mut reply = providers::purpose(
+                "snapshot",
+                Some(id),
+                self.engine.chat_with_capture(
                     &settings,
                     &snapshot,
                     vec![providers::ChatMessage {
@@ -912,8 +1118,9 @@ impl Runtime {
                     tier,
                     process,
                     Some(report.model_context()),
-                )
-                .await?;
+                ),
+            )
+            .await?;
             if reply.source != "model" {
                 reply.text = report.text();
             }
@@ -1517,6 +1724,17 @@ impl Runtime {
         action: &str,
         incident: Option<(u64, bool)>,
     ) -> Result<ActionReport, String> {
+        if self
+            .optimized
+            .lock()
+            .map_err(|_| "Optimized session state unavailable.")?
+            .monitoring_or_owned()
+        {
+            return Err(
+                "Stop and restore the active optimization session before changing a process."
+                    .into(),
+            );
+        }
         let before = self
             .snapshot()?
             .processes
@@ -3629,5 +3847,13 @@ mod tests {
         f.runtime.enforce_buckets(&s).unwrap();
         assert_eq!(in_background(a, a_start), Some(false));
         assert_eq!(f.runtime.priorities().unwrap().protected[0].affected, 0);
+    }
+
+    #[test]
+    fn awaiting_incident_approval_does_not_block_session_learning() {
+        assert!(!optimization_stage_busy(&Stage::AwaitingApproval));
+        assert!(!optimization_stage_busy(&Stage::Completed));
+        assert!(optimization_stage_busy(&Stage::Applying));
+        assert!(optimization_stage_busy(&Stage::Verifying));
     }
 }

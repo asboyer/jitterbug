@@ -4,11 +4,10 @@ test('browser workloads list tabs automatically with demo actions disabled', asy
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
-    await page.getByRole('button', { name: /Example Browser/ }).click();
+    await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     const inside = page.getByRole('region', { name: 'Inside Example Browser' });
     // The demo stands in for a browser connection the person already allowed.
     await expect(inside.getByRole('listitem').first()).toContainText('Video call');
@@ -38,18 +37,17 @@ test('editor workloads list commands with pause, and other apps show no inside v
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Editor');
-    await page.getByRole('button', { name: /Example Editor/ }).click();
+    await page.locator('.inspect').filter({ hasText: 'Example Editor' }).click();
     const inside = page.getByRole('region', { name: 'Inside Example Editor' });
     await expect(inside.getByRole('listitem').first()).toContainText('npm · sample-web-app');
     await expect(inside.getByRole('button', { name: 'Pause' }).first()).toBeDisabled();
     await expect(inside).toContainText('claude · feat-search');
-    await page.getByRole('button', { name: '‹ Back to workloads' }).click();
+    await page.getByRole('button', { name: 'Close inspector ×' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('model');
-    await page.getByRole('button', { name: /Tiny local model/ }).click();
+    await page.locator('.inspect').filter({ hasText: 'Tiny local model' }).click();
     await expect(
         page.getByRole('heading', { name: 'Tiny local model', exact: true })
     ).toBeVisible();
@@ -60,15 +58,10 @@ test('processes are named by the tab or session they run, not by helper name', a
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
-    await page.getByRole('button', { name: /Example Browser/ }).click();
-    await page
-        .locator('summary')
-        .filter({ hasText: /^Processes/ })
-        .click();
+    await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     const list = page.getByRole('group', { name: 'Workload processes' });
     await expect(list.getByRole('button', { name: 'Inspect Video call' })).toBeVisible();
     await expect(list).toContainText('meet.example.com');
@@ -86,13 +79,9 @@ test('processes are named by the tab or session they run, not by helper name', a
     await page.getByRole('textbox', { name: 'Filter processes' }).fill('video');
     await expect(list.getByRole('button')).toHaveCount(1);
 
-    await page.getByRole('button', { name: '‹ Back to workloads' }).click();
+    await page.getByRole('button', { name: 'Close inspector ×' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Editor');
-    await page.getByRole('button', { name: /Example Editor/ }).click();
-    await page
-        .locator('summary')
-        .filter({ hasText: /^Processes/ })
-        .click();
+    await page.locator('.inspect').filter({ hasText: 'Example Editor' }).click();
     await expect(list).toContainText('Claude Code session · feat-search');
     await expect(list.getByRole('button', { name: 'Idle shell, 2 processes' })).toBeVisible();
 });

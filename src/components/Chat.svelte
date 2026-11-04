@@ -1,6 +1,7 @@
 <script lang="ts">
     import { tick } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import { queueInference } from '../lib/monitor';
     import { errorMessage } from '../lib/format';
     import Investigation from './Investigation.svelte';
     import InsightCard from './InsightCard.svelte';
@@ -196,14 +197,22 @@
                           investigation: null,
                           choices: [],
                       }
-                    : await invoke('ask', {
-                          messages,
-                          workloadId:
-                              choice?.workload_id ?? focused?.workload_id ?? workload?.id ?? null,
-                          tier,
-                          pid: anchoredProcess?.pid ?? null,
-                          startTime: anchoredProcess?.start_time ?? null,
-                      });
+                    : await queueInference<Reply>(
+                          () =>
+                              invoke('ask', {
+                                  messages,
+                                  workloadId:
+                                      choice?.workload_id ??
+                                      focused?.workload_id ??
+                                      workload?.id ??
+                                      null,
+                                  tier,
+                                  pid: anchoredProcess?.pid ?? null,
+                                  startTime: anchoredProcess?.start_time ?? null,
+                              }),
+                          20,
+                          () => requestContext === previousContext
+                      );
             onusage();
             if (requestContext !== previousContext) return;
             focused = reply.investigation?.target ?? null;

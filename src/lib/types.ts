@@ -1,4 +1,127 @@
 export type Provider = 'ollama' | 'meta' | 'anthropic' | 'jev';
+export type OptimizedSessionStatus = 'saved' | 'monitoring' | 'paused';
+export type OptimizedSessionPhase = 'baseline' | 'measuring_change' | 'watching';
+export type OptimizedCapability = 'monitor_only' | 'keep_awake';
+export type SessionPermissionGroupId =
+    'power_and_sleep' | 'appearance' | 'focus' | 'displays' | 'background_work';
+export type SessionPermissionStatus = 'available' | 'unsupported' | 'needs_os_permission';
+
+export interface OptimizedProposal {
+    capability: OptimizedCapability;
+    rationale: string;
+    provider: string;
+    model: string;
+}
+export type OptimizedOutcome = 'goal_met' | 'improved' | 'regressed' | 'inconclusive';
+
+export interface OptimizedWindow {
+    started_at: number;
+    ended_at: number;
+    samples: number;
+    average_cpu_percent: number;
+    average_available_memory_bytes: number;
+}
+
+export interface OptimizedSettingState {
+    setting:
+        | 'stage_manager'
+        | 'keep_awake'
+        | 'dock_autohide'
+        | 'dock_magnification'
+        | 'dock_animate'
+        | 'dock_minimize_to_application'
+        | 'dock_show_recents'
+        | 'press_and_hold'
+        | 'natural_scroll'
+        | 'automatic_spelling'
+        | 'automatic_capitalization'
+        | 'automatic_period'
+        | 'automatic_dash'
+        | 'automatic_quote'
+        | 'ds_store_network'
+        | 'ds_store_usb'
+        | 'mouse_linear'
+        | 'icloud_optimize_storage';
+    value: boolean;
+}
+
+export type SessionPermissionActionId = OptimizedSettingState['setting'];
+export interface SessionPermissionAction {
+    id: SessionPermissionActionId;
+    group: SessionPermissionGroupId;
+    label: string;
+    detail: string;
+    status: SessionPermissionStatus;
+    session_enabled: boolean;
+}
+export interface SessionPermissionGroup {
+    id: SessionPermissionGroupId;
+    label: string;
+    detail: string;
+    actions: SessionPermissionAction[];
+}
+export interface SessionPermissionView {
+    environment: { os: string; version: string; arch: string };
+    groups: SessionPermissionGroup[];
+}
+
+export interface OptimizedSession {
+    id: string;
+    name: string;
+    goal: string;
+    proposal: OptimizedProposal;
+    created_at: number;
+    updated_at: number;
+    opted_in: boolean;
+    status: OptimizedSessionStatus;
+    phase: OptimizedSessionPhase;
+    baseline: OptimizedWindow | null;
+    latest: OptimizedWindow | null;
+    original_configuration: OptimizedSettingState[];
+    fingerprint: {
+        os: string;
+        logical_cpus: number;
+        workloads: string[];
+        applications: { workload_id: string; identifier: string | null; version: string | null }[];
+        id: string;
+    } | null;
+    stale: boolean;
+    stale_reason: string | null;
+    setting_support: string;
+    findings: {
+        run_id: string;
+        fingerprint_id: string;
+        setting: OptimizedSettingState['setting'];
+        before_value: boolean;
+        after_value: boolean;
+        before: OptimizedWindow;
+        after: OptimizedWindow;
+        outcome: OptimizedOutcome;
+        readback_verified: boolean;
+        rolled_back: boolean;
+        explanation: string;
+    }[];
+    best_configuration: OptimizedSettingState[];
+    applied_configuration: OptimizedSettingState[];
+    pending_transaction: {
+        kind: 'apply_experiment' | 'restore' | 'reapply';
+        setting: OptimizedSettingState['setting'];
+        expected_current: boolean;
+        target: boolean;
+        original: boolean;
+    } | null;
+    runs: {
+        id: string;
+        fingerprint_id: string;
+        started_at: number;
+        completed_at: number;
+        before: OptimizedWindow;
+        after: OptimizedWindow;
+        outcome: OptimizedOutcome;
+    }[];
+    last_run_at: number;
+    events: { at: number; message: string }[];
+}
 export type Mode = 'hybrid' | 'local_only' | 'cloud_only';
 export type TierName = 'decision' | 'cheap' | 'intelligent';
 
@@ -200,6 +323,7 @@ export interface Workload {
 }
 
 export interface ProcessRecord {
+    unresponsive?: boolean | null;
     pid: number;
     start_time: number;
     parent_pid: number | null;
@@ -225,6 +349,7 @@ export interface AppProfile {
 }
 
 export interface WorkloadDetails {
+    process_history?: ResourcePoint[];
     captured_at: number;
     workload: Workload;
     process: ProcessRecord;
@@ -759,4 +884,18 @@ export interface InsideView {
     captured_at: number;
     limits: string;
     labels: ProcessLabel[];
+}
+
+/** One model call this session. Metadata only: no prompt or reply. */
+export interface AiActivity {
+    at: number;
+    purpose: string;
+    case_id: number | null;
+    provider: Provider;
+    model: string;
+    routing: boolean;
+    duration_ms: number;
+    cost_usd: number;
+    ok: boolean;
+    error: string | null;
 }

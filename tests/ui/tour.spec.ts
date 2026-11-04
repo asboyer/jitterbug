@@ -44,24 +44,25 @@ test('tour completes all steps without external calls and restores the previous 
 }) => {
     const external: string[] = [];
     page.on('request', (request) => {
-        if (!request.url().startsWith('http://127.0.0.1:1420')) external.push(request.url());
+        if (!request.url().startsWith(test.info().project.use.baseURL!))
+            external.push(request.url());
     });
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Workloads', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await page.getByRole('button', { name: /Example Browser/ }).click();
+    await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     await page.getByRole('button', { name: 'Take a tour', exact: true }).click();
     const tour = page.getByRole('dialog', { name: 'Jitterbug tour' });
     await expect(tour).toBeVisible();
     await expect(tour.getByRole('button', { name: 'Back', exact: true })).toBeDisabled();
-    for (let step = 1; step <= 6; step++) {
-        await expect(tour.getByLabel(`Step ${step} of 6`)).toBeVisible();
+    for (let step = 1; step <= 5; step++) {
+        await expect(tour.getByLabel(`Step ${step} of 5`)).toBeVisible();
         await expect(tour.locator('.spotlight')).toBeVisible();
         await expect(tour.locator('.tour-card')).toBeInViewport();
         await tour
-            .getByRole('button', { name: step === 6 ? 'Finish' : 'Next', exact: true })
+            .getByRole('button', { name: step === 5 ? 'Finish' : 'Next', exact: true })
             .click();
     }
     await expect(tour).toHaveCount(0);
@@ -79,8 +80,8 @@ test('tour supports back, keyboard exit, replay, and the smallest window', async
     const tour = page.getByRole('dialog', { name: 'Jitterbug tour' });
     await tour.getByRole('button', { name: 'Next', exact: true }).click();
     await tour.getByRole('button', { name: 'Back', exact: true }).click();
-    await expect(tour.getByLabel('Step 1 of 6')).toBeVisible();
-    for (let step = 1; step < 6; step++) {
+    await expect(tour.getByLabel('Step 1 of 5')).toBeVisible();
+    for (let step = 1; step < 5; step++) {
         await tour.getByRole('button', { name: 'Next', exact: true }).click();
         const bounds = await tour.locator('.tour-card').boundingBox();
         expect(bounds).not.toBeNull();
@@ -92,7 +93,7 @@ test('tour supports back, keyboard exit, replay, and the smallest window', async
     await page.keyboard.press('Escape');
     await expect(tour).toHaveCount(0);
     await page.getByRole('button', { name: 'Take a tour', exact: true }).click();
-    await expect(tour.getByLabel('Step 1 of 6')).toBeVisible();
+    await expect(tour.getByLabel('Step 1 of 5')).toBeVisible();
     await tour.getByRole('button', { name: 'Skip tour', exact: true }).click();
     await expect(tour).toHaveCount(0);
 });

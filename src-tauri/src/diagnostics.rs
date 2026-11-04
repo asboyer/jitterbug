@@ -342,7 +342,7 @@ impl Investigation {
             .then(|| crate::details::representative(&members))
             .and_then(|p| crate::origins::inspect(snapshot, p))
             .map(|origin| origin.model_context());
-        json!({"launch_origin":launch,"stack_checks":self.stack_checks,"executable_identity":identity,"target":if project {"Selected development workload"} else {&self.target.label},"scope":if self.target.pid.is_some(){"single PID; history is its containing workload"}else{"application/workload"},"cpu_percent":self.cpu_percent,"resident_mib":self.memory_bytes/1048576,"process_count":self.process_count,"history":history,"busiest_processes":processes,"limits":self.limits,"window_responsiveness":self.responsiveness,"recently_unresponsive":self.recently_unresponsive,"coverage":self.coverage})
+        json!({"process_evidence":members.first().map(|p| crate::monitor::process_context(snapshot, p)),"launch_origin":launch,"stack_checks":self.stack_checks,"executable_identity":identity,"target":if project {"Selected development workload"} else {&self.target.label},"scope":if self.target.pid.is_some(){"single PID; history is its containing workload"}else{"application/workload"},"cpu_percent":self.cpu_percent,"resident_mib":self.memory_bytes/1048576,"process_count":self.process_count,"history":history,"busiest_processes":processes,"limits":self.limits,"window_responsiveness":self.responsiveness,"recently_unresponsive":self.recently_unresponsive,"coverage":self.coverage})
     }
 }
 

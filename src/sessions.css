@@ -1,4 +1,4 @@
-/* Frontend-only Sessions preview. Native orchestration will be connected separately. */
+/* Saved Sessions workspace. */
 .sessions-page {
     display: grid;
     gap: 22px;
@@ -52,6 +52,25 @@
 .sessions-notice > span {
     flex: 1;
     color: inherit;
+}
+.sessions-notice.session-error {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: color-mix(in srgb, var(--danger) 18%, var(--border));
+}
+.sessions-empty {
+    min-height: 180px;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 8px;
+    padding: 28px;
+    color: var(--muted);
+    text-align: center;
+}
+.sessions-empty h2,
+.sessions-empty p {
+    margin: 0;
 }
 .sessions-layout {
     display: grid;
@@ -524,5 +543,209 @@
     .history-result {
         grid-column: 2;
         text-align: left;
+    }
+}
+
+/* Compact reusable optimization-profile layout. */
+.session-profile-layout {
+    display: grid;
+    grid-template-columns: 250px minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+.session-profile-library {
+    overflow: hidden;
+}
+.session-library-empty {
+    display: grid;
+    gap: 4px;
+    padding: 24px 14px;
+    color: var(--muted);
+    font-size: 11px;
+    text-align: center;
+}
+.session-profile-detail {
+    min-height: 480px;
+    padding: 22px;
+}
+.session-profile-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+}
+.session-profile-head h2 {
+    margin: 8px 0 5px;
+    font-size: 20px;
+}
+.session-profile-head p {
+    max-width: 620px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.55;
+}
+.session-profile-actions {
+    display: flex;
+    gap: 7px;
+    flex-shrink: 0;
+}
+.session-profile-actions .session-delete-confirm {
+    border-color: color-mix(in srgb, #ef4444 55%, var(--border));
+    color: #ef4444;
+}
+.session-profile-warning {
+    display: grid;
+    gap: 5px;
+    margin-top: 16px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--warning) 8%, transparent);
+    font-size: 11px;
+}
+.session-profile-warning span {
+    color: var(--muted);
+}
+.session-profile-warning button {
+    justify-self: start;
+    margin-top: 4px;
+}
+.session-config-card {
+    display: grid;
+    gap: 12px;
+    margin-top: 18px;
+    padding: 17px;
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+    border-radius: 12px;
+    background: var(--accent-subtle);
+}
+.session-config-card h3,
+.session-config-card p {
+    margin: 4px 0 0;
+}
+.session-config-card p,
+.session-config-card small {
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.5;
+}
+.session-config-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.session-config-list span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    color: var(--success);
+    background: var(--success-soft);
+    font-size: 10px;
+    font-weight: 650;
+}
+.session-settings-list {
+    display: grid;
+    gap: 0;
+    margin: 4px 0 0;
+}
+.session-settings-list div {
+    display: grid;
+    grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr);
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+}
+.session-settings-list dt {
+    margin: 0;
+    color: var(--foreground);
+    font-size: 11px;
+    font-weight: 650;
+}
+.session-settings-list dd {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+.session-recent-use {
+    margin-top: 22px;
+}
+.session-config-card button {
+    justify-self: start;
+    margin-top: 4px;
+}
+.session-evidence,
+.session-run {
+    display: grid;
+    gap: 4px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border);
+}
+.session-evidence strong,
+.session-run strong {
+    font-size: 11px;
+    text-transform: capitalize;
+}
+.session-evidence span,
+.session-run span {
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.5;
+}
+.session-log {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 10px;
+}
+.session-log summary {
+    cursor: pointer;
+    color: var(--foreground);
+    font-weight: 650;
+}
+.session-action-option {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: flex-start;
+    gap: 10px !important;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+.session-action-option input {
+    width: auto !important;
+    margin-top: 2px;
+}
+.session-action-option span {
+    display: grid;
+    gap: 4px;
+}
+.session-action-option small {
+    color: var(--muted);
+    font-weight: 400;
+    line-height: 1.45;
+}
+@media (max-width: 900px) {
+    .session-profile-layout {
+        grid-template-columns: 1fr;
+    }
+    .session-profile-head {
+        flex-direction: column;
+    }
+}
+@media (max-width: 600px) {
+    .session-profile-actions {
+        width: 100%;
+        flex-direction: column;
+    }
+    .session-profile-actions button {
+        width: 100%;
+        justify-content: center;
     }
 }

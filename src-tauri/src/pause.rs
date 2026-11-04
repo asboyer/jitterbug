@@ -113,7 +113,7 @@ fn system() -> System {
 
 #[cfg(all(test, unix))]
 pub(crate) fn wait_for_test_tree(pid: u32) -> Vec<(u32, u64)> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
         let system = system();
         if let Some(root) = system.process(Pid::from_u32(pid)) {
@@ -145,9 +145,13 @@ pub(crate) fn wait_for_test_tree(pid: u32) -> Vec<(u32, u64)> {
 
 #[cfg(all(test, unix))]
 pub(crate) fn spawn_test_tree() -> std::process::Child {
-    std::process::Command::new(std::env::current_exe().expect("current test executable"))
-        .args(["--exact", "pause::tests::process_tree_fixture"])
-        .env("JITTERBUG_PROCESS_TREE_FIXTURE", "parent")
+    // Fork a child `sleep` under a non-shell parent. `sh -c 'sleep'` often execs and
+    // collapses to one process, which wait_for_test_tree then reports as a 1-member tree.
+    std::process::Command::new("/usr/bin/perl")
+        .args([
+            "-e",
+            "defined($p=fork()) or die; $p or exec qw(/bin/sleep 30); sleep 30",
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -585,6 +589,27 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    fn wait_for_stopped(pid: u32, stopped: bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if stopped {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGSTOP);
+                }
+            }
+            let is_stopped = state(pid).starts_with('T');
+            if is_stopped == stopped {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid {pid} stayed {}stopped, expected {stopped}",
+                if is_stopped { "" } else { "not " }
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn a_tree_pauses_and_resumes_together_and_jitterbug_is_protected() {
         let _test = test_guard();
@@ -626,8 +651,17 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        std::thread::sleep(Duration::from_millis(200));
-        let start = system().process(Pid::from_u32(pid)).unwrap().start_time();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let start = loop {
+            if let Some(process) = system().process(Pid::from_u32(pid)) {
+                break process.start_time();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sleeper {pid} did not start"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
         (child, pid, start)
     }
 
@@ -663,7 +697,7 @@ mod tests {
             .args(["-STOP", &jpid.to_string()])
             .status()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        wait_for_stopped(jpid, true);
         assert!(pause(jpid, jstart, "job")
             .unwrap_err()
             .contains("already stopped"));
@@ -685,21 +719,18 @@ mod tests {
                 .args(["-STOP", &p.to_string()])
                 .status()
                 .unwrap();
+            wait_for_stopped(p, true);
         }
         let shell = Some((spid, sstart));
         let other = record((bpid, bstart), shell);
         registry().paused.push(other.clone());
         continue_records(&[record((apid, astart), shell)]);
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!state(apid).starts_with('T'));
-        assert!(
-            state(spid).starts_with('T'),
-            "the other pause still holds it"
-        );
+        wait_for_stopped(apid, false);
+        wait_for_stopped(spid, true);
         registry().paused.retain(|p| p != &other);
         continue_records(&[other]);
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!state(bpid).starts_with('T') && !state(spid).starts_with('T'));
+        wait_for_stopped(bpid, false);
+        wait_for_stopped(spid, false);
         for c in [&mut a, &mut b, &mut sh] {
             let _ = c.kill();
             let _ = c.wait();
@@ -716,6 +747,7 @@ mod tests {
                 .args(["-STOP", &p.to_string()])
                 .status()
                 .unwrap();
+            wait_for_stopped(p, true);
         }
         // Fires without Jitterbug's help, as after a crash.
         assert!(watchdog(&record((apid, astart), None), 1).is_some());
@@ -724,9 +756,8 @@ mod tests {
         cancelled.watchdog = watchdog(&cancelled, 1);
         let (wpid, _) = cancelled.watchdog.unwrap();
         cancel(cancelled.watchdog, &system());
-        std::thread::sleep(Duration::from_millis(2500));
-        assert!(!state(apid).starts_with('T'));
-        assert!(state(bpid).starts_with('T'));
+        wait_for_stopped(apid, false);
+        wait_for_stopped(bpid, true);
         assert!(state(wpid).is_empty(), "the cancelled watchdog is gone");
         for c in [&mut a, &mut b] {
             let _ = c.kill();

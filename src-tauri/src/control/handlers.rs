@@ -184,6 +184,51 @@ fn requester(snapshot: &Snapshot, lineage: &[(u32, u64)]) -> String {
         .unwrap_or_else(|| "An agent".into())
 }
 
+/// Returned to agents while access is off. The app asks the person at the same time.
+pub const ACCESS_OFF: &str = "Agent control is turned off in Jitterbug's settings. Jitterbug \
+    asked the person to allow it; try again after they do.";
+
+/// The coding agent behind a caller, by the name people know it ("Claude Code"), if recognized.
+/// Walks the caller's ancestors because the MCP server runs as a child of the agent.
+pub fn caller_agent(caller: u32) -> Option<&'static str> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+    );
+    let known = |name: &str| {
+        let base = std::path::Path::new(name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name)
+            .trim_end_matches(".exe")
+            .to_ascii_lowercase();
+        crate::agent_sessions::AGENTS
+            .iter()
+            .find(|(exe, _)| *exe == base)
+            .map(|(_, label)| *label)
+    };
+    let mut current = Some(Pid::from_u32(caller));
+    for _ in 0..64 {
+        let process = system.process(current?)?;
+        let name = process.name().to_string_lossy();
+        // An npm shim runs the agent as `node /path/to/claude`, so check the script too.
+        let found = known(&name).or_else(|| {
+            process
+                .cmd()
+                .iter()
+                .take(2)
+                .find_map(|arg| known(&arg.to_string_lossy()))
+        });
+        if found.is_some() {
+            return found;
+        }
+        current = process.parent();
+    }
+    None
+}
+
 pub fn handle(
     runtime: &Arc<Runtime>,
     caller: u32,
@@ -197,7 +242,7 @@ pub fn handle(
         .automation
         .clone();
     if !policy.agent_control {
-        return Err("Agent control is turned off in Jitterbug's settings.".into());
+        return Err(ACCESS_OFF.into());
     }
     let text = |key: &str| {
         params
