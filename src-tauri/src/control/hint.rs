@@ -145,55 +145,55 @@ fn mib_text(mib: u64) -> String {
     }
 }
 
-/// The note added to the agent's context, from the app's `pressure_hint` answer.
+fn session_text(s: &Value) -> String {
+    let title = s["title"].as_str().unwrap_or("Untitled session");
+    let memory = mib_text(s["memory_mib"].as_u64().unwrap_or(0));
+    let mut text = match s["agent_status"].as_str() {
+        Some(status) => format!("{title} is {status} at {memory}"),
+        None => format!("{title} is using {memory}"),
+    };
+    let cpu = s["cpu_percent_of_machine"]
+        .as_f64()
+        .unwrap_or_default()
+        .round();
+    if cpu >= 1.0 {
+        text.push_str(&format!(", {cpu}% CPU"));
+    }
+    format!(
+        "{text} (unit_id {})",
+        s["unit_id"].as_str().unwrap_or_default()
+    )
+}
+
+/// The note added to the agent's context, from the app's `pressure_hint` answer, e.g.
+/// "Jitterbug: this machine is under memory strain (1.1 GB free, CPU 40%). TEST2 is idle at
+/// 1.2 GB (unit_id …). Before more heavy commands, …consider jitterbug_pause_session…or waiting."
 pub fn message(answer: &Value) -> Option<String> {
     if answer["hint"] != json!(true) {
         return None;
     }
-    let level = answer["level"].as_str()?;
-    let state = if level == "high" {
-        "under sustained pressure"
-    } else {
-        "getting busy"
+    let strain = match answer["strain"].as_str() {
+        Some("memory") => "memory strain",
+        Some("cpu") => "CPU strain",
+        Some(_) => "memory and CPU strain",
+        None => "sustained pressure",
     };
     let mut text = format!(
-        "Jitterbug: this computer is {state} (CPU {}%, {} GB memory free",
-        answer["cpu_percent"].as_f64().unwrap_or_default().round(),
-        answer["memory_available_gib"].as_f64().unwrap_or_default()
+        "Jitterbug: this machine is under {strain} ({} GB memory free, CPU {}%).",
+        answer["memory_available_gib"].as_f64().unwrap_or_default(),
+        answer["cpu_percent"].as_f64().unwrap_or_default().round()
     );
-    if let Some(reason) = answer["reasons"].get(0).and_then(Value::as_str) {
-        text.push_str(&format!("; {}", reason.trim_end_matches('.')));
-    }
-    text.push_str(").");
     let sessions: Vec<String> = answer["sessions"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|s| {
-            let mut parts = vec![mib_text(s["memory_mib"].as_u64().unwrap_or(0))];
-            if let Some(status) = s["agent_status"].as_str() {
-                parts.insert(0, status.to_string());
-            }
-            parts.push(format!(
-                "{}% CPU",
-                s["cpu_percent_of_machine"]
-                    .as_f64()
-                    .unwrap_or_default()
-                    .round()
-            ));
-            format!(
-                "{} ({}, unit_id {})",
-                s["title"].as_str().unwrap_or("Untitled session"),
-                parts.join(", "),
-                s["unit_id"].as_str().unwrap_or("")
-            )
-        })
+        .map(session_text)
         .collect();
     if sessions.is_empty() {
-        text.push_str(" Before this command, say so in one line, then wait or run a narrower command if one would do.");
+        text.push_str(" Before more heavy commands, mention it in one line, then wait or run narrower commands where that would do.");
     } else {
         text.push_str(&format!(
-            " Other sessions using the most: {}. Before this command, say so in one line, then wait, run a narrower command, or, if the jitterbug-control tools are connected, ask to pause the least urgent idle one with jitterbug_pause_session. Never pause work the person is waiting on.",
+            " {}. Before more heavy commands, mention it in one line, then consider asking Jitterbug to pause the least urgent idle session with jitterbug_pause_session (jitterbug-control MCP), running narrower commands, or waiting. Never pause work the person is waiting on.",
             sessions.join("; ")
         ));
     }
@@ -224,21 +224,19 @@ pub fn hook(input: &str) -> Option<String> {
     )
 }
 
-/// Hook settings for Claude Code (`~/.claude/settings.json`) or a Codex hooks file. Only shell
-/// commands trigger it, and quick ones return without contacting the app.
-pub fn settings(binary: &Path) -> Result<Value, String> {
-    let binary = binary
-        .to_str()
-        .ok_or("Hook executable path must be UTF-8.")?;
-    let command = format!("'{}' pressure-hint", binary.replace('\'', "'\"'\"'"));
+/// The PreToolUse entry that runs the hook. Only shell commands trigger it, and quick ones
+/// return without contacting the app.
+pub fn entry(binary: &Path) -> Result<Value, String> {
+    let command = crate::harness::hook_command(binary, "pressure-hint")?;
     Ok(json!({
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "Bash",
-                "hooks": [{ "type": "command", "command": command, "timeout": 5 }]
-            }]
-        }
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": command, "timeout": 5 }]
     }))
+}
+
+/// Hook settings for Claude Code (`~/.claude/settings.json`) or a Codex hooks file.
+pub fn settings(binary: &Path) -> Result<Value, String> {
+    Ok(json!({ "hooks": { "PreToolUse": [entry(binary)?] } }))
 }
 
 #[cfg(test)]
@@ -311,23 +309,29 @@ mod tests {
         assert!(message(&json!({"enabled": false, "hint": false})).is_none());
         assert!(message(&json!({"enabled": true, "hint": false, "level": "high"})).is_none());
         let note = message(&json!({
-            "enabled": true, "hint": true, "level": "high",
-            "reasons": ["Memory available is below 10%."],
-            "cpu_percent": 91.4, "memory_available_gib": 1.2,
-            "sessions": [{"unit_id": "session:42-7", "title": "TEST2", "agent_status": "idle", "memory_mib": 1300, "cpu_percent_of_machine": 0.4}]
+            "enabled": true, "hint": true, "level": "high", "strain": "memory",
+            "cpu_percent": 41.4, "memory_available_gib": 1.1,
+            "sessions": [
+                {"unit_id": "session:42-7", "title": "TEST2", "agent_status": "idle", "memory_mib": 1229, "cpu_percent_of_machine": 0.4},
+                {"unit_id": "session:51-9", "title": "api", "memory_mib": 700, "cpu_percent_of_machine": 12.0}
+            ]
         }))
         .unwrap();
-        assert!(note.contains("under sustained pressure"));
-        assert!(note.contains("CPU 91%"));
-        assert!(note.contains("Memory available is below 10%"));
-        assert!(note.contains("TEST2 (idle, 1.3 GB, 0% CPU, unit_id session:42-7)"));
+        assert!(note.starts_with(
+            "Jitterbug: this machine is under memory strain (1.1 GB memory free, CPU 41%)."
+        ));
+        assert!(note.contains(
+            "TEST2 is idle at 1.2 GB (unit_id session:42-7); api is using 700 MB, 12% CPU (unit_id session:51-9)."
+        ));
         assert!(note.contains("jitterbug_pause_session"));
-        let quiet = message(&json!({"hint": true, "level": "watch", "cpu_percent": 70.0, "memory_available_gib": 3.0, "sessions": []})).unwrap();
-        assert!(quiet.contains("getting busy"));
-        assert!(!quiet.contains("jitterbug_pause_session"));
+        assert!(note.contains("or waiting"));
+        let cpu = message(&json!({"hint": true, "level": "high", "strain": "cpu", "cpu_percent": 93.0, "memory_available_gib": 6.0, "sessions": []})).unwrap();
+        assert!(cpu.contains("under CPU strain"));
+        assert!(!cpu.contains("jitterbug_pause_session"));
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn settings_run_the_hook_for_shell_commands_only() {
         let value = settings(Path::new("/opt/it's/jitterbug-run")).unwrap();
         let entry = &value["hooks"]["PreToolUse"][0];

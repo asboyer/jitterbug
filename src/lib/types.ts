@@ -529,6 +529,17 @@ export interface ActionReport {
     fresh: boolean;
 }
 
+/** A coding agent Jitterbug can register itself with (`agent_clients`). */
+export interface AgentClient {
+    id: 'claude' | 'codex';
+    label: string;
+    installed: boolean;
+    /** The MCP server is registered and points at this app's `jitterbug-run`. */
+    mcp: boolean;
+    /** The pressure hint hook is installed; null where the agent has no such hook. */
+    hint: boolean | null;
+}
+
 export interface AutomationPolicy {
     enabled: boolean;
     model_analysis: boolean;

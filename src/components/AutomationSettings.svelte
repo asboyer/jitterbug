@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import AgentConnect from './AgentConnect.svelte';
     import Icon from './Icon.svelte';
     import SettingSwitch from './SettingSwitch.svelte';
     import { errorMessage } from '../lib/format';
@@ -55,7 +56,7 @@
         {
             id: 'claude',
             label: 'Claude Code',
-            command: `claude mcp add jitterbug-control -- ${quote(launcher)} control-mcp`,
+            command: `claude mcp add --scope user jitterbug-control -- ${quote(launcher)} control-mcp`,
         },
         {
             id: 'codex',
@@ -113,6 +114,13 @@
         } catch {
             error = 'Copy failed. Select the text instead.';
         }
+    }
+    /** Connecting an agent turned agent access on in the app; mirror it without a save. */
+    async function agentConnected() {
+        policy.agent_control = true;
+        const saved = JSON.parse(savedPolicy);
+        savedPolicy = JSON.stringify({ ...saved, agent_control: true });
+        await onrefresh();
     }
     async function clearTally() {
         if (!desktop) return;
@@ -406,6 +414,7 @@
             <p class="group-note">
                 Let Claude Code, Codex and other agents see what uses this computer.
             </p>
+            <AgentConnect {desktop} onconnect={agentConnected} />
             <SettingSwitch
                 title="Allow agent access"
                 description="Let local agents inspect apps and request session pauses or tab closures."
@@ -425,8 +434,8 @@
                 Closing a tab always requires approval. Pausing stops CPU work; it keeps memory
                 allocated.
             </p>
-            <details class="inline-help" open={policy.agent_control}>
-                <summary>Connect an agent</summary>
+            <details class="inline-help">
+                <summary>Set up by hand</summary>
                 <p>
                     Run once in a terminal, with Jitterbug open. Works on macOS and Linux.
                     {#if desktop && !runner}<strong
@@ -456,9 +465,9 @@
                 {/each}
                 <h3 class="setup-subhead">Warn agents before heavy work</h3>
                 <p class="muted">
-                    Add to <code>~/.claude/settings.json</code>. Before a build, test suite, install
-                    or container, Claude Code gets a one-line note when this computer is busy,
-                    naming the sessions using the most. Quiet otherwise.
+                    Connect adds this to <code>~/.claude/settings.json</code>. Before a build, test
+                    suite, install or container, Claude Code gets a one-line note when this computer
+                    is under strain, naming the sessions using the most. Quiet otherwise.
                 </p>
                 <div class="setup-command">
                     <pre><code>{hintSettings}</code></pre>

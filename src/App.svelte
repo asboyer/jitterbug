@@ -1023,7 +1023,17 @@
 {/if}
 
 {#if onboardingOpen}
-    <Onboarding {bootstrap} {desktop} onsave={saveAiSettings} onfinish={finishOnboarding} />
+    <Onboarding
+        {bootstrap}
+        {desktop}
+        onsave={saveAiSettings}
+        onfinish={finishOnboarding}
+        onagent={async () => {
+            if (desktop && !demo) await refreshBootstrap();
+            else bootstrap.settings.automation.agent_control = true;
+            settingsRevision++;
+        }}
+    />
 {/if}
 
 {#if tourIndex !== null}

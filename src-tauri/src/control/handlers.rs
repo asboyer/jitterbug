@@ -278,39 +278,27 @@ pub fn handle(
     result
 }
 
-/// Hints for one session within this window are repeated only when pressure gets worse.
+/// A session told about high pressure is told again only after this many quiet seconds.
 const HINT_QUIET_SECONDS: u64 = 180;
-static HINTS: Mutex<Vec<(String, u64, u8)>> = Mutex::new(Vec::new());
+static HINTS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
-fn severity(level: &str) -> u8 {
-    match level {
-        "high" => 2,
-        "watch" => 1,
-        _ => 0,
-    }
-}
-
-/// Whether to tell this session about `level` now, remembering the answer.
+/// Whether to tell this session about `level` now, remembering the answer. Only sustained
+/// (`high`) pressure is worth interrupting an agent; `watch` stays quiet.
 fn hint_due(key: &str, level: &str, at: u64) -> bool {
-    let rank = severity(level);
-    if rank == 0 {
+    if level != "high" {
         return false;
     }
     let Ok(mut hints) = HINTS.lock() else {
         return false;
     };
-    hints.retain(|(_, last, _)| last + HINT_QUIET_SECONDS > at);
-    if let Some(entry) = hints.iter_mut().find(|(k, _, _)| k == key) {
-        if rank <= entry.2 {
-            return false;
-        }
-        *entry = (key.into(), at, rank);
-        return true;
+    hints.retain(|(_, last)| last + HINT_QUIET_SECONDS > at);
+    if hints.iter().any(|(k, _)| k == key) {
+        return false;
     }
     if hints.len() >= 64 {
         hints.remove(0);
     }
-    hints.push((key.into(), at, rank));
+    hints.push((key.into(), at));
     true
 }
 
@@ -343,10 +331,16 @@ fn pressure_hint(
         .or_else(|| own_session(&snapshot, &lineage).map(|u| session_id(&u)))
         .unwrap_or_else(|| "unknown".into());
     let hint = hint_due(&key, &level, snapshot.captured_at);
+    let strained = strain(&snapshot);
     let mut answer = json!({
         "enabled": true,
         "hint": hint,
         "level": level,
+        "strain": match strained {
+            (true, false) => "cpu",
+            (false, true) => "memory",
+            _ => "memory_and_cpu",
+        },
         "reasons": snapshot.pressure.reasons,
         "cpu_percent": round(snapshot.cpu_percent),
         "memory_available_gib": gib(snapshot.memory_available_bytes),
@@ -360,7 +354,7 @@ fn pressure_hint(
             .flat_map(|app| app["sessions"].as_array().cloned().unwrap_or_default())
             .filter(|s| s["is_your_session"] != json!(true) && s["paused_until"].is_null())
             .collect();
-        let others = contributors(others, strain(&snapshot));
+        let others = contributors(others, strained);
         answer["sessions"] = json!(others
             .iter()
             .map(|s| json!({
@@ -731,12 +725,11 @@ mod tests {
     }
 
     #[test]
-    fn pressure_hints_repeat_only_after_a_quiet_window_or_when_worse() {
+    fn pressure_hints_come_only_when_high_and_repeat_after_a_quiet_window() {
         let key = "hint-throttle-test";
+        // Only sustained pressure interrupts an agent.
         assert!(!hint_due(key, "normal", 1_000));
-        assert!(hint_due(key, "watch", 1_000));
-        assert!(!hint_due(key, "watch", 1_010));
-        // Getting worse is news; staying the same or easing is not.
+        assert!(!hint_due(key, "watch", 1_000));
         assert!(hint_due(key, "high", 1_020));
         assert!(!hint_due(key, "watch", 1_030));
         assert!(!hint_due(key, "high", 1_100));

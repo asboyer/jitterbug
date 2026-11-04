@@ -161,19 +161,7 @@ pub fn apply(context: &mut Context, event: &Value, at: u64) -> Result<bool, Stri
 /// Nothing is installed globally. Claude accepts this object through --settings; Codex users
 /// can merge it into their hook settings and review/trust it through the harness UI.
 pub fn hook_settings(binary: &Path) -> Result<Value, String> {
-    let binary = binary
-        .to_str()
-        .ok_or("Hook executable path must be UTF-8.")?;
-    #[cfg(not(windows))]
-    let command = format!("'{}' event", binary.replace('\'', "'\"'\"'"));
-    #[cfg(windows)]
-    let command = {
-        // cmd.exe expands percent variables even inside quotes. Fail closed for unusual paths.
-        if binary.contains(['%', '!', '"', '\n', '\r']) {
-            return Err("Unsupported hook executable path.".into());
-        }
-        format!("\"{binary}\" event")
-    };
+    let command = hook_command(binary, "event")?;
     let mut hooks = serde_json::Map::new();
     for event in [
         "SessionStart",
@@ -188,7 +176,31 @@ pub fn hook_settings(binary: &Path) -> Result<Value, String> {
             json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 3 }] }]),
         );
     }
+    // Wrapped sessions also hear about pressure before heavy shell commands.
+    if let Some(Value::Array(pre)) = hooks.get_mut("PreToolUse") {
+        pre.push(crate::control::hint::entry(binary)?);
+    }
     Ok(json!({ "hooks": hooks }))
+}
+
+/// A shell command that runs `binary subcommand`, quoted for the platform's hook shell.
+pub fn hook_command(binary: &Path, subcommand: &str) -> Result<String, String> {
+    let binary = binary
+        .to_str()
+        .ok_or("Hook executable path must be UTF-8.")?;
+    #[cfg(not(windows))]
+    return Ok(format!(
+        "'{}' {subcommand}",
+        binary.replace('\'', "'\"'\"'")
+    ));
+    #[cfg(windows)]
+    {
+        // cmd.exe expands percent variables even inside quotes. Fail closed for unusual paths.
+        if binary.contains(['%', '!', '"', '\n', '\r']) {
+            return Err("Unsupported hook executable path.".into());
+        }
+        Ok(format!("\"{binary}\" {subcommand}"))
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import AgentConnect from './AgentConnect.svelte';
     import Icon from './Icon.svelte';
     import { applyMode, frontierChoices, localModel, providerNames } from '../lib/ai-mode';
     import { errorMessage, memory } from '../lib/format';
@@ -11,12 +12,15 @@
         desktop,
         onsave,
         onfinish,
+        onagent,
     }: {
         bootstrap: Bootstrap;
         desktop: boolean;
         onsave: (settings: Settings) => Promise<void>;
         /** `tour` is true when the person asked to see the tour next. */
         onfinish: (tour: boolean) => void;
+        /** An agent was connected, which also turned agent access on. */
+        onagent?: () => Promise<void>;
     } = $props();
 
     let dialog: HTMLDialogElement;
@@ -285,11 +289,15 @@
                         : 'No key yet. Add one on the AI page.'}
                     · ${Number(budget).toFixed(2)} ceiling
                 </li>{/if}
-            <li>
-                <Icon name="code" size={16} /> Using Claude Code or Codex? Connect them later in Settings
-                › Integrations.
-            </li>
         </ul>
+        <section class="onboarding-agents" aria-label="Connect coding agents">
+            <h3><Icon name="code" size={16} /> Using Claude Code or Codex?</h3>
+            <p class="muted">
+                Connect them so they can see what loads this computer, and hear about it before
+                heavy work.
+            </p>
+            <AgentConnect {desktop} onconnect={onagent} />
+        </section>
         <p class="muted">Switch between local and frontier any time from the sidebar.</p>
         <div class="onboarding-actions">
             <button onclick={() => onfinish(false)}>Go to Jitterbug</button>
@@ -484,6 +492,23 @@
         flex-shrink: 0;
         margin-top: 2px;
         color: var(--accent);
+    }
+    .onboarding-agents h3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 18px 0 2px;
+        font-size: 14px;
+    }
+    .onboarding-agents h3 :global(svg) {
+        color: var(--accent);
+    }
+    .onboarding-agents p {
+        margin: 0;
+        font-size: 13px;
+    }
+    .onboarding-agents :global(.integration-list) {
+        margin-top: 8px;
     }
     .onboarding-actions {
         display: flex;
