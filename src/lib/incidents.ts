@@ -72,6 +72,8 @@ export function incidentOutcome(incident: IncidentSummary): string {
             return incident.report.after
                 ? 'The process is still running; it may be saving work or ignoring the request.'
                 : 'The process stopped. A fresh sample no longer shows it.';
+        if (['pause', 'pause_tab'].includes(incident.report.action ?? ''))
+            return 'Paused, nothing closed. It resumes on its own after 15 minutes, or choose Resume now.';
         if (!incident.report.after) return 'The original process is no longer in the inventory.';
         return incident.verification.priority_verified
             ? 'macOS confirmed background mode.'

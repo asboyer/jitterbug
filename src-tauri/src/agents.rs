@@ -47,6 +47,8 @@ pub struct SessionView {
     pub request: Option<String>,
     /// What the agent asked the person in its last reply; set only when state is `waiting`.
     pub asks: Option<String>,
+    /// When Jitterbug paused this conversation, the time it resumes by itself.
+    pub paused_until: Option<u64>,
     pub last_active: Option<u64>,
     pub cpu_percent: f32,
     pub memory_bytes: u64,
@@ -311,6 +313,7 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
             asks: (session_state == "waiting")
                 .then(|| activity.asks.clone())
                 .flatten(),
+            paused_until: None,
             last_active: Some(last_active),
             cpu_percent: cpu,
             memory_bytes: memory,
@@ -389,6 +392,7 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
                 asks: (session_state == "waiting")
                     .then(|| activity.asks.clone())
                     .flatten(),
+                paused_until: None,
                 last_active: Some(last_active),
                 cpu_percent: cpu,
                 memory_bytes: memory,
@@ -399,9 +403,29 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
         }
     }
 
+    // A conversation Jitterbug paused is frozen, whatever its log last said.
+    let paused = crate::pause::list();
+    for session in &mut sessions {
+        let Some((pid, start)) = session
+            .id
+            .split_once('-')
+            .and_then(|(p, s)| Some((p.parse::<u32>().ok()?, s.parse::<u64>().ok()?)))
+        else {
+            continue;
+        };
+        if let Some(record) = paused
+            .iter()
+            .find(|r| (r.pid, r.start_time) == (pid, start) || r.members.contains(&(pid, start)))
+        {
+            session.state = "paused".into();
+            session.paused_until = Some(record.until);
+            session.doing = Some("Paused by Jitterbug".into());
+            session.asks = None;
+        }
+    }
     let rank = |s: &SessionView| match s.state.as_str() {
         "working" => 0,
-        "waiting" => 1,
+        "waiting" | "paused" => 1,
         _ => 2,
     };
     sessions.sort_by(|a, b| {

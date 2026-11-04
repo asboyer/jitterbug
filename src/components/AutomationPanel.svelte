@@ -213,7 +213,7 @@
                     onclick={() => perform('resume_case', { id: incident.id })}>Resume now</button
                 >
             {/if}
-            {#if incident.proposal && !incident.jitter}
+            {#if incident.proposal && !incident.jitter && !['pause', 'pause_tab', 'terminate'].includes(incident.report?.action ?? '')}
                 <section class="proposal-card" data-tour="proposal">
                     <div class="tip-heading">
                         <Icon name="bulb" size={20} />

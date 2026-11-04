@@ -172,6 +172,7 @@ pub fn context(detail: &Detail, dialogue: &[activity::Exchange]) -> serde_json::
         "conversation": {
             "tool": s.harness_name, "title": s.title, "project_folder": folder,
             "state": s.state, "open_question": s.asks, "started_at": detail.started_at,
+            "paused_by_jitterbug_until": s.paused_until,
             "last_active": s.last_active,
         },
         "messages": messages,

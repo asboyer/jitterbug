@@ -789,3 +789,10 @@
     font-weight: 400;
     font-size: 13px;
 }
+.session-config-card .card-label,
+.session-recent-use .card-label {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+}

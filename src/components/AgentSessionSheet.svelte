@@ -215,6 +215,13 @@
                 {#if session.state === 'working'}
                     <p class="state live"><i></i>Working</p>
                     <p class="lead">{session.doing ?? 'Working on your request'}</p>
+                {:else if session.state === 'paused'}
+                    <p class="state">Paused by Jitterbug</p>
+                    <p class="lead">
+                        Frozen to free the CPU. Nothing was closed{session.paused_until
+                            ? `; it resumes at ${clock(session.paused_until)}`
+                            : ''}.
+                    </p>
                 {:else if session.asks}
                     <p class="state">Needs your answer</p>
                     <p class="lead">{session.asks}</p>

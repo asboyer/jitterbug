@@ -27,9 +27,11 @@ export interface AgentSession {
     harness_name: string;
     title: string;
     folder: string;
-    state: 'working' | 'waiting' | 'idle';
+    state: 'working' | 'waiting' | 'idle' | 'paused';
     doing: string | null;
     request: string | null;
+    /** When Jitterbug paused this conversation, the time it resumes by itself. */
+    paused_until?: number | null;
     /** The question the agent's last reply asked; set only when state is `waiting`. */
     asks?: string | null;
     last_active: number | null;

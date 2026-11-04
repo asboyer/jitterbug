@@ -310,7 +310,9 @@ impl Runtime {
                 .map_err(|_| "Profile cache unavailable.")?
                 .get(&key)
                 .unwrap_or_else(|| profiles::reference(Some(&app), workload));
-            if profile.source == "model" || !generate {
+            // Jitterbug describes itself; a model has nothing better to say about this app.
+            let own = app.identifier.as_deref() == Some("com.jitterbug.desktop");
+            if profile.source == "model" || !generate || own {
                 output.push(Explanation { identity, profile });
             } else if generate {
                 pending.push((identity, key, app));

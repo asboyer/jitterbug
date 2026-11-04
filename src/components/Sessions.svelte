@@ -331,7 +331,7 @@
 
                     <section class="session-config-card">
                         <div>
-                            <p class="eyebrow">AI-PROPOSED PROFILE</p>
+                            <p class="card-label">Jitterbug’s plan</p>
                             <h3>
                                 {selected.proposal?.capability === 'keep_awake'
                                     ? 'Keep Mac awake'
@@ -349,16 +349,10 @@
                                             : 'Watch the task only. No system setting will be changed.'}
                                     </dd>
                                 </div>
-                                <div>
-                                    <dt>Provider</dt>
-                                    <dd>
-                                        {selected.proposal.provider} · {selected.proposal.model}
-                                    </dd>
-                                </div>
                             </dl>
                             <small
-                                >No system change occurs until you choose Learn this session. AI
-                                cannot pick settings outside Settings → System rights.</small
+                                >Nothing changes until you choose Learn this session, and only
+                                settings you allowed in Settings can change.</small
                             >
                             {#if selected.status !== 'monitoring'}
                                 <button
@@ -411,7 +405,7 @@
 
                     <section class="session-config-card">
                         <div>
-                            <p class="eyebrow">SAVED CONFIGURATION</p>
+                            <p class="card-label">Saved settings</p>
                             <h3>
                                 {selected.best_configuration.length
                                     ? 'Verified settings for this task'
@@ -435,18 +429,19 @@
                             </dl>
                         {:else}
                             <p>
-                                {selected.setting_support ||
-                                    'Learn this session during the real task. Jitterbug will list every setting it is allowed to change.'}
+                                Learn this session while the real work runs. Jitterbug measures its
+                                CPU, memory and pressure, and saves any setting it is allowed to
+                                change once it is verified.
                             </p>
                         {/if}
                         {#if selected.fingerprint}<small
-                                >Bound to this OS and {selected.fingerprint.applications.length} detected
-                                app versions. A changed environment invalidates the cache.</small
+                                >Saved for this macOS version and the {selected.fingerprint
+                                    .applications.length} apps it saw; Jitterbug relearns when they change.</small
                             >{/if}
                     </section>
 
                     <section class="session-recent-use">
-                        <p class="eyebrow">RECENT USE</p>
+                        <p class="card-label">Recent runs</p>
                         {#if selected.runs.length}{#each selected.runs.slice(0, 4) as run}<div
                                     class="session-run"
                                 >

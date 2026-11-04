@@ -342,7 +342,11 @@
                         ><strong
                             >{session.title || session.folder}<em
                                 class:waiting={session.state === 'waiting'}
-                                >{session.state === 'waiting' ? 'Needs your answer' : 'Done'}</em
+                                >{session.state === 'waiting'
+                                    ? 'Needs your answer'
+                                    : session.state === 'paused' && session.paused_until
+                                      ? `Paused by Jitterbug until ${new Date(session.paused_until * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                                      : 'Done'}</em
                             ></strong
                         ><span class="muted"
                             >{session.asks
