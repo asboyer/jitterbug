@@ -648,3 +648,35 @@ a:hover {
         align-items: start;
     }
 }
+
+/* Incident review and follow-up chat dock over the window's right edge as a sheet. */
+aside.assistant {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    height: 100dvh;
+    width: min(420px, calc(100vw - 240px));
+    min-width: 0;
+    z-index: 30;
+    padding: 18px 18px 16px;
+    border: 0;
+    border-radius: 0;
+    background: var(--inspector);
+    box-shadow:
+        -1px 0 0 #00000080,
+        -24px 0 60px #00000059;
+    overflow-y: auto;
+    animation: sheet-in 180ms ease-out;
+}
+@keyframes sheet-in {
+    from {
+        transform: translateX(24px);
+        opacity: 0;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    aside.assistant {
+        animation: none;
+    }
+}

@@ -103,17 +103,24 @@
         <div>
             <p class="eyebrow">
                 {incident.source !== 'live'
-                    ? 'SYNTHETIC EXAMPLE'
+                    ? 'Synthetic example'
                     : incident.origin === 'snapshot'
-                      ? 'JITTER SNAPSHOT · LIVE'
+                      ? 'Jitter Snapshot'
                       : incident.origin === 'spike'
-                        ? 'SHORT HITCH · LIVE'
-                        : 'RESOURCE ASSISTANT · LIVE'}
+                        ? 'Short hitch'
+                        : `Noticed at ${new Date(incident.detected_at * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
             </p>
             <h2 bind:this={panelTitle} tabindex="-1">{incidentTitle(incident)}</h2>
         </div>
         <button class="icon-button" aria-label="Close automatic assistant" onclick={onclose}
-            >×</button
+            ><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"
+                ><path
+                    d="M2.5 2.5l7 7m0-7-7 7"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                /></svg
+            ></button
         >
     </div>
     {#if cases.length > 1}
@@ -160,7 +167,7 @@
                         <p>{incident.verification.summary}</p>
                     </section>
                 {/if}
-            {:else if incident.diagnosis?.insight && !incident.proposal}
+            {:else if incident.diagnosis?.insight}
                 <InsightCard reply={incident.diagnosis} />
             {:else}
                 <p class="observation">{incidentObservation(incident)}</p>
