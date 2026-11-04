@@ -71,7 +71,7 @@ See [browser investigations](browser-investigations.md) and
 Browser resource questions collect supported tab/process evidence before inference and show the
 largest measured processes as local, clickable rows. Firefox memory questions use fixed Mozilla
 guidance (two-second fetch limit, 24-hour cache); tab titles and URLs are excluded from the model
-context. Firefox tab attribution is an optional, read-only DevTools connection on loopback port 6000.
+context. On macOS, Firefox tab attribution is an optional, read-only DevTools connection on loopback port 6000.
 Jitterbug never changes browser preferences or restarts it. The person must enable local remote
 debugging, start Firefox with its debugger server, and choose **Show tabs**. Only `listTabs` and
 `getTarget` are used, bounded by time and response size; no page scripts execute. Process IDs must

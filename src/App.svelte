@@ -46,6 +46,7 @@
     let tourSeen = $state(true);
     const onboardingPreference = 'jitterbug.onboarding.v1.done';
     let onboardingOpen = $state(false);
+    let onboardingTourOffer = $state(false);
     let settingsRevision = $state(0);
     /** An agent tried to use Jitterbug while agent access was off. */
     let accessAsk = $state<{ agent: string | null } | null>(null);
@@ -91,7 +92,10 @@
         navigate('monitor');
         if (tour) startTour();
         // Land on the front page with the tour offer, even if the tour was seen before.
-        else tourSeen = false;
+        else {
+            tourSeen = false;
+            onboardingTourOffer = true;
+        }
     }
     /** Saves AI settings from the sidebar switch or onboarding; the preview keeps them in memory. */
     async function saveAiSettings(next: Settings) {
@@ -833,6 +837,17 @@
                 report={actionReport}
             />{/if}
         <div class="page-content">
+            {#if onboardingTourOffer && !tourSeen && tourIndex === null && page === 'monitor' && !selectedId}
+                <div class="tour-invitation">
+                    <span>New to Jitterbug?</span><button class="text-button" onclick={startTour}
+                        >Take a quick tour</button
+                    ><button
+                        class="icon-button"
+                        aria-label="Dismiss tour invitation"
+                        onclick={markTourSeen}>×</button
+                    >
+                </div>
+            {/if}
             {#if page === 'ai'}
                 {#key settingsRevision}
                     <AiSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
