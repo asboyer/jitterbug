@@ -420,6 +420,99 @@ fn calls_from(lines: &[String]) -> Vec<ToolCall> {
     calls.into_iter().skip(skip).map(|(_, call)| call).collect()
 }
 
+/// One message of a conversation, for asking about the session afterwards.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Exchange {
+    /// `you` or `agent`.
+    pub role: &'static str,
+    pub text: String,
+    pub at: u64,
+}
+
+/// What the person asked and what the agent replied, oldest first, from the last few MiB of a
+/// Claude Code transcript. Tool calls and their output are left out.
+pub fn claude_dialogue(transcript: &Path) -> Vec<Exchange> {
+    let mut out = Vec::new();
+    for line in tail(transcript, 4 * 1024 * 1024) {
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let at = timestamp(&entry).unwrap_or(0);
+        match entry.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                if let Some(text) = claude_text(&entry) {
+                    out.push(Exchange {
+                        role: "agent",
+                        text: excerpt(&text),
+                        at,
+                    });
+                }
+            }
+            Some("user") => {
+                let content = entry.pointer("/message/content");
+                let text = match content {
+                    Some(Value::String(text)) => Some(text.clone()),
+                    Some(Value::Array(items)) => {
+                        let parts: Vec<&str> = items
+                            .iter()
+                            .filter(|i| i.get("type").and_then(Value::as_str) == Some("text"))
+                            .filter_map(|i| i.get("text")?.as_str())
+                            .collect();
+                        (!parts.is_empty()).then(|| parts.join("\n"))
+                    }
+                    _ => None,
+                };
+                // Commands and reminders the harness injects start with a tag.
+                if let Some(text) = text.filter(|t| !t.trim_start().starts_with('<')) {
+                    out.push(Exchange {
+                        role: "you",
+                        text: excerpt(&text),
+                        at,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The same for a Codex conversation log.
+pub fn codex_dialogue(log: &Path) -> Vec<Exchange> {
+    let mut out = Vec::new();
+    for line in tail(log, 4 * 1024 * 1024) {
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let at = timestamp(&entry).unwrap_or(0);
+        let payload = entry.get("payload").cloned().unwrap_or(Value::Null);
+        let message = payload.get("message").and_then(Value::as_str);
+        match (payload.get("type").and_then(Value::as_str), message) {
+            (Some("user_message"), Some(text)) => out.push(Exchange {
+                role: "you",
+                text: excerpt(text),
+                at,
+            }),
+            (Some("agent_message"), Some(text)) => out.push(Exchange {
+                role: "agent",
+                text: excerpt(text),
+                at,
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A message kept to its first 1,200 characters, whitespace intact.
+fn excerpt(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= 1200 {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(1199).collect::<String>())
+}
+
 /// Claude Code keeps each session's transcript under a folder named after its working
 /// directory. The session may have moved folders, so look in every project for its ID.
 pub fn claude_transcript(session_id: &str) -> Option<PathBuf> {

@@ -4,6 +4,7 @@ const purposes: Record<string, string> = {
     question: 'Answered your question',
     scene: 'Read what your Mac is doing',
     search: 'Searched running apps in your words',
+    session: 'Answered a question about an agent conversation',
     monitor: 'Explained the Monitor overview',
     app_explanation: 'Explained an app',
     investigation: 'Investigated a slowdown',

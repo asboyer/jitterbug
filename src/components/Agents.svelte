@@ -414,7 +414,10 @@
         </div>
     {/if}
 </section>
-{#if openSession}<AgentSessionSheet id={openSession} onclose={() => (openSession = null)} />{/if}
+{#if openSession}{#key openSession}<AgentSessionSheet
+            id={openSession}
+            onclose={() => (openSession = null)}
+        />{/key}{/if}
 
 <style>
     .agents {

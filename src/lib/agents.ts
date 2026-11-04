@@ -287,6 +287,22 @@ export interface SessionDetail {
         peak_memory_bytes: number;
     }[];
     calls_available: boolean;
+    log_started_at: number | null;
+}
+
+export interface SessionAnswer {
+    answer: string;
+    follow_ups: string[];
+    provider: string;
+    model: string;
+}
+
+/** What kind of step a tool call is, for counting and for the activity strip. */
+export function stepKind(tool: string): 'command' | 'edit' | 'read' | 'other' {
+    if (tool === 'Bash') return 'command';
+    if (['Edit', 'MultiEdit', 'Write', 'NotebookEdit'].includes(tool)) return 'edit';
+    if (['Read', 'Grep', 'Glob'].includes(tool)) return 'read';
+    return 'other';
 }
 
 /** "1m 30s", "45s", "2h 5m": how long something ran. */

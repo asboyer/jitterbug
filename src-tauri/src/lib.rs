@@ -396,6 +396,61 @@ async fn get_agent_session(
     .map_err(|_| "Conversation details unavailable.")?
 }
 
+/// Ask about one agent conversation afterwards: what it did, what was heavy, what to improve.
+#[tauri::command]
+async fn ask_agent_session(
+    state: State<'_, AppState>,
+    id: String,
+    messages: Vec<providers::ChatMessage>,
+) -> Result<session_detail::Answer, String> {
+    if messages.is_empty()
+        || messages.len() > 12
+        || messages.last().is_some_and(|m| m.role != "user")
+        || messages
+            .iter()
+            .any(|m| !matches!(m.role.as_str(), "user" | "assistant") || m.content.len() > 4000)
+    {
+        return Err("Ask a shorter question.".into());
+    }
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    let context = {
+        let snapshot = snapshot.clone();
+        let id = id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let turns_state = turns::inspect(&turns::directory()?)?;
+            let view = agents::view(&snapshot, &turns_state, vec![]);
+            let detail = session_detail::detail(&snapshot, &view, &turns_state, &id)?;
+            Ok::<_, String>(session_detail::context(
+                &detail,
+                &session_detail::dialogue(&snapshot, &id),
+            ))
+        })
+        .await
+        .map_err(|_| "Conversation details unavailable.")??
+    };
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    providers::purpose(
+        "session",
+        None,
+        state
+            .engine
+            .session_answer(&settings, &snapshot, context, &messages),
+    )
+    .await
+}
+
 /// Add Jitterbug's hooks to the chosen agents (one approval in the UI covers all of them).
 #[tauri::command]
 async fn connect_agents(
@@ -1649,6 +1704,7 @@ pub fn run() {
             open_folder_in_vscode,
             tab_action,
             get_agent_session,
+            ask_agent_session,
             open_link,
             explain_application,
             summarize_agent_task,
