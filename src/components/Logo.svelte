@@ -23,7 +23,7 @@
     <ellipse class="body" cx="16" cy="18.4" rx="9.6" ry="10.4" />
     <path
         class="seam"
-        d="M16 9.4v4.2l-2.6 3.1 5.2 3.4-2.6 3.1v5.4"
+        d="M16 9.4v4.2l-2.6 3.1 5.2 3.4-2.6 3.1v3.4"
         fill="none"
         stroke-width="1.9"
         stroke-linecap="round"
