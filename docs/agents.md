@@ -32,11 +32,11 @@ servers such as `npm run dev` pass.
 Jitterbug's private data folder first. Unrelated settings are kept. **Disconnect** removes only
 Jitterbug's entries.
 
-| Agent       | Where the hook goes                                                       | Trust                                 |
-| ----------- | ------------------------------------------------------------------------- | ------------------------------------- |
-| Claude Code | `~/.claude/settings.json` (`PreToolUse`/`PostToolUse`, matcher `Bash`)    | None needed                           |
-| Codex       | `~/.codex/config.toml` (`[[hooks.PreToolUse]]`/`[[hooks.PostToolUse]]`)   | Codex asks you to trust the hook once |
-| Muse Code   | A local plugin, `jitterbug-agents`, installed with `muse plugins install` | Approved with `muse plugins approve`  |
+| Agent       | Where the hook goes                                                       | Trust                                    |
+| ----------- | ------------------------------------------------------------------------- | ---------------------------------------- |
+| Claude Code | `~/.claude/settings.json` (`PreToolUse`/`PostToolUse`, matcher `Bash`)    | None needed                              |
+| Codex       | `~/.codex/config.toml` (`[[hooks.PreToolUse]]`/`[[hooks.PostToolUse]]`)   | Trust it once: open Codex, type `/hooks` |
+| Muse Code   | A local plugin, `jitterbug-agents`, installed with `muse plugins install` | Approved with `muse plugins approve`     |
 
 Open sessions pick up the hook when restarted. Each agent shows **heard from it** once its first
 command reaches Jitterbug.
@@ -63,4 +63,5 @@ sessions using session-only `--settings` were verified to take turns: three `mak
 three sessions ran one at a time, the waiting session received the message and retried, and a
 subagent's run was labeled with its description. Muse Code's plugin format and deny handling
 were checked with `muse plugins validate` and `muse plugins hook test`. Live Codex and Muse Code
-sessions have not yet been run through the gate.
+sessions have not yet been run through the gate. Codex silently skips the hook until it is trusted
+with `/hooks`; Muse Code needs `muse login` or `META_API_KEY` before it can run.

@@ -458,7 +458,7 @@ pub fn detect(runner: &Path, state: &State) -> Vec<Harness> {
                     }
                     // Codex keeps its own trust record for each hook; Jitterbug never writes it.
                     "codex" if connected && !state.contacts.contains_key("codex") => {
-                        "Codex asks you to trust this hook the next time it starts.".into()
+                        "Open Codex and type /hooks to trust Jitterbug's hook. Until then Codex skips it.".into()
                     }
                     _ => String::new(),
                 },
