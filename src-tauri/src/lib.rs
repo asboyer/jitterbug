@@ -390,7 +390,8 @@ async fn get_workload_icon(
         let (send, receive) = tokio::sync::oneshot::channel();
         // AppKit drawing stays on the UI thread; frontend limits icon requests to two at a time.
         app.run_on_main_thread(move || {
-            let _ = send.send(runtime.icons.get(&path));
+            let value = runtime.icons.get(&path);
+            let _ = send.send(value);
         })
         .map_err(|_| "Icon service unavailable.")?;
         receive.await.map_err(|_| "Icon service closed.".into())
@@ -410,11 +411,7 @@ fn get_monitor_inventory(
     state: State<'_, AppState>,
     query: monitor::Query,
 ) -> Result<monitor::Inventory, String> {
-    let snapshot = state
-        .snapshot
-        .read()
-        .map_err(|_| "Telemetry unavailable.")?;
-    monitor::inventory(&snapshot, &query)
+    state.monitor_inventory(&query)
 }
 
 #[tauri::command]
@@ -424,6 +421,70 @@ async fn explain_monitor_profiles(
     generate: bool,
 ) -> Result<Vec<monitor::Explanation>, String> {
     state.monitor_profiles(identities, generate).await
+}
+
+#[tauri::command]
+fn prioritize_monitor_chat(state: State<'_, AppState>) {
+    state.monitor_cancel.notify_waiters();
+}
+
+#[tauri::command]
+async fn ask_monitor(
+    state: State<'_, AppState>,
+    messages: Vec<providers::ChatMessage>,
+    workload_id: Option<String>,
+    pid: Option<u32>,
+    start_time: Option<u64>,
+) -> Result<providers::MonitorAnswer, String> {
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    if !snapshot.sample_ready || snapshot.captured_at + 20 < types::now() {
+        return Err("Wait for a fresh telemetry sample.".into());
+    }
+    if pid.is_some() != start_time.is_some() || (pid.is_some() && workload_id.is_none()) {
+        return Err("Choose a current process identity.".into());
+    }
+    let mut profile = None;
+    if let Some(id) = &workload_id {
+        let detail = details::inspect(&snapshot, id, pid.zip(start_time))?;
+        profile = Some(detail.profile);
+        if let Some(app) = detail.application {
+            let key = profiles::key(&app);
+            if let Some(saved) = state
+                .profiles
+                .lock()
+                .map_err(|_| "Descriptions unavailable.")?
+                .get(&key)
+            {
+                profile = Some(saved);
+            }
+        }
+    }
+    providers::purpose(
+        "question",
+        None,
+        state.engine.monitor_answer(
+            &settings,
+            &snapshot,
+            messages,
+            workload_id.as_deref(),
+            pid.zip(start_time),
+            profile.as_ref(),
+        ),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -570,26 +631,31 @@ fn get_quick_snapshot(state: State<'_, AppState>) -> Result<types::Snapshot, Str
 }
 
 #[tauri::command]
-fn get_bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
-    Ok(Bootstrap {
-        settings: state
-            .settings
-            .lock()
-            .map_err(|_| "Settings unavailable.")?
-            .clone(),
-        credentials: [
-            settings::Provider::Meta,
-            settings::Provider::Anthropic,
-            settings::Provider::Jev,
-        ]
-        .iter()
-        .filter(|p| settings::key(p).is_ok())
-        .map(|p| p.name().into())
-        .collect(),
-        spending: state.engine.spending()?,
-        automation_cases: state.cases()?,
-        automation_snoozed_until: state.snoozed_until()?,
+async fn get_bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(Bootstrap {
+            settings: state
+                .settings
+                .lock()
+                .map_err(|_| "Settings unavailable.")?
+                .clone(),
+            credentials: [
+                settings::Provider::Meta,
+                settings::Provider::Anthropic,
+                settings::Provider::Jev,
+            ]
+            .iter()
+            .filter(|p| settings::credential_present(p))
+            .map(|p| p.name().into())
+            .collect(),
+            spending: state.engine.spending()?,
+            automation_cases: state.cases()?,
+            automation_snoozed_until: state.snoozed_until()?,
+        })
     })
+    .await
+    .map_err(|_| "Settings unavailable.")?
 }
 
 #[tauri::command]
@@ -1133,6 +1199,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_monitor_inventory,
+            ask_monitor,
+            prioritize_monitor_chat,
             explain_monitor_profiles,
             summarize_monitor,
             list_sessions,

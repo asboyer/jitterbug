@@ -39,22 +39,45 @@ limit and $100 absolute ceiling. Reservations persist before transmission; faile
 missing usage retain their reservation. This is an estimated app ledger, not provider billing,
 and excludes other clients using the same key.
 
-Monitor requests an AI overview when opened and after meaningful changes, with a 60-second
-automatic cooldown. It explains the first 12 visible identities in batches of up to six and
-investigates a selected process after a short selection debounce. Foreground investigations take
-priority over queued background descriptions. Other AI entry points include explicit task summaries
-and enabled automatic incidents.
+Monitor keeps system statistics local and does not request an automatic diagnosis when an app is
+selected. Its inspector has a reusable one-sentence description and an explicit chat. Meta uses
+`muse-spark-1.3` by default. Chat uses minimal reasoning, at most 1,024 output tokens, schema-constrained output,
+fresh app/PID context, and optional reviewed priority/termination proposals; native identity and
+permission checks remain authoritative. No model-generated command is executed.
 
-General-purpose executable descriptions remain in the bounded, 30-day on-device cache. Monitor
-findings use a separate 24-entry, 90-second memory-only cache, keyed by process start time,
-executable identity, provider settings, and activity buckets. Changes to identity, pressure,
-responsiveness, CPU, memory, or disk activity invalidate reuse. Current diagnoses are never saved as
-application descriptions. The inspector collects at most 24 observations per inspected identity,
-for up to 24 identities; it does not reconstruct activity before inspection. These samples stay in
-memory. The full native inventory is queried in pages of 40 (within the collector's 4,096-process
-and 512-group bounds). Process actions are policy-controlled, never executed from model-generated text.
+Visible executable identities are enriched in batches of up to six, through the same serialized
+inference queue. Foreground questions cancel active identity enrichment and skip queued descriptions;
+background enrichment pauses while the inspector is open. Cancelled cloud requests retain their
+reservation because their final usage is unknown. Identity research uses medium reasoning. Meta's
+[Responses web search](https://dev.meta.ai/docs/search-grounding) researches public app identity
+metadata only, with at most two tool calls, 3,072 output tokens, and a $0.10 ledger reservation.
+Live telemetry, paths, command arguments, project names and chat text do not enter the search
+request. Search responses use a strict JSON schema. Displayed source links must come from actual
+retrieved results; progress messages are excluded from summaries. The usage ledger includes
+reported tokens and estimated search charges. Other providers retain the non-search adapter.
+
+Descriptions use a bounded 128-entry, 30-day on-device cache, invalidated by executable identity,
+version and cache schema. Live diagnoses are never saved as descriptions. Inspector conversations
+stay in memory, bounded to 12 contexts and 12 messages per context, with exact PID/start-time and
+provider-settings keys. No investigation starts on selection or periodic telemetry updates.
+The inspector collects at most 24 observations for each of up to 24 inspected identities; it does
+not reconstruct activity before inspection. The native inventory is queried in pages of 40
+(within the collector's 4,096-process and 512-group bounds). Each refresh preserves existing row
+identities and updates readings; explicit sorting, search and refresh-order controls choose a new
+order. Exited/reused PIDs cannot inherit the old selection or proposed action.
 See [browser investigations](browser-investigations.md) and
 [agent connections](app-and-agent-control.md) for evidence and privacy boundaries.
+
+Browser resource questions collect supported tab/process evidence before inference and show the
+largest measured processes as local, clickable rows. Firefox memory questions use fixed Mozilla
+guidance (two-second fetch limit, 24-hour cache); tab titles and URLs are excluded from the model
+context. On macOS, Firefox tab attribution is an optional, read-only DevTools connection on loopback port 6000.
+Jitterbug never changes browser preferences or restarts it. The person must enable local remote
+debugging, start Firefox with its debugger server, and choose **Show tabs**. Only `listTabs` and
+`getTarget` are used, bounded by time and response size; no page scripts execute. Process IDs must
+belong to the selected app. Shared-process tab memory is labeled estimated, and private/discarded
+tabs are omitted. Until connected, Firefox's own **Shift+Esc** Process Manager is the immediate
+alternative. The read-only connector exposes no tab-control buttons.
 
 ## Checks
 
@@ -73,10 +96,15 @@ The smoke check samples live telemetry without printing private measurements. UI
 synthetic fixtures without model calls or process actions. **Demo & testing** offers the same
 kind of exploration in the desktop, including a delayed action-popup preview.
 
-The optional `jitterbug-monitor-probe --live-provider` Cargo example validates the overview,
-batched descriptions, and PID investigation with three real Meta requests using synthetic evidence.
-It respects saved privacy/provider settings and the shared spending ledger, and caps additional
-reserved spend at $0.05. Its output contains only pass/fail and aggregate usage.
+The optional `jitterbug-monitor-probe --live-provider` Cargo example validates researched identities
+(including retained vendor sources) and an explicit PID conversation with two real Meta requests
+using synthetic evidence. It respects saved privacy/provider settings and the shared spending
+ledger, and caps additional reserved spend at $0.20. Its output contains synthetic descriptions,
+a synthetic answer, elapsed milliseconds, pass/fail, and aggregate usage; it never collects real
+processes. Add `--chat-only` to test just the foreground answer. On macOS, `jitterbug-icon-probe`
+checks non-secret credential presence and OS artwork without a model call. Startup checks credential
+attributes off the UI thread rather than reading passwords, so Keychain authorization cannot block
+the Monitor window or its icon service.
 
 For native action tests, use disposable fixtures only. Specialized probes in `src-tauri/examples/`
 cover process actions, browser inspection, agent control, provider calls, and caching. Read each

@@ -182,6 +182,31 @@ fn keyring_password(provider: &Provider) -> Result<String, String> {
     }
 }
 
+/// Startup only needs presence, never the secret itself. Reading password data can show an
+/// OS authorization dialog after a rebuild; that must not freeze Monitor or its icon service.
+pub fn credential_present(provider: &Provider) -> bool {
+    if std::env::var(provider.env()).is_ok_and(|value| !value.trim().is_empty()) {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::item::{ItemClass, ItemSearchOptions};
+        ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service("com.jitterbug.desktop")
+            .account(provider.name())
+            .load_attributes(true)
+            .load_data(false)
+            .skip_authenticated_items(true)
+            .search()
+            .is_ok_and(|items| !items.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        key(provider).is_ok()
+    }
+}
+
 pub fn save_key(provider: Provider, value: &str) -> Result<(), String> {
     if provider.local()
         || value.len() < 8

@@ -4,7 +4,14 @@ import { demoInventory } from '../../../src/lib/monitor';
 
 export async function desktop(
     page: Page,
-    options: { unavailable?: boolean; delay?: number; launch?: boolean } = {}
+    options: {
+        unavailable?: boolean;
+        delay?: number;
+        launch?: boolean;
+        action?: boolean;
+        profileDelay?: number;
+        browserEvidence?: boolean;
+    } = {}
 ) {
     const sample = demoSnapshot();
     const inventory = demoInventory(sample, {
@@ -15,6 +22,9 @@ export async function desktop(
         offset: 0,
     });
     const details = sample.workloads.map((w) => demoDetails(sample, w.id));
+    if (options.action)
+        for (const detail of details)
+            for (const process of detail.members) process.actions = ['lower_priority'];
     if (options.launch) {
         const detail = details.find((d) => d.workload.id === 'demo-browser')!;
         detail.launch = {
@@ -58,6 +68,7 @@ export async function desktop(
             const asks: Record<string, unknown>[] = [];
             let summaries = 0;
             let batches = 0;
+            let cancelDescription: (() => void) | undefined;
             const result = (pid?: number) => ({
                 text: pid ? `Specific finding for PID ${pid}` : 'Room for your next task',
                 insight: {
@@ -91,10 +102,16 @@ export async function desktop(
                             return listeners.size;
                         }
                         if (command === 'plugin:event|unlisten') return;
+                        if (command === 'prioritize_monitor_chat') {
+                            document.documentElement.dataset.prioritized = 'true';
+                            cancelDescription?.();
+                            return;
+                        }
                         if (command === 'get_snapshot') return structuredClone(sample);
                         if (command === 'get_bootstrap') return bootstrap;
                         if (command === 'get_validation_queue') return null;
-                        if (command === 'get_workload_icon') return null;
+                        if (command === 'get_workload_icon')
+                            return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
                         if (command === 'get_inside_view')
                             return {
                                 workload_id: args.workloadId,
@@ -121,6 +138,18 @@ export async function desktop(
                                             ) === i
                                     )
                                     .map((r) => ({ ...r, process: null }));
+                            const rowKey = (r: any) =>
+                                r.process
+                                    ? `${r.workload.id}:${r.process.pid}:${r.process.start_time}`
+                                    : r.workload.id;
+                            const rank = new Map(
+                                (q.pinned ?? []).map((key: string, index: number) => [key, index])
+                            );
+                            rows.sort(
+                                (a, b) =>
+                                    Number(rank.get(rowKey(a)) ?? 1000) -
+                                    Number(rank.get(rowKey(b)) ?? 1000)
+                            );
                             return {
                                 ...inventory,
                                 rows,
@@ -157,6 +186,18 @@ export async function desktop(
                         if (command === 'explain_monitor_profiles') {
                             if (!args.generate) return [];
                             document.documentElement.dataset.batchCalls = String(++batches);
+                            if (options.profileDelay)
+                                await new Promise<void>((resolve, reject) => {
+                                    const timer = setTimeout(() => {
+                                        cancelDescription = undefined;
+                                        resolve();
+                                    }, options.profileDelay);
+                                    cancelDescription = () => {
+                                        clearTimeout(timer);
+                                        cancelDescription = undefined;
+                                        reject('Description deferred for your question.');
+                                    };
+                                });
                             return args.identities.map((identity: unknown) => ({
                                 identity,
                                 profile: {
@@ -173,19 +214,66 @@ export async function desktop(
                             document.documentElement.dataset.explanationRequests = '1';
                             throw 'The fixture should investigate the selected process directly.';
                         }
-                        if (command === 'ask') {
+                        if (command === 'process_action') {
+                            document.documentElement.dataset.actionCalls = '1';
+                            throw 'No actions are run in this fixture.';
+                        }
+                        if (command === 'ask_monitor') {
                             asks.push(structuredClone(args));
                             document.documentElement.dataset.askCalls = JSON.stringify(asks);
                             if (options.delay)
                                 await new Promise((resolve) => setTimeout(resolve, options.delay));
                             if (options.unavailable)
-                                return {
-                                    ...result(args.pid),
-                                    source: 'rules',
-                                    unavailable:
-                                        'The configured cloud budget cannot cover this request.',
-                                };
-                            return result(args.pid);
+                                throw 'The configured cloud budget cannot cover this request.';
+                            const process = details
+                                .flatMap((d) => d.members)
+                                .find((p) => p.pid === args.pid);
+                            const renderer = details
+                                .flatMap((d) => d.members)
+                                .find((p) => p.pid === 9101)!;
+                            return {
+                                text:
+                                    options.browserEvidence && !args.pid
+                                        ? 'Open pages keep images, scripts and page data in memory, and extensions add their own overhead. The measured content processes below are useful places to start. The local tab labels identify which pages belong to those processes, while shared-process memory remains an estimate. Unload a heavy tab you no longer need, then compare a fresh reading to see what changed.'
+                                        : args.pid
+                                          ? `Specific finding for PID ${args.pid}. This instance is using memory for a synthetic workload.`
+                                          : 'The app’s helpers separate its interface, graphics and network connections.',
+                                action:
+                                    options.action && process
+                                        ? {
+                                              process,
+                                              action: 'lower_priority',
+                                              reason: 'Give other work precedence.',
+                                          }
+                                        : null,
+                                sources: options.browserEvidence
+                                    ? [
+                                          {
+                                              title: 'Mozilla: memory use',
+                                              url: 'https://support.mozilla.org/en-US/kb/firefox-uses-too-much-memory-or-cpu-resources',
+                                          },
+                                      ]
+                                    : [],
+                                contributors: options.browserEvidence ? [renderer] : [],
+                                inside: options.browserEvidence
+                                    ? {
+                                          workload_id: 'demo-browser',
+                                          status: 'ready',
+                                          units: [],
+                                          labels: [
+                                              {
+                                                  pid: renderer.pid,
+                                                  start_time: renderer.start_time,
+                                                  title: 'Example documentation tab',
+                                                  subtitle: 'example.com',
+                                              },
+                                          ],
+                                      }
+                                    : null,
+                                provider: 'meta',
+                                model: 'synthetic-model',
+                                captured_at: sample.captured_at,
+                            };
                         }
                         throw new Error(`Unexpected test command: ${command}`);
                     },
@@ -201,6 +289,7 @@ export async function desktop(
                 sample.captured_at += change.seconds ?? 5;
                 if (change.cpu !== undefined) sample.cpu_percent = change.cpu;
                 if (change.pressure) sample.pressure.level = change.pressure;
+                if (change.reverse) inventory.rows.reverse();
                 if (change.pid) {
                     for (const detail of details)
                         for (const p of detail.members) {

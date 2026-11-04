@@ -46,6 +46,7 @@
     let tourSeen = $state(true);
     const onboardingPreference = 'jitterbug.onboarding.v1.done';
     let onboardingOpen = $state(false);
+    let onboardingTourOffer = $state(false);
     let settingsRevision = $state(0);
     /** An agent tried to use Jitterbug while agent access was off. */
     let accessAsk = $state<{ agent: string | null } | null>(null);
@@ -91,7 +92,10 @@
         navigate('monitor');
         if (tour) startTour();
         // Land on the front page with the tour offer, even if the tour was seen before.
-        else tourSeen = false;
+        else {
+            tourSeen = false;
+            onboardingTourOffer = true;
+        }
     }
     /** Saves AI settings from the sidebar switch or onboarding; the preview keeps them in memory. */
     async function saveAiSettings(next: Settings) {
@@ -829,9 +833,11 @@
                     }}>Dismiss</button
                 >
             </div>{/if}
-        {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
+        {#if actionReport && !chatOpen && page !== 'monitor'}<ActionResult
+                report={actionReport}
+            />{/if}
         <div class="page-content">
-            {#if !tourSeen && tourIndex === null && page === 'monitor' && !selectedId}
+            {#if onboardingTourOffer && !tourSeen && tourIndex === null && page === 'monitor' && !selectedId}
                 <div class="tour-invitation">
                     <span>New to Jitterbug?</span><button class="text-button" onclick={startTour}
                         >Take a quick tour</button
@@ -865,33 +871,22 @@
             {:else if snapshot && snapshot.memory_total_bytes > 0}
                 {#if page === 'monitor'}
                     <Monitor
-                        assistantOpen={chatOpen || automationOpen}
                         cases={visibleCases}
                         {snapshot}
                         {selected}
                         {actionBusy}
+                        {actionReport}
                         settingsKey={JSON.stringify([
                             bootstrap.settings.mode,
                             bootstrap.settings.intelligent,
                             bootstrap.settings.budget_usd,
                             bootstrap.credentials,
                         ])}
-                        provider={bootstrap.settings.intelligent.provider === 'meta'
-                            ? 'Meta'
-                            : bootstrap.settings.intelligent.provider}
                         onselect={select}
                         onclose={() => {
                             selectedId = null;
                             selectedContext = null;
                             chatOpen = false;
-                        }}
-                        onask={ask}
-                        onprocessask={(process, reply) => {
-                            questionProcess = process;
-                            questionInsight = reply ?? null;
-                            followUpContext = null;
-                            automationOpen = false;
-                            chatOpen = true;
                         }}
                         onaction={(process, action) => {
                             error = '';

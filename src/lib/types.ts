@@ -340,6 +340,7 @@ export interface ProcessRecord {
 }
 
 export interface AppProfile {
+    sources?: { title: string; url: string }[];
     text: string;
     source: 'reference' | 'inference' | 'model' | 'demo';
     provider: string | null;

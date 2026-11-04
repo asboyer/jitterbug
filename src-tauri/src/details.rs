@@ -102,7 +102,12 @@ pub fn representative<'a>(members: &[&'a ProcessRecord]) -> &'a ProcessRecord {
                     .iter()
                     .any(|parent| parent.pid == id && parent.start_time <= p.start_time)
             });
-            (child, p.start_time, p.pid)
+            let main_app = p.executable.as_ref().is_some_and(|exe| {
+                crate::attribution::application_bundle(exe).is_some_and(|bundle| {
+                    exe.parent() == Some(bundle.join("Contents/MacOS").as_path())
+                })
+            });
+            (!main_app, child, p.start_time, p.pid)
         })
         .expect("members are non-empty")
 }

@@ -7,6 +7,7 @@ export type MonitorRow = {
     workload: Workload;
     process: ProcessRecord | null;
     identity: Identity | null;
+    profile?: AppProfile | null;
 };
 export type Inventory = {
     rows: MonitorRow[];
