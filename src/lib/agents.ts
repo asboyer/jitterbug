@@ -244,3 +244,53 @@ export function demoBrief(view: AgentsView): AgentsBrief {
         generated_at: Math.floor(Date.now() / 1000),
     };
 }
+
+export interface SessionPoint {
+    time: number;
+    cpu_percent: number;
+    memory_bytes: number;
+}
+
+export interface SessionCall {
+    label: string;
+    tool: string;
+    started_at: number;
+    ended_at: number | null;
+    seconds: number;
+    samples: number;
+    average_cpu_percent: number;
+    peak_cpu_percent: number;
+    peak_memory_bytes: number;
+    cpu_seconds: number;
+}
+
+export interface SessionDetail {
+    session: AgentSession;
+    started_at: number | null;
+    process_count: number;
+    tracked_since: number | null;
+    peak_cpu_percent: number;
+    peak_memory_bytes: number;
+    series: SessionPoint[];
+    processes: { pid: number; name: string; cpu_percent: number; memory_bytes: number }[];
+    calls: SessionCall[];
+    heaviest: SessionCall[];
+    heavy: {
+        command: string;
+        agent: string;
+        waited_seconds: number;
+        started_at: number;
+        ended_at: number;
+        peak_cpu_percent: number;
+        peak_memory_bytes: number;
+    }[];
+    calls_available: boolean;
+}
+
+/** "1m 30s", "45s", "2h 5m": how long something ran. */
+export function span(seconds: number): string {
+    if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}

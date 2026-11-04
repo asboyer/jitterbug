@@ -55,16 +55,20 @@ fn now() -> u64 {
 
 /// The last lines of a log, oldest first. A partial first line is dropped.
 fn tail_lines(path: &Path) -> Vec<String> {
+    tail(path, TAIL_BYTES)
+}
+
+fn tail(path: &Path, size: u64) -> Vec<String> {
     let Ok(mut file) = File::open(path) else {
         return vec![];
     };
     let length = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = length.saturating_sub(TAIL_BYTES);
+    let start = length.saturating_sub(size);
     if file.seek(SeekFrom::Start(start)).is_err() {
         return vec![];
     }
     let mut bytes = Vec::new();
-    if file.take(TAIL_BYTES).read_to_end(&mut bytes).is_err() {
+    if file.take(size).read_to_end(&mut bytes).is_err() {
         return vec![];
     }
     let text = String::from_utf8_lossy(&bytes);
@@ -240,6 +244,70 @@ pub fn claude(transcript: &Path) -> Activity {
         }
     }
     activity
+}
+
+/// One tool call from a session log: what it did and when, for the session detail view.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ToolCall {
+    /// "Running cargo test", "Editing Agents.svelte".
+    pub label: String,
+    pub tool: String,
+    pub started_at: u64,
+    /// When its result came back; `None` while it is still running.
+    pub ended_at: Option<u64>,
+}
+
+/// The session's recent tool calls, oldest first, read from the last few MiB of its log.
+pub fn claude_calls(transcript: &Path) -> Vec<ToolCall> {
+    calls_from(&tail(transcript, 4 * 1024 * 1024))
+}
+
+fn calls_from(lines: &[String]) -> Vec<ToolCall> {
+    let mut calls: Vec<(String, ToolCall)> = Vec::new();
+    for line in lines {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(at) = timestamp(&entry) else {
+            continue;
+        };
+        let items = entry
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for item in items {
+            match item.get("type").and_then(Value::as_str) {
+                Some("tool_use") => {
+                    let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
+                    let input = item.get("input").cloned().unwrap_or(Value::Null);
+                    let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                    calls.push((
+                        id.into(),
+                        ToolCall {
+                            label: claude_tool(name, &input),
+                            tool: clean(name, 40),
+                            started_at: at,
+                            ended_at: None,
+                        },
+                    ));
+                }
+                Some("tool_result") => {
+                    let id = item.get("tool_use_id").and_then(Value::as_str);
+                    if let Some((_, call)) = calls
+                        .iter_mut()
+                        .rev()
+                        .find(|(key, _)| Some(key.as_str()) == id && !key.is_empty())
+                    {
+                        call.ended_at = Some(at.max(call.started_at));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let skip = calls.len().saturating_sub(400);
+    calls.into_iter().skip(skip).map(|(_, call)| call).collect()
 }
 
 /// Claude Code keeps each session's transcript under a folder named after its working
@@ -580,5 +648,23 @@ mod tests {
             timestamp(&json!({"timestamp":"1970-01-02T00:00:01.5Z"})),
             Some(86_401)
         );
+    }
+
+    #[test]
+    fn tool_calls_pair_each_use_with_its_result() {
+        let lines: Vec<String> = [
+            r#"{"type":"assistant","timestamp":"2026-11-04T10:00:00Z","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"cargo test --lib"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-04T10:01:30Z","message":{"content":[{"type":"tool_result","tool_use_id":"a"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-11-04T10:02:00Z","message":{"content":[{"type":"tool_use","id":"b","name":"Read","input":{"file_path":"/x/src/lib.rs"}}]}}"#,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let calls = calls_from(&lines);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].label, "Running cargo test --lib");
+        assert_eq!(calls[0].ended_at.unwrap() - calls[0].started_at, 90);
+        assert_eq!(calls[1].label, "Reading lib.rs");
+        assert!(calls[1].ended_at.is_none());
     }
 }

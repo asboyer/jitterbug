@@ -37,6 +37,7 @@ pub mod pulse;
 pub mod queue;
 pub mod research;
 pub mod scene;
+pub mod session_detail;
 pub mod session_permissions;
 pub mod settings;
 pub mod settings_history;
@@ -373,6 +374,26 @@ async fn get_agents(state: State<'_, AppState>) -> Result<agents::View, String> 
     tauri::async_runtime::spawn_blocking(move || agents_view(&snapshot, false))
         .await
         .map_err(|_| "Agents unavailable.")?
+}
+
+/// One agent conversation up close: usage over time, its processes, and its tool calls.
+#[tauri::command]
+async fn get_agent_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<session_detail::Detail, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let turns_state = turns::inspect(&turns::directory()?)?;
+        let view = agents::view(&snapshot, &turns_state, vec![]);
+        session_detail::detail(&snapshot, &view, &turns_state, &id)
+    })
+    .await
+    .map_err(|_| "Conversation details unavailable.")?
 }
 
 /// Add Jitterbug's hooks to the chosen agents (one approval in the UI covers all of them).
@@ -1483,6 +1504,7 @@ pub fn run() {
                             .map(|p| p.workload_id.clone());
                         pause::expire();
                         inside::chrome::expire();
+                        session_detail::record(&sample);
                         if let (Ok(directory), Ok(executable)) =
                             (queue::directory(), std::env::current_exe())
                         {
@@ -1592,6 +1614,7 @@ pub fn run() {
             launch_agent_session,
             open_folder_in_vscode,
             tab_action,
+            get_agent_session,
             open_link,
             explain_application,
             summarize_agent_task,

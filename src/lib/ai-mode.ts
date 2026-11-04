@@ -38,6 +38,12 @@ export const frontierModel: Tier = { provider: 'meta', model: 'muse-spark-1.3' }
 export const frontierChoices: (Tier & { label: string; text: string; recommended?: boolean })[] = [
     {
         provider: 'meta',
+        model: 'muse-wonder-1.0',
+        label: 'Meta Muse Wonder 1.0',
+        text: 'Meta’s reasoning model, for the hardest questions.',
+    },
+    {
+        provider: 'meta',
         model: 'muse-spark-1.3',
         label: 'Meta Muse Spark 1.3',
         text: 'Strong reasoning for investigations.',

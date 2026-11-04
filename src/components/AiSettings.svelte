@@ -28,6 +28,7 @@
     const catalog: (Tier & { label: string; routing?: boolean })[] = [
         { provider: 'ollama', model: 'qwen3.5:0.8b', label: 'Qwen 3.5 0.8B · local' },
         { provider: 'ollama', model: 'tev1:0.8b', label: 'Tev1 0.8B · local', routing: true },
+        { provider: 'meta', model: 'muse-wonder-1.0', label: 'Meta Muse Wonder 1.0' },
         { provider: 'meta', model: 'muse-spark-1.3', label: 'Meta Muse Spark 1.3' },
         { provider: 'meta', model: 'muse-spark-1.2', label: 'Meta Muse Spark 1.2' },
         { provider: 'anthropic', model: 'claude-haiku-5-5', label: 'Claude Haiku 5.5' },

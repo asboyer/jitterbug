@@ -93,7 +93,7 @@ pub struct View {
 }
 
 /// The harness key of an agent process. Muse Code's launcher runs `muse-bin-<version>`.
-fn harness_of(p: &ProcessRecord) -> Option<&'static str> {
+pub(crate) fn harness_of(p: &ProcessRecord) -> Option<&'static str> {
     let name = p.name.to_ascii_lowercase();
     if name.starts_with("muse-bin") || name == "muse" {
         return Some("muse");
@@ -105,13 +105,13 @@ fn harness_of(p: &ProcessRecord) -> Option<&'static str> {
     }
 }
 
-struct Tree<'a> {
-    by_pid: HashMap<u32, &'a ProcessRecord>,
-    children: HashMap<u32, Vec<&'a ProcessRecord>>,
+pub(crate) struct Tree<'a> {
+    pub(crate) by_pid: HashMap<u32, &'a ProcessRecord>,
+    pub(crate) children: HashMap<u32, Vec<&'a ProcessRecord>>,
 }
 
 impl<'a> Tree<'a> {
-    fn new(snapshot: &'a Snapshot) -> Self {
+    pub(crate) fn new(snapshot: &'a Snapshot) -> Self {
         let by_pid: HashMap<u32, &ProcessRecord> =
             snapshot.processes.iter().map(|p| (p.pid, p)).collect();
         let mut children: HashMap<u32, Vec<&ProcessRecord>> = HashMap::new();
@@ -126,7 +126,7 @@ impl<'a> Tree<'a> {
     }
 
     /// CPU and memory of a process and everything under it.
-    fn usage(&self, root: &ProcessRecord) -> (f32, u64) {
+    pub(crate) fn usage(&self, root: &ProcessRecord) -> (f32, u64) {
         let (mut cpu, mut memory) = (root.cpu_percent, root.memory_bytes);
         let mut stack = vec![root.pid];
         let mut seen = 0;
@@ -231,10 +231,9 @@ fn attach_turns(session: &mut SessionView, owner: (u32, u64), state: &State) {
     }
 }
 
-pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View {
-    let at = now();
-    let tree = Tree::new(snapshot);
-    let roots: Vec<&ProcessRecord> = snapshot
+/// The top process of every agent: an agent process whose parent is not an agent.
+pub(crate) fn roots<'a>(snapshot: &'a Snapshot, tree: &Tree<'a>) -> Vec<&'a ProcessRecord> {
+    snapshot
         .processes
         .iter()
         .filter(|p| {
@@ -243,7 +242,13 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
                     .and_then(|id| tree.by_pid.get(&id))
                     .is_none_or(|parent| harness_of(parent).is_none())
         })
-        .collect();
+        .collect()
+}
+
+pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View {
+    let at = now();
+    let tree = Tree::new(snapshot);
+    let roots = roots(snapshot, &tree);
     let mut sessions = vec![];
     let mut stale = 0;
     let mut codex_hosts = vec![];

@@ -3,7 +3,8 @@
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import HarnessBadge from './HarnessBadge.svelte';
     import Icon from './Icon.svelte';
-    import { errorMessage } from '../lib/format';
+    import AgentSessionSheet from './AgentSessionSheet.svelte';
+    import { ago, errorMessage } from '../lib/format';
     import { cpuShare, elapsed, size, type AgentsBrief, type AgentsView } from '../lib/agents';
 
     const desktop = isTauri();
@@ -16,6 +17,8 @@
     let selected = $state<string[]>([]);
     let connectedAt = $state<number | null>(null);
     let setupOpen = $state(false);
+    // The conversation whose details are open in the side sheet.
+    let openSession = $state<string | null>(null);
     let lastSignature = '';
     let lastAsked = 0;
 
@@ -284,16 +287,21 @@
             class="panel conversation"
             aria-label={`${session.harness_name}: ${session.title}`}
         >
-            <div class="conversation-head">
+            <button
+                class="conversation-head"
+                aria-label={`Details for ${session.title || session.folder}`}
+                onclick={() => (openSession = session.id)}
+            >
                 <HarnessBadge harness={session.harness} compact />
-                <div class="name">
+                <span class="name">
                     <strong>{session.title || session.folder}</strong>
                     <span class="muted">{session.harness_name} · {session.folder}</span>
-                </div>
+                </span>
                 <span class="usage" title="Share of this computer's CPU, and memory in use"
                     >CPU {cpuShare(session.cpu_percent)} · {size(session.memory_bytes)}</span
                 >
-            </div>
+                <span class="details-hint">Details ›</span>
+            </button>
             <p class="doing"><i class="pulse"></i>{session.doing ?? 'Working'}</p>
             {#if session.request}<p class="request">“{session.request}”</p>{/if}
             {#if brief?.notes[session.id] && (session.cpu_percent >= 5 || session.agents.length)}<p
@@ -323,23 +331,33 @@
     {#if view && quiet.length}
         <section class="panel" aria-label="Other running sessions">
             <h2>Other running sessions</h2>
+            <div class="quiet-head" aria-hidden="true">
+                <span></span><span>Conversation</span><span>Last active</span><span>Memory</span
+                ><span></span>
+            </div>
             {#each quiet as session (session.id)}
-                <div class="quiet-row">
+                <button class="quiet-row" onclick={() => (openSession = session.id)}>
                     <HarnessBadge harness={session.harness} compact />
                     <span class="name"
-                        ><strong>{session.title || session.folder}</strong>
-                        {#if session.request}<span class="muted">“{session.request}”</span
-                            >{/if}</span
+                        ><strong
+                            >{session.title || session.folder}<em
+                                class:waiting={session.state === 'waiting'}
+                                >{session.state === 'waiting' ? 'Waiting for you' : 'Idle'}</em
+                            ></strong
+                        ><span class="muted"
+                            >{session.request
+                                ? `“${session.request}”`
+                                : `${session.harness_name} · ${session.folder}`}</span
+                        ></span
                     >
                     <span class="muted when"
-                        >{session.state === 'waiting'
-                            ? 'Waiting for you'
-                            : 'No recent activity'}</span
+                        >{session.last_active ? ago(session.last_active, now) : '—'}</span
                     >
                     <span class="usage" title="Memory still in use"
                         >{size(session.memory_bytes)}</span
                     >
-                </div>
+                    <span class="chevron" aria-hidden="true">›</span>
+                </button>
             {/each}
         </section>
     {/if}
@@ -394,6 +412,7 @@
         </div>
     {/if}
 </section>
+{#if openSession}<AgentSessionSheet id={openSession} onclose={() => (openSession = null)} />{/if}
 
 <style>
     .agents {
@@ -670,20 +689,91 @@
     .sub-doing {
         font-size: 12px;
     }
+    .quiet-row,
+    .quiet-head {
+        grid-template-columns: 30px minmax(0, 1fr) 96px 72px 12px;
+    }
+    .quiet-head {
+        display: grid;
+        gap: 10px;
+        padding: 0 8px 6px;
+        font-size: 11px;
+        color: var(--faint);
+    }
     .quiet-row {
-        grid-template-columns: auto minmax(0, 1fr) 70px 70px;
+        width: 100%;
+        min-height: 0;
+        padding: 8px;
+        margin: 0;
+        border-radius: 8px;
+        background: transparent;
+        box-shadow: none;
+        text-align: left;
+        font-weight: 400;
+    }
+    .quiet-row:hover:not(:disabled) {
+        background: var(--hover);
     }
     .quiet-row .name {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+    }
+    .quiet-row .name strong {
         display: flex;
+        align-items: center;
         gap: 8px;
         min-width: 0;
-        overflow: hidden;
         white-space: nowrap;
+        overflow: hidden;
         text-overflow: ellipsis;
     }
+    .quiet-row .name em {
+        flex: none;
+        font-style: normal;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--faint);
+    }
+    .quiet-row .name em.waiting {
+        color: var(--brand);
+    }
     .quiet-row .name .muted {
+        font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .quiet-row .when,
+    .quiet-row .usage {
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+    }
+    .chevron {
+        color: var(--faint);
+        font-size: 15px;
+    }
+    .conversation-head {
+        width: 100%;
+        min-height: 0;
+        padding: 0;
+        background: transparent;
+        box-shadow: none;
+        text-align: left;
+        font-weight: 400;
+    }
+    .conversation-head:hover:not(:disabled) {
+        background: transparent;
+    }
+    .details-hint {
+        font-size: 12px;
+        color: var(--brand);
+        opacity: 0;
+        transition: opacity 0.12s;
+    }
+    .conversation-head:hover .details-hint,
+    .conversation-head:focus-visible .details-hint {
+        opacity: 1;
     }
     .empty-state {
         text-align: left;
