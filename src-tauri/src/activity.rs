@@ -403,8 +403,7 @@ fn codex_user_text(payload: &Value) -> Option<String> {
             .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_text"))
             .filter_map(|part| part.get("text")?.as_str())
             .map(str::trim)
-            .filter(|t| !t.is_empty() && !t.starts_with('#') && !t.starts_with('<'))
-            .last()?
+            .rfind(|t| !t.is_empty() && !t.starts_with('#') && !t.starts_with('<'))?
             .to_string(),
         _ => return None,
     };
@@ -417,7 +416,9 @@ fn codex_request(log: &Path) -> Option<String> {
     use std::collections::HashMap;
     use std::io::BufRead;
     use std::sync::Mutex;
-    static SCANNED: Mutex<Option<HashMap<PathBuf, (u64, Option<String>)>>> = Mutex::new(None);
+    /// Log → (bytes already scanned, latest request found so far).
+    type Scanned = HashMap<PathBuf, (u64, Option<String>)>;
+    static SCANNED: Mutex<Option<Scanned>> = Mutex::new(None);
     let length = fs::metadata(log).ok()?.len();
     let mut guard = SCANNED.lock().unwrap_or_else(|e| e.into_inner());
     let cache = guard.get_or_insert_with(HashMap::new);

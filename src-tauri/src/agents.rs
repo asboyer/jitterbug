@@ -239,10 +239,9 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
         .iter()
         .filter(|p| {
             harness_of(p).is_some()
-                && !p
-                    .parent_pid
+                && p.parent_pid
                     .and_then(|id| tree.by_pid.get(&id))
-                    .is_some_and(|parent| harness_of(parent).is_some())
+                    .is_none_or(|parent| harness_of(parent).is_none())
         })
         .collect();
     let mut sessions = vec![];
