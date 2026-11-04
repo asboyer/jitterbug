@@ -712,12 +712,21 @@
         color: var(--faint);
         margin-right: 2px;
     }
+    /* The badge's tile is for cards; inside a chip only the mark itself shows. */
+    .connection :global(.harness-badge) {
+        padding: 0;
+        background: none;
+    }
+    .connection :global(.harness-badge .logo) {
+        width: 14px;
+        height: 14px;
+    }
     .connection {
         display: inline-flex;
         align-items: center;
         gap: 6px;
         height: 26px;
-        padding: 0 4px 0 8px;
+        padding: 0 4px 0 9px;
         border-radius: 13px;
         background: #ffffff0d;
         box-shadow: inset 0 0 0 0.5px #ffffff1a;

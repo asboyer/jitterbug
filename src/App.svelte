@@ -211,9 +211,7 @@
                 navigate('monitor');
             }}
         >
-            <Logo size={26} live={!!snapshot?.sample_ready} /><span
-                >Jitterbug<small>Your Mac, explained</small></span
-            >
+            <Logo size={26} live={!!snapshot?.sample_ready} /><span>Jitterbug</span>
         </a>
         <nav class="product-nav" aria-label="Main navigation">
             {#each pages as item}
