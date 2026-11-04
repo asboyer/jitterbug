@@ -17,7 +17,14 @@ export type Inventory = {
     observed_processes: number;
     system_processes: number;
 };
-export type Query = { search: string; view: string; sort: string; filter: string; offset: number };
+export type Query = {
+    search: string;
+    view: string;
+    sort: string;
+    filter: string;
+    offset: number;
+    workloads?: string[];
+};
 export type Explanation = { identity: Identity; profile: AppProfile };
 export const identityKey = (p: Identity) => `${p.workload_id}:${p.pid}:${p.start_time}`;
 

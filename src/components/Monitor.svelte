@@ -6,11 +6,12 @@
         ProcessRecord,
         ActionReport,
         AutomationCase,
+        Scene,
     } from '../lib/types';
-    import MonitorStats from './MonitorStats.svelte';
+    import SceneReading from './SceneReading.svelte';
     import Workloads from './Workloads.svelte';
     import MonitorInspector from './MonitorInspector.svelte';
-    import Icon from './Icon.svelte';
+    import Logo from './Logo.svelte';
     let {
         snapshot,
         selected,
@@ -36,45 +37,106 @@
     } = $props();
     let process = $state<ProcessRecord | null>(null);
     let systemChat = $state(false);
+    let seedQuestion = $state<string | null>(null);
     let inspector: HTMLDivElement | undefined = $state();
     let trigger: HTMLElement | null = null;
+    let view = $state('apps');
+    let search = $state('');
+    let filter = $state('all');
+    let activity = $state<string | null>(null);
+    let scene = $state<Scene | null>(null);
+    const activityIds = $derived(
+        scene?.activities.find((a) => a.name === activity)?.workload_ids ?? null
+    );
     function inspect(workload: Workload, target?: ProcessRecord | null) {
         trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         process = target ?? null;
         systemChat = false;
+        seedQuestion = null;
         onselect(workload);
         void tick().then(() => inspector?.focus({ preventScroll: true }));
     }
     function close() {
         systemChat = false;
+        seedQuestion = null;
         process = null;
         onclose();
         void tick().then(() => trigger?.focus({ preventScroll: true }));
     }
+    function askAbout(question: string | null) {
+        trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        process = null;
+        onclose();
+        seedQuestion = question;
+        systemChat = true;
+    }
 </script>
 
 <div class="monitor-page">
-    <header class="monitor-title">
-        <h1>Monitor</h1>
-        <button
-            class="text-button"
-            onclick={() => {
-                systemChat = true;
-                onclose();
-            }}><Icon name="companion" size={16} /> Ask Jitterbug</button
+    <header class="toolbar monitor-toolbar" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>Monitor</h1>
+        <div class="segmented" role="group" aria-label="Activity view">
+            <button aria-pressed={view === 'apps'} onclick={() => (view = 'apps')}>Apps</button
+            ><button aria-pressed={view === 'processes'} onclick={() => (view = 'processes')}
+                >Processes</button
+            >
+        </div>
+        <div class="toolbar-spacer" data-tauri-drag-region></div>
+        <select aria-label="Filter activity" bind:value={filter}
+            ><option value="all">All activity</option><option value="apps">Applications</option
+            ><option value="system">macOS services</option></select
+        >
+        <label class="search-field">
+            <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"
+                ><path
+                    d="M7 12.2A5.2 5.2 0 1 0 7 1.8a5.2 5.2 0 0 0 0 10.4Zm3.9-1.3L14.5 14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                /></svg
+            ><input
+                aria-label="Filter workloads"
+                placeholder="Search apps or PID"
+                maxlength="128"
+                bind:value={search}
+            />
+        </label>
+        <button class="ask-button" onclick={() => askAbout(null)}
+            ><Logo size={16} /> Ask Jitterbug</button
         >
     </header>
-    <MonitorStats {snapshot} />
-    <div class="monitor-workspace" class:inspecting={!!selected || systemChat}>
-        <Workloads
-            {snapshot}
-            {settingsKey}
-            pauseEnrichment={!!selected || systemChat}
-            selectedId={selected?.id ?? null}
-            selectedProcess={process}
-            onselect={inspect}
-            {onusage}
-        />
+    <div class="monitor-body" class:inspecting={!!selected || systemChat}>
+        <div class="monitor-main">
+            <SceneReading
+                {snapshot}
+                {settingsKey}
+                bind:activity
+                {onusage}
+                onfocus={(id) => {
+                    const workload = snapshot.workloads.find((w) => w.id === id);
+                    if (workload) inspect(workload);
+                }}
+                onask={(question) => askAbout(question)}
+                onscene={(value) => (scene = value)}
+                compact={!!selected || systemChat}
+            />
+            <Workloads
+                {snapshot}
+                {settingsKey}
+                {view}
+                {search}
+                {filter}
+                workloadIds={activityIds}
+                activityName={activity}
+                onclearactivity={() => (activity = null)}
+                pauseEnrichment={false}
+                selectedId={selected?.id ?? null}
+                selectedProcess={process}
+                onselect={inspect}
+                {onusage}
+            />
+        </div>
         {#if selected || systemChat}<div
                 class="monitor-inspector"
                 role="dialog"
@@ -86,10 +148,11 @@
                         close();
                 }}
             >
-                {#key `${snapshot.source}:${selected?.id ?? 'system'}:${process?.pid ?? 'app'}:${process?.start_time ?? ''}`}<MonitorInspector
+                {#key `${snapshot.source}:${selected?.id ?? 'system'}:${process?.pid ?? 'app'}:${process?.start_time ?? ''}:${seedQuestion ?? ''}`}<MonitorInspector
                         {snapshot}
                         workload={selected}
                         initialProcess={process}
+                        initialQuestion={seedQuestion}
                         {settingsKey}
                         {actionBusy}
                         {actionReport}
@@ -107,57 +170,103 @@
         flex-direction: column;
         min-height: 0;
         height: 100%;
-        gap: 20px;
     }
-    .monitor-title {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        flex-shrink: 0;
+    .monitor-toolbar {
+        gap: 14px;
     }
-    .monitor-title button {
-        display: flex;
-        align-items: center;
-        gap: 8px;
+    .segmented {
+        display: inline-flex;
+        padding: 2px;
+        border-radius: 7px;
+        background: #ffffff0f;
+        box-shadow: inset 0 0 0 0.5px #ffffff12;
+        margin-left: 10px;
+    }
+    .segmented button {
+        min-height: 22px;
+        padding: 1px 12px;
         font-size: 12px;
+        font-weight: 500;
+        background: transparent;
+        box-shadow: none;
+        border-radius: 5px;
+        color: var(--muted);
     }
-    .monitor-workspace {
+    .segmented button:hover:not(:disabled) {
+        background: transparent;
+        color: var(--text);
+    }
+    .segmented button[aria-pressed='true'] {
+        background: #5a5a60;
+        color: var(--text);
+        box-shadow:
+            0 1px 2px #0000004d,
+            inset 0 0.5px 0 #ffffff26;
+    }
+    select {
+        font-size: 12px;
+        min-height: 26px;
+    }
+    .search-field {
+        position: relative;
+        display: flex;
+        align-items: center;
+        width: 200px;
+        color: var(--faint);
+    }
+    .search-field svg {
+        position: absolute;
+        left: 9px;
+        pointer-events: none;
+    }
+    .search-field input {
+        width: 100%;
+        min-height: 26px;
+        padding-left: 28px;
+        font-size: 12px;
+        border-radius: 7px;
+    }
+    .ask-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 26px;
+        font-size: 12px;
+        padding: 2px 11px 2px 9px;
+    }
+    .monitor-body {
         flex: 1;
-        display: grid;
         min-height: 0;
+        display: grid;
         grid-template-columns: minmax(0, 1fr);
-        gap: 20px;
     }
-    .monitor-workspace.inspecting {
-        grid-template-columns: minmax(340px, 1fr) 400px;
+    .monitor-body.inspecting {
+        grid-template-columns: minmax(0, 1fr) 400px;
+    }
+    .monitor-main {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
     }
     .monitor-inspector {
         min-height: 0;
         overflow: hidden;
-        background: var(--panel);
-        border-radius: 6px;
-        border: 0;
+        background: var(--inspector);
+        box-shadow: inset 1px 0 0 #00000066;
         outline: none;
     }
-    @media (max-width: 1000px) {
-        .monitor-workspace.inspecting {
-            grid-template-columns: minmax(280px, 1fr) minmax(340px, 0.95fr);
-            gap: 16px;
+    @media (max-width: 1180px) {
+        .monitor-body.inspecting {
+            grid-template-columns: minmax(0, 1fr) 360px;
+        }
+        .search-field {
+            width: 150px;
         }
     }
-    @media (max-width: 760px) {
-        .monitor-workspace.inspecting {
-            grid-template-columns: minmax(0, 1fr);
-        }
-        .monitor-workspace.inspecting :global(.activity-list) {
+    @media (max-width: 1000px) {
+        .monitor-toolbar select {
             display: none;
-        }
-        .monitor-inspector {
-            width: 100%;
-        }
-        .monitor-page {
-            gap: 18px;
         }
     }
 </style>

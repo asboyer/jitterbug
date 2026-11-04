@@ -12,6 +12,7 @@
     import ProactiveNotice from './components/ProactiveNotice.svelte';
     import Chat from './components/Chat.svelte';
     import Icon from './components/Icon.svelte';
+    import Logo from './components/Logo.svelte';
     import { errorMessage } from './lib/format';
     import type {
         ActionReport,
@@ -23,7 +24,26 @@
     } from './lib/types';
 
     const desktop = isTauri();
-    const pages = ['Monitor', 'Agents', 'Sessions', 'Inbox'] as const;
+    const pages = [
+        { id: 'monitor', label: 'Monitor', icon: 'activity', sub: 'What is running and why' },
+        { id: 'agents', label: 'Agents', icon: 'code', sub: 'Coding agents and their heavy work' },
+        { id: 'sessions', label: 'Sessions', icon: 'play', sub: 'Saved setups for focused work' },
+        { id: 'inbox', label: 'Inbox', icon: 'inbox', sub: 'Slowdowns, suggestions and results' },
+    ] as const;
+    function pressureWord(level: string) {
+        return level === 'normal'
+            ? 'Running smoothly'
+            : level === 'watch'
+              ? 'Getting busy'
+              : 'Under strain';
+    }
+    function memoryShare(value: Snapshot) {
+        return Math.round(
+            ((value.memory_total_bytes - value.memory_available_bytes) /
+                Math.max(value.memory_total_bytes, 1)) *
+                100
+        );
+    }
     let page = $state('monitor');
     let settingsSection = $state<'assistance' | 'integrations' | 'system' | 'ai'>('assistance');
     let snapshot = $state<Snapshot | null>(null);
@@ -49,7 +69,6 @@
     let accessAsk = $state<{ agent: string | null } | null>(null);
     let accessDeclined = false;
     let accessBusy = $state(false);
-    let mobileNav = $state(false);
     let mainElement: HTMLElement | undefined = $state();
 
     async function refreshBootstrap() {
@@ -67,7 +86,6 @@
         selectedContext = null;
         automaticId = null;
         followUpContext = null;
-        mobileNav = false;
         mainElement?.scrollTo({ top: 0 });
     }
     function showIncident(id: number) {
@@ -178,7 +196,8 @@
 </script>
 
 <div class="product-shell">
-    <header class="app-header">
+    <aside class="app-sidebar">
+        <div class="sidebar-drag" data-tauri-drag-region></div>
         <a
             class="product-brand"
             href="#monitor"
@@ -187,108 +206,140 @@
                 navigate('monitor');
             }}
         >
-            <Icon name="companion" size={23} /><span>Jitterbug</span>
+            <Logo size={26} live={!!snapshot?.sample_ready} /><span
+                >Jitterbug<small>Your Mac, explained</small></span
+            >
         </a>
-        <button
-            class="nav-toggle"
-            aria-label="Navigation"
-            aria-expanded={mobileNav}
-            onclick={() => (mobileNav = !mobileNav)}><Icon name="more" /></button
-        >
-        <nav class:open={mobileNav} class="product-nav" aria-label="Main navigation">
-            {#each pages as name}
+        <nav class="product-nav" aria-label="Main navigation">
+            {#each pages as item}
                 <button
-                    class:active={page === name.toLowerCase()}
-                    aria-current={page === name.toLowerCase() ? 'page' : undefined}
-                    onclick={() => navigate(name.toLowerCase())}
+                    class:active={page === item.id}
+                    aria-current={page === item.id ? 'page' : undefined}
+                    onclick={() => navigate(item.id)}
                 >
-                    {name}{#if name === 'Inbox' && attentionCount}<span class="inbox-count"
+                    <Icon
+                        name={item.icon}
+                        size={16}
+                    />{item.label}{#if item.id === 'inbox' && attentionCount}<span class="nav-count"
                             >{attentionCount}</span
                         >{/if}
                 </button>
             {/each}
-            <button
-                class="settings-nav"
-                class:active={page === 'settings'}
-                aria-current={page === 'settings' ? 'page' : undefined}
-                onclick={() => navigate('settings')}
-                ><Icon name="settings" size={16} />Settings</button
-            >
         </nav>
-        <span class="connection-state"
-            ><i class:connected={snapshot?.sample_ready}></i>{snapshot?.sample_ready
-                ? 'This computer'
-                : desktop
-                  ? 'Connecting'
-                  : 'Desktop required'}</span
-        >
-    </header>
-    <main class="product-main" class:monitor-active={page === 'monitor'} bind:this={mainElement}>
-        {#if captureStatus}<div class="inline-notice" role="status">{captureStatus}</div>{/if}
-        {#if error && !pendingAction}<div class="inline-notice error" role="alert">
-                {error}<button class="text-button" onclick={() => (error = '')}>Dismiss</button>
-            </div>{/if}
-        {#if accessAsk}<div class="access-request" role="alert">
-                <div>
-                    <strong>{accessAsk.agent ?? 'A coding agent'} requested access</strong>
-                    <p>
-                        Share app, folder and tab names with this agent. Pauses and closures still
-                        require review.
-                    </p>
-                </div>
+        <div class="sidebar-footer">
+            <nav class="product-nav" aria-label="Preferences">
                 <button
-                    onclick={() => {
-                        accessDeclined = true;
-                        accessAsk = null;
-                    }}>Not now</button
-                ><button class="primary" disabled={accessBusy} onclick={allowAgentAccess}
-                    >Allow access</button
+                    class:active={page === 'settings'}
+                    aria-current={page === 'settings' ? 'page' : undefined}
+                    onclick={() => navigate('settings')}
+                    ><Icon name="settings" size={16} />Settings</button
                 >
-            </div>{/if}
-        {#if !desktop}
-            <section class="connection-empty">
-                <Icon name="activity" size={28} />
-                <h1>Connect to your computer</h1>
-                <p>Open the Jitterbug desktop app to see live processes and agent activity.</p>
-                <p class="muted">This browser has no connection to system telemetry.</p>
-            </section>
-        {:else if page === 'settings' && bootstrap}
-            <ProviderSettings
-                {bootstrap}
-                {desktop}
-                initialSection={settingsSection}
-                onrefresh={refreshBootstrap}
-            />
-        {:else if page === 'agents'}
-            <Agents />
-        {:else if page === 'sessions'}
-            <Sessions {desktop} />
-        {:else if page === 'inbox'}
-            <header class="screen-heading">
-                <div>
-                    <h1>Inbox</h1>
-                    <p>Slowdowns, suggestions, and results.</p>
+            </nav>
+            <div class="machine-card" aria-label="This Mac">
+                <div class="machine-line">
+                    <i class="live-dot" class:on={snapshot?.sample_ready}></i><strong
+                        >This Mac</strong
+                    ><span
+                        >{snapshot?.sample_ready
+                            ? pressureWord(snapshot.pressure.level)
+                            : desktop
+                              ? 'Connecting…'
+                              : 'Not connected'}</span
+                    >
                 </div>
+                {#if snapshot?.sample_ready}
+                    <div class="mini-meter">
+                        <span>CPU</span><i
+                            ><b style={`width:${Math.min(snapshot.cpu_percent, 100)}%`}></b></i
+                        ><span>{Math.round(snapshot.cpu_percent)}%</span>
+                    </div>
+                    <div class="mini-meter">
+                        <span>RAM</span><i><b style={`width:${memoryShare(snapshot)}%`}></b></i
+                        ><span>{memoryShare(snapshot)}%</span>
+                    </div>
+                {/if}
+            </div>
+        </div>
+    </aside>
+    <div class="product-workspace">
+        {#if page !== 'monitor'}
+            <header class="toolbar" data-tauri-drag-region>
+                <h1 data-tauri-drag-region>
+                    {pages.find((p) => p.id === page)?.label ?? 'Settings'}
+                </h1>
+                <span class="toolbar-sub" data-tauri-drag-region
+                    >{pages.find((p) => p.id === page)?.sub ??
+                        'Assistance, integrations and AI'}</span
+                >
+                <div class="toolbar-spacer" data-tauri-drag-region></div>
             </header>
-            <IncidentInbox {cases} onselect={showIncident} />
-        {:else if snapshot && snapshot.memory_total_bytes > 0}
-            <Monitor
-                {snapshot}
-                {selected}
-                {cases}
-                {actionBusy}
-                {actionReport}
-                settingsKey={JSON.stringify([bootstrap?.settings, bootstrap?.credentials])}
-                onselect={(workload) => (selectedContext = workload)}
-                onclose={() => (selectedContext = null)}
-                onaction={requestAction}
-                onusage={() => void refreshBootstrap().catch(() => {})}
-            />
-        {:else}<section class="connection-empty">
-                <h1>Reading your computer</h1>
-                <p>Collecting the first resource samples.</p>
-            </section>{/if}
-    </main>
+        {/if}
+        <main
+            class="product-main"
+            class:monitor-active={page === 'monitor'}
+            bind:this={mainElement}
+        >
+            {#if captureStatus}<div class="inline-notice" role="status">{captureStatus}</div>{/if}
+            {#if error && !pendingAction}<div class="inline-notice error" role="alert">
+                    {error}<button class="text-button" onclick={() => (error = '')}>Dismiss</button>
+                </div>{/if}
+            {#if accessAsk}<div class="access-request" role="alert">
+                    <div>
+                        <strong>{accessAsk.agent ?? 'A coding agent'} requested access</strong>
+                        <p>
+                            Share app, folder and tab names with this agent. Pauses and closures
+                            still require review.
+                        </p>
+                    </div>
+                    <button
+                        onclick={() => {
+                            accessDeclined = true;
+                            accessAsk = null;
+                        }}>Not now</button
+                    ><button class="primary" disabled={accessBusy} onclick={allowAgentAccess}
+                        >Allow access</button
+                    >
+                </div>{/if}
+            {#if !desktop}
+                <section class="connection-empty">
+                    <Logo size={56} />
+                    <h1>Connect to your computer</h1>
+                    <p>Open the Jitterbug desktop app to see live processes and agent activity.</p>
+                    <p class="muted">This browser has no connection to system telemetry.</p>
+                </section>
+            {:else if page === 'settings' && bootstrap}
+                <ProviderSettings
+                    {bootstrap}
+                    {desktop}
+                    initialSection={settingsSection}
+                    onrefresh={refreshBootstrap}
+                />
+            {:else if page === 'agents'}
+                <Agents />
+            {:else if page === 'sessions'}
+                <Sessions {desktop} />
+            {:else if page === 'inbox'}
+                <IncidentInbox {cases} onselect={showIncident} />
+            {:else if snapshot && snapshot.memory_total_bytes > 0}
+                <Monitor
+                    {snapshot}
+                    {selected}
+                    {cases}
+                    {actionBusy}
+                    {actionReport}
+                    settingsKey={JSON.stringify([bootstrap?.settings, bootstrap?.credentials])}
+                    onselect={(workload) => (selectedContext = workload)}
+                    onclose={() => (selectedContext = null)}
+                    onaction={requestAction}
+                    onusage={() => void refreshBootstrap().catch(() => {})}
+                />
+            {:else}<section class="connection-empty">
+                    <Logo size={56} live />
+                    <h1>Reading your Mac</h1>
+                    <p>Collecting the first resource samples.</p>
+                </section>{/if}
+        </main>
+    </div>
 </div>
 
 {#if automaticCase}

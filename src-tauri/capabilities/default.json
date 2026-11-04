@@ -2,6 +2,14 @@
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "default",
     "description": "Local UI only; system and provider access stays in validated Rust commands.",
-    "windows": ["main", "menubar", "popup", "lab"],
-    "permissions": ["core:default"]
+    "windows": [
+        "main",
+        "menubar",
+        "popup",
+        "lab"
+    ],
+    "permissions": [
+        "core:default",
+        "core:window:allow-start-dragging"
+    ]
 }

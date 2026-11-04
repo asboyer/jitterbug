@@ -320,6 +320,8 @@ export interface Workload {
     memory_bytes: number;
     process_count: number;
     history: ResourcePoint[];
+    /** What started this workload, e.g. "Started by Claude Code in iTerm". */
+    origin?: string | null;
 }
 
 export interface ProcessRecord {
@@ -922,4 +924,28 @@ export interface AgentCall {
     error: string | null;
     request_id: number | null;
     hinted: boolean | null;
+}
+
+export interface SceneActivity {
+    name: string;
+    summary: string;
+    kind: 'focus' | 'media' | 'communication' | 'background' | 'idle';
+    workload_ids: string[];
+    labels: string[];
+    memory_bytes: number;
+    cpu_percent: number;
+}
+/** Meta's reading of the whole computer as named activities. */
+export interface Scene {
+    headline: string;
+    detail: string;
+    suggestion: string | null;
+    focus_workload_id: string | null;
+    activities: SceneActivity[];
+    other_memory_bytes: number;
+    provider: string;
+    model: string;
+    generated_at: number;
+    signature: string;
+    estimated_cost_usd: number;
 }

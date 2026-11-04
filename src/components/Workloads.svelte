@@ -28,6 +28,12 @@
         selectedProcess = null,
         settingsKey = '',
         pauseEnrichment = false,
+        view = 'apps',
+        search = '',
+        filter = 'all',
+        workloadIds = null,
+        activityName = null,
+        onclearactivity = () => {},
         onusage,
     }: {
         snapshot: Snapshot;
@@ -36,12 +42,15 @@
         selectedProcess?: ProcessRecord | null;
         settingsKey?: string;
         pauseEnrichment?: boolean;
+        view?: string;
+        search?: string;
+        filter?: string;
+        workloadIds?: string[] | null;
+        activityName?: string | null;
+        onclearactivity?: () => void;
         onusage: () => void;
     } = $props();
-    let search = $state('');
     let sort = $state('impact');
-    let view = $state('apps');
-    let filter = $state('all');
     let offset = $state(0);
     let inventory = $state<Inventory | null>(null);
     let loading = $state(false);
@@ -62,9 +71,16 @@
     let inventoryTimer: ReturnType<typeof setTimeout>;
     let enrichmentTimer: ReturnType<typeof setTimeout>;
     const rows = $derived(inventory?.rows ?? []);
-    const query = $derived<Query>({ search, sort, view, filter, offset });
+    const query = $derived<Query>({
+        search,
+        sort,
+        view,
+        filter,
+        offset,
+        workloads: workloadIds ?? [],
+    });
     const queryKey = $derived(
-        JSON.stringify([snapshot.source, search, sort, view, filter, offset, refresh])
+        JSON.stringify([snapshot.source, search, sort, view, filter, offset, refresh, workloadIds])
     );
     const rowKey = (row: MonitorRow) => (row.process ? identityKey(row.process) : row.workload.id);
     onDestroy(() => {
@@ -78,6 +94,7 @@
         sort;
         view;
         filter;
+        workloadIds;
         untrack(() => {
             offset = 0;
             expanded = null;
@@ -220,6 +237,15 @@
             (row.process ? processRole(row.process, row.workload.label) : appFallback(row.workload))
         );
     }
+    function identified(row: MonitorRow) {
+        return !!profile(row) || !!row.process || row.workload.category === 'project';
+    }
+    // "Opened by you" style origins are the default for apps; only show launchers worth knowing.
+    function launcher(row: MonitorRow) {
+        const origin = row.workload.origin;
+        if (!origin || /opened by you|^started by launchd$/i.test(origin)) return null;
+        return origin;
+    }
     function orderBy(value: string) {
         sort = value;
         refresh++;
@@ -227,39 +253,19 @@
 </script>
 
 <section class="activity-list" data-tour="workloads" aria-label="Activity monitor">
-    <div class="list-title">
-        <h2>What’s running <span>{inventory?.total ?? '…'}</span></h2>
-        <div class="view-switch" aria-label="Activity view">
-            <button aria-pressed={view === 'apps'} onclick={() => (view = 'apps')}>Apps</button
-            ><button aria-pressed={view === 'processes'} onclick={() => (view = 'processes')}
-                >Processes</button
+    {#if activityName}<div class="activity-filter">
+            <span>Showing <strong>{activityName}</strong></span><button
+                class="link"
+                onclick={onclearactivity}>Show everything</button
             >
-        </div>
-    </div>
-    <div class="list-tools">
-        <input
-            aria-label="Filter workloads"
-            placeholder="Search name or PID"
-            maxlength="128"
-            bind:value={search}
-        /><select aria-label="Filter activity" bind:value={filter}
-            ><option value="all">All</option><option value="apps">Applications</option><option
-                value="system">System</option
-            ></select
-        ><button
-            class="text-button reorder"
-            onclick={() => refresh++}
-            title="Re-sort using current readings"
-            aria-label="Refresh order">↻</button
-        >
-    </div>
-    <div class="table-head">
+        </div>{/if}
+    <div class="table-head" role="row">
         <button class:active={sort === 'name'} onclick={() => orderBy('name')}
-            >Name {sort === 'name' ? '↑' : ''}</button
+            >{view === 'apps' ? 'App' : 'Process'}<i>{sort === 'name' ? '▴' : ''}</i></button
         ><button class:active={sort === 'cpu'} onclick={() => orderBy('cpu')}
-            >CPU {sort === 'cpu' ? '↓' : ''}</button
+            >CPU<i>{sort === 'cpu' ? '▾' : ''}</i></button
         ><button class:active={sort === 'memory'} onclick={() => orderBy('memory')}
-            >Memory {sort === 'memory' ? '↓' : ''}</button
+            >Memory<i>{sort === 'memory' ? '▾' : ''}</i></button
         >
     </div>
     <div class="activity-scroll" bind:this={scroller} onscroll={() => void enrich()}>
@@ -270,15 +276,28 @@
                 (!row.process ||
                     (selectedProcess?.pid === row.process.pid &&
                         selectedProcess.start_time === row.process.start_time))}
+            {@const share =
+                (readings.memory_bytes / Math.max(snapshot.memory_total_bytes, 1)) * 100}
             <div class="activity-row" class:chosen>
-                {#if !row.process}<button
+                {#if !row.process && row.workload.process_count > 1}<button
                         class="expand"
+                        class:open={expanded === row.workload.id}
                         aria-label={`Show processes for ${row.workload.label}`}
                         aria-expanded={expanded === row.workload.id}
                         onclick={() => {
                             members = [];
                             expanded = expanded === row.workload.id ? null : row.workload.id;
-                        }}>{expanded === row.workload.id ? '⌄' : '›'}</button
+                        }}
+                        ><svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"
+                            ><path
+                                d="M3.5 1.5 7 5l-3.5 3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.6"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            /></svg
+                        ></button
                     >{:else}<span class="indent"></span>{/if}
                 <button
                     class="inspect"
@@ -289,19 +308,30 @@
                         ><AppIcon
                             workloadId={row.workload.id}
                             category={row.workload.category}
-                            size={28}
+                            size={30}
                         /><span class="identity-copy"
-                            ><strong>{row.process?.name ?? row.workload.label}</strong><span
-                                class="purpose"
-                                title={description(row)}>{description(row)}</span
-                            >{#if row.process}<small
-                                    >{row.workload.label} · PID {row.process.pid}</small
+                            ><span class="name-line"
+                                ><strong>{row.process?.name ?? row.workload.label}</strong
+                                >{#if row.process}<span class="meta"
+                                        >{row.workload.label} · PID {row.process.pid}</span
+                                    >{:else if row.workload.process_count > 1}<span class="meta"
+                                        >{row.workload.process_count} processes</span
+                                    >{/if}{#if launcher(row)}<span class="origin"
+                                        >{launcher(row)}</span
+                                    >{/if}</span
+                            >{#if identified(row)}<span class="purpose" title={description(row)}
+                                    >{description(row)}</span
+                                >{:else}<span class="purpose pending">Identifying with Meta…</span
                                 >{/if}</span
                         ></span
                     >
-                    <span class="numeric"
+                    <span class="numeric cpu" class:hot={readings.cpu_percent >= 25}
                         >{snapshot.sample_ready ? percent(readings.cpu_percent) : '—'}</span
-                    ><span class="numeric">{memory(readings.memory_bytes)}</span>
+                    ><span class="numeric mem"
+                        ><span>{memory(readings.memory_bytes)}</span><i
+                            ><b style={`width:${Math.min(share * 4, 100)}%`}></b></i
+                        ></span
+                    >
                 </button>
             </div>
             {#if expanded === row.workload.id && !row.process}<div
@@ -323,295 +353,348 @@
                                 class="numeric">{memory(p.memory_bytes)}</span
                             ></button
                         >{:else}<p class="empty">Reading processes…</p>{/each}
-                    {#if members.length > 20}<button
-                            class="text-button"
-                            onclick={() => {
-                                view = 'processes';
-                                search = row.workload.label;
-                            }}>View all {members.length} processes</button
-                        >{/if}
+                    {#if members.length > 20}<p class="more">
+                            {members.length - 20} more in the inspector’s Processes tab.
+                        </p>{/if}
                 </div>{/if}
-        {:else}<p class="empty">{loading ? 'Reading activity…' : 'No matching activity.'}</p>{/each}
+        {:else}<p class="empty">
+                {loading
+                    ? 'Reading activity…'
+                    : search
+                      ? `Nothing running matches “${search}”.`
+                      : 'No matching activity.'}
+            </p>{/each}
         {#if error}<p class="error">{error}</p>{/if}
     </div>
     <footer>
         <span
-            >{explaining ? 'Identifying apps…' : 'Live readings'}{profileError
+            >{inventory
+                ? `${inventory.total} ${view === 'apps' ? 'apps and tools' : 'processes'} · ${inventory.system_processes} processes on this Mac`
+                : 'Reading…'}{explaining ? ' · Meta is identifying apps' : ''}{profileError
                 ? ' · Descriptions paused'
                 : ''}</span
         >
         <div>
             {#if profileError}<button
+                    class="link"
                     title={profileError}
                     onclick={() => {
                         attempted.clear();
                         profileError = '';
                         void enrich();
-                    }}>Retry AI</button
-                >{/if}<button
-                aria-label="Previous page"
-                disabled={!inventory?.offset}
-                onclick={() => (offset = Math.max((inventory?.offset ?? 0) - 40, 0))}>‹</button
-            ><span
-                >{(inventory?.offset ?? 0) + (rows.length ? 1 : 0)}–{(inventory?.offset ?? 0) +
-                    rows.length}</span
-            ><button
-                aria-label="Next page"
-                disabled={(inventory?.offset ?? 0) + rows.length >= (inventory?.total ?? 0)}
-                onclick={() => (offset = (inventory?.offset ?? 0) + 40)}>›</button
-            >
+                    }}>Retry descriptions</button
+                >{/if}
+            {#if (inventory?.total ?? 0) > 40}<button
+                    class="icon-button"
+                    aria-label="Previous page"
+                    disabled={!inventory?.offset}
+                    onclick={() => (offset = Math.max((inventory?.offset ?? 0) - 40, 0))}>‹</button
+                ><span class="numeric"
+                    >{(inventory?.offset ?? 0) + (rows.length ? 1 : 0)}–{(inventory?.offset ?? 0) +
+                        rows.length}</span
+                ><button
+                    class="icon-button"
+                    aria-label="Next page"
+                    disabled={(inventory?.offset ?? 0) + rows.length >= (inventory?.total ?? 0)}
+                    onclick={() => (offset = (inventory?.offset ?? 0) + 40)}>›</button
+                >{/if}
         </div>
     </footer>
 </section>
 
 <style>
     .activity-list {
+        flex: 1;
         display: flex;
         flex-direction: column;
         min-height: 0;
         min-width: 0;
-        border: 0;
-        border-radius: 0;
-        overflow: hidden;
-        background: transparent;
     }
-    .list-title {
+    .activity-filter {
         display: flex;
-        gap: 8px;
         align-items: center;
-        justify-content: space-between;
-        padding: 0 0 16px;
-        flex-wrap: wrap;
-    }
-    h2 {
-        margin: 0;
-        font-size: 14px;
-        font-weight: 600;
-    }
-    h2 span {
-        color: var(--muted);
+        gap: 12px;
+        padding: 10px 28px 0;
         font-size: 12px;
-        font-weight: 400;
-        margin-left: 6px;
-    }
-    .view-switch {
-        display: flex;
-        gap: 16px;
-        padding: 0;
-        background: transparent;
-        border-radius: 0;
-    }
-    .view-switch button {
-        min-height: 25px;
-        padding: 3px 0 7px;
-        font-size: 12px;
-        border: 0;
-        box-shadow: none;
-        background: none;
         color: var(--muted);
-        border-radius: 0;
     }
-    .view-switch button[aria-pressed='true'] {
-        background: transparent;
+    .activity-filter strong {
         color: var(--text);
-        box-shadow: none;
-    }
-    .list-tools {
-        display: flex;
-        gap: 6px;
-        padding: 0 0 12px;
-    }
-    input {
-        flex: 1;
-        width: 80px;
-        font-size: 12px;
-    }
-    select {
-        font-size: 12px;
-        max-width: 100px;
-    }
-    .reorder {
-        font-size: 18px;
-        padding: 4px 7px;
+        font-weight: 600;
     }
     .table-head {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 62px 80px;
-        padding: 0 12px 0 40px;
-
+        grid-template-columns: minmax(0, 1fr) 72px 128px;
+        padding: 8px 28px 6px 54px;
         flex-shrink: 0;
-        background: transparent;
+        box-shadow: inset 0 -1px 0 var(--rule);
     }
     .table-head button {
         text-align: right;
         background: none;
-        border: none;
-        border-radius: 0;
         box-shadow: none;
         color: var(--muted);
         font-size: 12px;
-        padding: 6px 0;
-        min-height: 28px;
+        font-weight: 500;
+        padding: 0;
+        min-height: 22px;
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 4px;
+    }
+    .table-head button:hover:not(:disabled) {
+        background: none;
+        color: var(--text);
     }
     .table-head button:first-child {
-        text-align: left;
+        justify-content: flex-start;
     }
     .table-head button.active {
         color: var(--text);
+    }
+    .table-head i {
+        font-style: normal;
+        font-size: 10px;
+        width: 8px;
     }
     .activity-scroll {
         flex: 1;
         min-height: 0;
         overflow: auto;
-        scrollbar-width: thin;
-        scrollbar-gutter: stable;
         overflow-anchor: none;
+        padding: 4px 16px 8px;
     }
     .activity-row {
         display: flex;
         align-items: stretch;
-
-        min-height: 59px;
+        min-height: 54px;
+        border-radius: 8px;
+    }
+    .activity-row:hover {
+        background: var(--hover);
     }
     .activity-row.chosen,
     .child-row.chosen {
-        background: var(--hover);
+        background: var(--selected);
     }
     .expand,
     .indent {
-        width: 25px;
-        flex: 0 0 25px;
+        width: 26px;
+        flex: 0 0 26px;
     }
     .expand {
         padding: 0;
-        border: 0;
-        border-radius: 0;
+        min-height: 0;
         background: none;
         box-shadow: none;
-        color: var(--muted);
-        font-size: 17px;
+        color: var(--faint);
+        display: grid;
+        place-items: center;
+    }
+    .expand:hover:not(:disabled) {
+        background: none;
+        color: var(--text);
+    }
+    .expand svg {
+        transition: transform 140ms;
+    }
+    .expand.open svg {
+        transform: rotate(90deg);
     }
     .inspect {
         flex: 1;
         min-width: 0;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 62px 80px;
+        grid-template-columns: minmax(0, 1fr) 72px 128px;
         align-items: center;
         gap: 0;
         text-align: left;
-        padding: 10px 12px 10px 0;
+        padding: 8px 12px 8px 0;
         background: none;
-        border: none;
         box-shadow: none;
         border-radius: 0;
         font-weight: 400;
     }
-    .inspect:hover {
-        background: none !important;
-    }
-    .activity-row:hover {
-        background: var(--hover);
-    }
-    .activity-row.chosen:hover {
-        background: var(--hover);
+    .inspect:hover:not(:disabled),
+    .inspect:active:not(:disabled) {
+        background: none;
     }
     .identity {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 11px;
         min-width: 0;
-        padding-right: 12px;
+        padding-right: 16px;
     }
     .identity-copy {
         min-width: 0;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 2px;
+    }
+    .name-line {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
     }
     strong {
-        font-size: 12px;
-        font-weight: 550;
+        font-size: 13px;
+        font-weight: 600;
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;
+        flex: none;
+        max-width: 60%;
+    }
+    .meta {
+        font-size: 12px;
+        color: var(--faint);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: none;
+    }
+    .origin {
+        font-size: 11px;
+        color: var(--brand);
+        background: var(--accent-soft);
+        border-radius: 4px;
+        padding: 0 6px;
+        line-height: 18px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
     }
     .purpose,
     small {
         font-size: 12px;
-        line-height: 1.35;
+        line-height: 1.4;
         color: var(--muted);
         white-space: nowrap;
         text-overflow: ellipsis;
         overflow: hidden;
     }
-    small {
-        font-size: 12px;
+    .purpose.pending {
+        color: var(--faint);
+        font-style: italic;
     }
     .numeric {
         text-align: right;
-        font-size: 12px;
+        font-size: 13px;
         font-variant-numeric: tabular-nums;
     }
+    .cpu.hot {
+        color: var(--warning);
+        font-weight: 600;
+    }
+    .mem {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 5px;
+    }
+    .mem i {
+        width: 72px;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--track);
+        display: block;
+        overflow: hidden;
+    }
+    .mem b {
+        display: block;
+        height: 100%;
+        background: var(--data-2);
+        border-radius: 2px;
+    }
     .children {
-        background: var(--hover);
+        margin: 2px 0 6px 26px;
+        padding: 4px 0;
+        border-radius: 8px;
+        background: #ffffff06;
     }
     .child-row {
         width: 100%;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 62px 80px;
-        padding: 10px 12px 10px 40px;
-        border: 0;
-
-        border-radius: 0;
+        grid-template-columns: minmax(0, 1fr) 72px 128px;
+        padding: 7px 12px 7px 41px;
+        min-height: 0;
         background: none;
         box-shadow: none;
+        border-radius: 6px;
         text-align: left;
         gap: 0;
         align-items: center;
+        font-weight: 400;
+    }
+    .child-row:hover:not(:disabled) {
+        background: var(--hover);
     }
     .child-row > span:first-child {
         min-width: 0;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 1px;
         padding-right: 12px;
     }
-    .children > .text-button {
+    .child-row strong {
+        font-weight: 500;
+        max-width: 100%;
+    }
+    .more {
         font-size: 12px;
-        margin: 5px 16px;
+        color: var(--faint);
+        margin: 4px 0 4px 41px;
     }
     .empty {
-        padding: 28px 18px;
+        padding: 28px 12px;
         color: var(--muted);
-        font-size: 12px;
+        font-size: 13px;
     }
     .error {
         font-size: 12px;
         padding: 12px;
+        color: var(--danger);
     }
     footer {
-        min-height: 40px;
-        padding: 7px 12px;
-
+        min-height: 34px;
+        padding: 4px 20px 4px 28px;
         display: flex;
         gap: 8px;
         align-items: center;
         justify-content: space-between;
         flex-shrink: 0;
-        color: var(--muted);
-        font-size: 12px;
+        color: var(--faint);
+        font-size: 11px;
+        box-shadow: inset 0 1px 0 var(--rule);
     }
     footer div {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 4px;
     }
-    footer button {
-        min-height: 23px;
-        padding: 1px 7px;
-        font-size: 12px;
-        border: 0;
-        background: none;
-        box-shadow: none;
+    footer .link {
+        font-size: 11px;
+    }
+    footer .icon-button {
+        width: 22px;
+        height: 22px;
+        min-height: 22px;
+    }
+    @media (max-width: 1180px) {
+        .table-head,
+        .inspect,
+        .child-row {
+            grid-template-columns: minmax(0, 1fr) 62px 96px;
+        }
+        .mem i {
+            width: 56px;
+        }
+        .origin {
+            display: none;
+        }
     }
 </style>

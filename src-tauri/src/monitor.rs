@@ -68,6 +68,9 @@ pub struct Query {
     pub offset: usize,
     #[serde(default)]
     pub pinned: Vec<String>,
+    /// Limit the list to these workloads (an activity chosen in the AI reading).
+    #[serde(default)]
+    pub workloads: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -89,7 +92,9 @@ pub struct Inventory {
 }
 
 pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String> {
-    if query.pinned.len() > 40
+    if query.workloads.len() > 64
+        || query.workloads.iter().any(|id| id.len() > 256)
+        || query.pinned.len() > 40
         || query.pinned.iter().any(|id| id.len() > 1024)
         || query.search.len() > 128
         || !matches!(query.view.as_str(), "apps" | "processes")
@@ -114,7 +119,9 @@ pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String
     };
     let mut rows = Vec::new();
     for workload in &snapshot.workloads {
-        if !matches_group(workload) {
+        if !matches_group(workload)
+            || (!query.workloads.is_empty() && !query.workloads.contains(&workload.id))
+        {
             continue;
         }
         let members: Vec<_> = snapshot
@@ -404,6 +411,7 @@ mod tests {
             filter: "all".into(),
             offset: 0,
             pinned: vec!["app:1:42".into(), "app:2:42".into(), "app:3:42".into()],
+            workloads: vec![],
         };
         s.processes[2].cpu_percent = 90.0;
         let page = inventory(&s, &q).unwrap();
@@ -460,6 +468,7 @@ mod tests {
             filter: "all".into(),
             offset: 0,
             pinned: vec![],
+            workloads: vec![],
         };
         let found = inventory(&s, &q).unwrap();
         assert_eq!(found.rows[0].process.as_ref().unwrap().pid, 199);

@@ -2,7 +2,6 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import MenuBar from './components/MenuBar.svelte';
 import ActionPopup from './components/ActionPopup.svelte';
-import '@fontsource-variable/public-sans';
 import './app.css';
 import './product.css';
 
