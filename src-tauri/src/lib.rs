@@ -14,10 +14,13 @@ pub mod diagnostics;
 mod floating;
 pub mod governor;
 pub mod harness;
+#[cfg(target_os = "macos")]
+mod idle_sleep;
 pub mod inside;
 pub mod jitter;
 mod lab;
 pub mod monitor;
+pub mod optimized_sessions;
 pub mod origins;
 pub mod pause;
 pub mod platform;
@@ -30,6 +33,7 @@ pub mod providers;
 pub mod pulse;
 pub mod queue;
 pub mod research;
+pub mod session_permissions;
 pub mod settings;
 pub mod settings_history;
 pub mod storage;
@@ -44,6 +48,67 @@ use std::{sync::Arc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
 pub type AppState = Arc<supervisor::Runtime>;
+
+#[tauri::command]
+fn list_sessions(state: State<'_, AppState>) -> Result<Vec<optimized_sessions::Session>, String> {
+    state.optimized_sessions()
+}
+
+#[tauri::command]
+fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.delete_optimized_session(&id)
+}
+
+#[tauri::command]
+async fn create_session(
+    state: State<'_, AppState>,
+    name: String,
+    goal: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.create_optimized_session(&name, &goal).await
+}
+
+#[tauri::command]
+async fn propose_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.repropose_optimized_session(&id).await
+}
+
+#[tauri::command]
+fn activate_session(
+    state: State<'_, AppState>,
+    id: String,
+    explicit_opt_in: bool,
+) -> Result<optimized_sessions::Session, String> {
+    state.start_optimized_session(&id, explicit_opt_in)
+}
+
+#[tauri::command]
+fn deactivate_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.pause_optimized_session(&id)
+}
+
+#[tauri::command]
+fn reapply_session(
+    state: State<'_, AppState>,
+    id: String,
+    explicit_opt_in: bool,
+) -> Result<optimized_sessions::Session, String> {
+    state.reapply_optimized_session(&id, explicit_opt_in)
+}
+
+#[tauri::command]
+fn restore_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.restore_optimized_session(&id)
+}
 
 #[tauri::command]
 async fn discover_managed_workload(
@@ -579,6 +644,21 @@ fn get_system_capabilities(state: State<'_, AppState>) -> Vec<system_settings::C
 }
 
 #[tauri::command]
+fn get_session_permissions(
+    state: State<'_, AppState>,
+) -> Result<session_permissions::View, String> {
+    session_permissions::view(&state.directory)
+}
+
+#[tauri::command]
+fn save_session_permissions(
+    state: State<'_, AppState>,
+    enabled: std::collections::BTreeMap<session_permissions::ActionId, bool>,
+) -> Result<session_permissions::View, String> {
+    session_permissions::save(&state.directory, enabled)
+}
+
+#[tauri::command]
 fn open_system_settings_pane(pane: String) -> Result<(), String> {
     let url = system_settings::settings_url(&pane)?;
     #[cfg(target_os = "macos")]
@@ -1038,6 +1118,16 @@ pub fn run() {
             get_monitor_inventory,
             explain_monitor_profiles,
             summarize_monitor,
+            list_sessions,
+            delete_session,
+            create_session,
+            propose_session,
+            activate_session,
+            deactivate_session,
+            reapply_session,
+            restore_session,
+            get_session_permissions,
+            save_session_permissions,
             discover_managed_workload,
             discard_managed_preview,
             preview_managed_workload,

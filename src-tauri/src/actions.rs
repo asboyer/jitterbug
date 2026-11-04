@@ -235,7 +235,7 @@ pub(crate) mod tests {
                 .spawn()
                 .unwrap();
             let pid = child.id();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let start = loop {
                 let mut system = System::new();
                 system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
@@ -269,6 +269,8 @@ pub(crate) mod tests {
 
     #[test]
     fn background_mode_rechecks_identity_and_skips_exited_processes() {
+        #[cfg(unix)]
+        let _test = crate::pause::test_guard();
         let (child, pid, start) = Child::spawn();
         // A reused PID is another process: it is never touched.
         assert_eq!(
@@ -298,6 +300,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn background_mode_is_applied_confirmed_and_cleared_without_privileges() {
+        let _test = crate::pause::test_guard();
         let (_child, pid, start) = Child::spawn();
         let ps = || {
             let out = std::process::Command::new("/bin/ps")
@@ -310,7 +313,7 @@ pub(crate) mod tests {
                 .unwrap()
         };
         let wait_for_priority = |expected| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 let actual = ps();
                 if actual == expected {

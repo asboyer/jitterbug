@@ -4,6 +4,38 @@ use serde::{Deserialize, Serialize};
 pub(super) mod macos;
 
 #[cfg(target_os = "macos")]
+pub fn session_boolean(key: Preference) -> Result<Option<bool>, String> {
+    match macos::read(key)? {
+        PreferenceValue::Boolean(value) => Ok(Some(value)),
+        PreferenceValue::Absent => Ok(None),
+        _ => Err("This preference is not a boolean session action.".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn session_apply_boolean(key: Preference, expected: bool, value: bool) -> Result<bool, String> {
+    macos::write(
+        key,
+        PreferenceValue::Boolean(expected),
+        PreferenceValue::Boolean(value),
+    )?;
+    match macos::read(key)? {
+        PreferenceValue::Boolean(readback) => Ok(readback),
+        _ => Err("Boolean preference readback failed.".into()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn session_boolean(_: Preference) -> Result<Option<bool>, String> {
+    Ok(None)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn session_apply_boolean(_: Preference, _: bool, _: bool) -> Result<bool, String> {
+    Err("Preference session actions are supported on macOS only.".into())
+}
+
+#[cfg(target_os = "macos")]
 pub fn collect() -> std::collections::BTreeMap<Preference, PreferenceValue> {
     if !supported_version() {
         return Default::default();

@@ -1,393 +1,491 @@
 <script lang="ts">
+    import { listen } from '@tauri-apps/api/event';
+    import { onMount } from 'svelte';
+    import type { OptimizedSession, OptimizedSettingState } from '../lib/types';
+    import { sessionClient } from '../lib/sessions';
     import Icon from './Icon.svelte';
 
-    type SessionKind = 'gaming' | 'development' | 'creative';
-    type SessionStatus = 'ready' | 'active';
-
-    interface SessionPreview {
-        id: string;
-        name: string;
-        description: string;
-        kind: SessionKind;
-        status: SessionStatus;
-        icon: 'code' | 'app' | 'activity';
-        lastUsed: string;
-        duration: string;
-        focus: string[];
-        metrics: {
-            cpu: number;
-            memory: number;
-            pressure: string;
-        };
-        activity: number[];
-    }
-
-    const examples: SessionPreview[] = [
-        {
-            id: 'claude-worktrees',
-            name: 'Claude worktrees',
-            description:
-                'Keep parallel coding agents responsive while builds and test suites share memory.',
-            kind: 'development',
-            status: 'active',
-            icon: 'code',
-            lastUsed: 'Active now',
-            duration: '42 min',
-            focus: ['Memory headroom', 'Agent fairness', 'Build coordination'],
-            metrics: { cpu: 64, memory: 71, pressure: 'Normal' },
-            activity: [34, 41, 38, 52, 47, 69, 63, 72, 66, 64],
-        },
-        {
-            id: 'cs2',
-            name: 'CS2 evening session',
-            description:
-                'Prioritize a smooth game session and keep background workloads from competing.',
-            kind: 'gaming',
-            status: 'ready',
-            icon: 'app',
-            lastUsed: 'Yesterday',
-            duration: '1 hr 18 min',
-            focus: ['Foreground responsiveness', 'Thermal awareness', 'Background activity'],
-            metrics: { cpu: 48, memory: 56, pressure: 'Normal' },
-            activity: [29, 33, 46, 51, 58, 54, 49, 44, 50, 48],
-        },
-        {
-            id: 'video-edit',
-            name: 'Video export',
-            description:
-                'Watch a long render while keeping the desktop usable for lightweight work.',
-            kind: 'creative',
-            status: 'ready',
-            icon: 'activity',
-            lastUsed: '4 days ago',
-            duration: '58 min',
-            focus: ['Sustained throughput', 'Memory pressure', 'Keep awake'],
-            metrics: { cpu: 82, memory: 67, pressure: 'Elevated' },
-            activity: [55, 62, 70, 77, 84, 89, 81, 86, 83, 82],
-        },
-    ];
-
-    const suggestions = [
-        {
-            title: 'Game without background competition',
-            description:
-                'For games, launchers, voice chat, and predictable foreground performance.',
-            icon: 'app' as const,
-            prompt: 'I play CS2 most evenings and want background workloads to stay out of the way.',
-        },
-        {
-            title: 'Parallel agent development',
-            description:
-                'For multiple worktrees, coding agents, builds, and tests running together.',
-            icon: 'code' as const,
-            prompt: 'I run several Claude worktrees in parallel and need to avoid memory slowdowns.',
-        },
-        {
-            title: 'Long-running creative work',
-            description:
-                'For exports, renders, or other sustained jobs that should remain observable.',
-            icon: 'activity' as const,
-            prompt: 'I export large videos and want the render monitored while I continue light work.',
-        },
-    ];
-
-    let sessions = $state(examples);
-    let selectedId = $state(examples[0].id);
+    let { desktop = false }: { desktop?: boolean } = $props();
+    const client = sessionClient(true);
+    let sessions = $state<OptimizedSession[]>([]);
+    let selectedId = $state('');
     let composerOpen = $state(false);
-    let description = $state('');
-    let sessionName = $state('');
+    let name = $state('');
+    let goal = $state('');
+    let busy = $state(false);
+    let loading = $state(true);
+    let error = $state('');
     let notice = $state('');
-
+    let deleteConfirmId = $state('');
     const selected = $derived(sessions.find((session) => session.id === selectedId) ?? sessions[0]);
 
-    function openComposer(prompt = '') {
-        description = prompt;
-        sessionName = '';
-        composerOpen = true;
-        notice = '';
+    onMount(() => {
+        void refresh();
+        let unlisten: (() => void) | undefined;
+        if (desktop)
+            listen(
+                'telemetry',
+                () => selected?.status === 'monitoring' && void refresh(false)
+            ).then((stop) => (unlisten = stop));
+        return () => unlisten?.();
+    });
+
+    async function refresh(showLoading = true) {
+        if (!desktop) {
+            loading = false;
+            error = 'Open the Jitterbug desktop app to use optimization sessions.';
+            return;
+        }
+        if (showLoading) loading = true;
+        try {
+            sessions = await client.list();
+            if (!sessions.some((session) => session.id === selectedId))
+                selectedId = sessions[0]?.id ?? '';
+            error = '';
+        } catch (reason) {
+            error = String(reason);
+        } finally {
+            if (showLoading) loading = false;
+        }
     }
 
-    function savePreview() {
-        const name = sessionName.trim() || 'New custom session';
-        const session: SessionPreview = {
-            id: `preview-${Date.now()}`,
-            name,
-            description: description.trim(),
-            kind: 'development',
-            status: 'ready',
-            icon: 'activity',
-            lastUsed: 'Not started',
-            duration: '—',
-            focus: ['Live monitoring', 'Memory headroom', 'Workload balance'],
-            metrics: { cpu: 0, memory: 0, pressure: 'Waiting' },
-            activity: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        };
-        sessions = [session, ...sessions];
-        selectedId = session.id;
-        composerOpen = false;
-        notice =
-            'Session preview created. It will not persist until the Sessions backend is connected.';
+    function update(changed: OptimizedSession) {
+        sessions = [changed, ...sessions.filter((session) => session.id !== changed.id)];
+        selectedId = changed.id;
     }
 
-    function togglePreview() {
-        sessions = sessions.map((session) => ({
-            ...session,
-            status:
-                session.id === selected.id
-                    ? session.status === 'active'
-                        ? 'ready'
-                        : 'active'
-                    : session.status === 'active'
-                      ? 'ready'
-                      : session.status,
-            lastUsed: session.id === selected.id ? 'Active now' : session.lastUsed,
-        }));
-        notice =
-            selected.status === 'active'
-                ? 'Preview stopped. No system settings were changed.'
-                : 'Preview activated. This is visual only—no monitoring or optimization is running.';
+    async function run(operation: () => Promise<OptimizedSession>, success: string) {
+        busy = true;
+        error = '';
+        try {
+            update(await operation());
+            notice = success;
+        } catch (reason) {
+            error = String(reason);
+        } finally {
+            busy = false;
+        }
+    }
+
+    async function create() {
+        await run(
+            () => client.create(name.trim(), goal.trim()),
+            'AI profile proposed. Review it, then start the real task to establish its baseline.'
+        );
+        if (!error) {
+            composerOpen = false;
+            name = '';
+            goal = '';
+        }
+    }
+
+    async function remove(session: OptimizedSession) {
+        if (deleteConfirmId !== session.id) {
+            deleteConfirmId = session.id;
+            return;
+        }
+        busy = true;
+        error = '';
+        try {
+            await client.remove(session.id);
+            sessions = sessions.filter((item) => item.id !== session.id);
+            selectedId = sessions[0]?.id ?? '';
+            deleteConfirmId = '';
+            notice = 'Session deleted.';
+        } catch (reason) {
+            error = String(reason);
+        } finally {
+            busy = false;
+        }
+    }
+
+    function settingName(setting: OptimizedSettingState['setting']) {
+        switch (setting) {
+            case 'keep_awake':
+                return 'Keep this PC awake';
+            case 'stage_manager':
+                return 'Stage Manager';
+            case 'dock_autohide':
+                return 'Dock auto-hide';
+            case 'dock_magnification':
+                return 'Dock magnification';
+            case 'dock_animate':
+                return 'Animate opening applications';
+            case 'dock_minimize_to_application':
+                return 'Minimize into application icon';
+            case 'dock_show_recents':
+                return 'Show recent applications';
+            case 'press_and_hold':
+                return 'Press-and-hold accent menu';
+            case 'natural_scroll':
+                return 'Natural scrolling';
+            case 'automatic_spelling':
+                return 'Automatic spelling correction';
+            case 'automatic_capitalization':
+                return 'Automatic capitalization';
+            case 'automatic_period':
+                return 'Automatic period substitution';
+            case 'automatic_dash':
+                return 'Smart dashes';
+            case 'automatic_quote':
+                return 'Smart quotes';
+            case 'ds_store_network':
+                return 'Avoid .DS_Store on network volumes';
+            case 'ds_store_usb':
+                return 'Avoid .DS_Store on USB volumes';
+            case 'mouse_linear':
+                return 'Mouse linear motion';
+            case 'icloud_optimize_storage':
+                return 'iCloud Optimize Mac Storage';
+            default:
+                return setting;
+        }
+    }
+    function settingValue(value: boolean) {
+        return value ? 'On' : 'Off';
+    }
+    function settingRows(session: OptimizedSession) {
+        const keys = [
+            ...session.original_configuration,
+            ...session.best_configuration,
+            ...session.applied_configuration,
+        ].map((item) => item.setting);
+        const unique = [...new Set(keys)];
+        return unique.map((setting) => {
+            const original = session.original_configuration.find(
+                (item) => item.setting === setting
+            );
+            const saved = session.best_configuration.find((item) => item.setting === setting);
+            const applied = session.applied_configuration.find((item) => item.setting === setting);
+            return {
+                setting,
+                original: original ? settingValue(original.value) : '—',
+                saved: saved ? settingValue(saved.value) : 'Not saved',
+                applied: applied ? settingValue(applied.value) : 'Not applied',
+            };
+        });
+    }
+    function proposed(session: OptimizedSession) {
+        return Boolean(session.proposal?.provider && session.proposal?.rationale);
+    }
+    function phase(session: OptimizedSession) {
+        if (session.status !== 'monitoring')
+            return session.best_configuration.length
+                ? 'Optimized profile ready'
+                : session.status === 'paused'
+                  ? 'Paused'
+                  : 'Not learned yet';
+        return session.phase === 'baseline'
+            ? 'Learning baseline'
+            : session.phase === 'measuring_change'
+              ? 'Verifying configuration'
+              : 'Optimized session active';
+    }
+    function formatDate(at: number) {
+        return new Date(at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
     }
 </script>
 
-<div class="sessions-page">
+<div class="sessions-page sessions-simple">
     <header class="sessions-heading">
         <div>
-            <p class="eyebrow">REPEATABLE WORKSPACES</p>
+            <p class="eyebrow">REUSABLE OPTIMIZATION PROFILES</p>
             <h1>Sessions</h1>
             <p class="muted">
-                Describe the work you do often, then return to one place to prepare, monitor, and
-                review it.
+                Learn and cache a safe configuration for work you repeat, then restore it with one
+                confirmation. Enable rights in Settings → System first; without them, Sessions stay
+                monitor-only.
             </p>
         </div>
-        <button class="primary sessions-new" onclick={() => openComposer()}>
-            <span aria-hidden="true">＋</span> New session
-        </button>
+        <button
+            class="primary sessions-new"
+            onclick={() => (composerOpen = true)}
+            disabled={!desktop}>＋ New session</button
+        >
     </header>
 
     <div class="sessions-preview-note" role="status">
         <Icon name="info" size={16} />
         <div>
-            <strong>Frontend preview</strong>
-            <span>
-                Session controls and readings are sample data. Nothing here monitors or changes your
-                computer yet.
-            </span>
-        </div>
-    </div>
-
-    {#if notice}
-        <div class="sessions-notice" role="status">
-            <span>{notice}</span>
-            <button class="icon-button" aria-label="Dismiss message" onclick={() => (notice = '')}
-                >×</button
+            <strong>Safe by design</strong><span
+                >Jitterbug tests only fixed, reversible settings with native readback. Freeform
+                descriptions are never executed. Unsupported goals remain monitor-only.</span
             >
         </div>
-    {/if}
-
-    <div class="sessions-layout">
-        <aside class="sessions-library panel" aria-label="Saved sessions">
-            <div class="sessions-library-header">
-                <div>
-                    <h2>Your sessions</h2>
-                    <p>{sessions.length} saved previews</p>
-                </div>
-                <button
-                    class="icon-button"
-                    aria-label="Create session"
-                    onclick={() => openComposer()}>＋</button
-                >
-            </div>
-
-            <div class="session-list">
-                {#each sessions as session}
-                    <button
-                        class="session-row"
-                        class:selected={session.id === selected.id}
-                        aria-current={session.id === selected.id ? 'true' : undefined}
-                        onclick={() => {
-                            selectedId = session.id;
-                            notice = '';
-                        }}
-                    >
-                        <span class="session-row-icon"><Icon name={session.icon} size={18} /></span>
-                        <span class="session-row-copy">
-                            <strong>{session.name}</strong>
-                            <small>{session.lastUsed}</small>
-                        </span>
-                        {#if session.status === 'active'}
-                            <span class="session-active-dot" title="Active preview"></span>
-                        {/if}
-                    </button>
-                {/each}
-            </div>
-
-            <div class="session-library-foot">
-                <Icon name="bulb" size={16} />
-                <span>Sessions will learn from measured runs once the backend is connected.</span>
-            </div>
-        </aside>
-
-        <section class="session-workspace">
-            <article class="session-hero panel">
-                <div class="session-hero-main">
-                    <span class="session-hero-icon"><Icon name={selected.icon} size={23} /></span>
-                    <div>
-                        <div class="session-title-line">
-                            <h2>{selected.name}</h2>
-                            <span class:active={selected.status === 'active'} class="session-state">
-                                {selected.status === 'active' ? 'Active preview' : 'Ready'}
-                            </span>
-                        </div>
-                        <p>{selected.description}</p>
-                    </div>
-                </div>
-                <div class="session-hero-actions">
-                    <button>•••</button>
-                    <button class="primary" onclick={togglePreview}>
-                        <Icon name={selected.status === 'active' ? 'pause' : 'play'} size={15} />
-                        {selected.status === 'active' ? 'Stop preview' : 'Activate preview'}
-                    </button>
-                </div>
-            </article>
-
-            <div class="session-metrics">
-                <article class="session-metric panel">
-                    <div class="session-metric-label">
-                        <span>CPU</span><Icon name="cpu" size={15} />
-                    </div>
-                    <strong>{selected.metrics.cpu}%</strong>
-                    <div class="session-meter">
-                        <i style:width={`${selected.metrics.cpu}%`}></i>
-                    </div>
-                    <small>Sample session average</small>
-                </article>
-                <article class="session-metric panel">
-                    <div class="session-metric-label">
-                        <span>Memory</span><Icon name="memory" size={15} />
-                    </div>
-                    <strong>{selected.metrics.memory}%</strong>
-                    <div class="session-meter">
-                        <i style:width={`${selected.metrics.memory}%`}></i>
-                    </div>
-                    <small>Sample memory in use</small>
-                </article>
-                <article class="session-metric panel">
-                    <div class="session-metric-label">
-                        <span>Pressure</span><Icon name="activity" size={15} />
-                    </div>
-                    <strong class="session-pressure">{selected.metrics.pressure}</strong>
-                    <div class="session-pressure-line">
-                        <span class:raised={selected.metrics.pressure === 'Elevated'}></span>
-                        Preview health
-                    </div>
-                    <small>Would use live OS readings</small>
-                </article>
-            </div>
-
-            <div class="session-detail-grid">
-                <article class="session-activity panel">
-                    <div class="session-card-heading">
-                        <div>
-                            <p class="eyebrow">CURRENT RUN</p>
-                            <h2>Live session activity</h2>
-                        </div>
-                        <span>{selected.duration}</span>
-                    </div>
-                    <div class="session-chart" aria-label="Sample activity chart">
-                        {#each selected.activity as value}
-                            <i style:height={`${Math.max(value, 4)}%`}></i>
-                        {/each}
-                    </div>
-                    <div class="session-chart-legend">
-                        <span><i></i> Resource activity</span>
-                        <span>Sample data</span>
-                    </div>
-                </article>
-
-                <article class="session-focus panel">
-                    <div class="session-card-heading">
-                        <div>
-                            <p class="eyebrow">SESSION INTENT</p>
-                            <h2>What Jitterbug will watch</h2>
-                        </div>
-                    </div>
-                    <div class="focus-list">
-                        {#each selected.focus as item, index}
-                            <div>
-                                <span>{index + 1}</span>
-                                <div>
-                                    <strong>{item}</strong>
-                                    <small>
-                                        {index === 0
-                                            ? 'Primary signal for this workflow.'
-                                            : 'Supporting context for measured decisions.'}
-                                    </small>
-                                </div>
-                            </div>
-                        {/each}
-                    </div>
-                </article>
-            </div>
-
-            <article class="session-history panel">
-                <div class="session-card-heading">
-                    <div>
-                        <p class="eyebrow">RECENT RUNS</p>
-                        <h2>Session history</h2>
-                    </div>
-                    <button class="text-button">View all</button>
-                </div>
-                <div class="session-history-row">
-                    <span class="history-status"><i></i></span>
-                    <div>
-                        <strong>{selected.lastUsed}</strong>
-                        <small>{selected.duration} · Sample run completed normally</small>
-                    </div>
-                    <div class="history-result">
-                        <strong>{selected.metrics.memory}% memory</strong>
-                        <small>Preview measurement</small>
-                    </div>
-                </div>
-            </article>
-        </section>
     </div>
+    {#if notice}<div class="sessions-notice" role="status">
+            <span>{notice}</span><button
+                class="icon-button"
+                aria-label="Dismiss message"
+                onclick={() => (notice = '')}>×</button
+            >
+        </div>{/if}
+    {#if error}<div class="sessions-notice session-error" role="alert">
+            <span>{error}</span><button
+                class="icon-button"
+                aria-label="Dismiss error"
+                onclick={() => (error = '')}>×</button
+            >
+        </div>{/if}
 
-    <section class="session-templates">
-        <div class="session-card-heading">
-            <div>
-                <p class="eyebrow">STARTING POINTS</p>
-                <h2>Build from a familiar workflow</h2>
-            </div>
+    {#if loading}<div class="panel sessions-empty">Loading optimization profiles…</div>
+    {:else}
+        <div class="session-profile-layout">
+            <aside class="panel session-profile-library">
+                <div class="sessions-library-header">
+                    <div>
+                        <h2>Saved profiles</h2>
+                        <p>{sessions.length} recurring tasks</p>
+                    </div>
+                </div>
+                <div class="session-list">
+                    {#each sessions as session}<button
+                            class="session-row"
+                            class:selected={session.id === selected?.id}
+                            onclick={() => {
+                                selectedId = session.id;
+                                notice = '';
+                            }}
+                            ><span class="session-row-icon"
+                                ><Icon
+                                    name={session.best_configuration.length ? 'bulb' : 'activity'}
+                                    size={18}
+                                /></span
+                            ><span class="session-row-copy"
+                                ><strong>{session.name}</strong><small>{phase(session)}</small
+                                ></span
+                            >{#if session.status === 'monitoring'}<span class="session-active-dot"
+                                ></span>{/if}</button
+                        >{:else}<div class="session-library-empty">
+                            <strong>No profiles yet</strong><span
+                                >Create one for a task you repeat.</span
+                            >
+                        </div>{/each}
+                </div>
+            </aside>
+
+            <main class="session-profile-detail panel">
+                {#if selected}
+                    <div class="session-profile-head">
+                        <div>
+                            <span
+                                class:active={selected.status === 'monitoring'}
+                                class="session-state">{phase(selected)}</span
+                            >
+                            <h2>{selected.name}</h2>
+                            <p>{selected.goal}</p>
+                        </div>
+                        <div class="session-profile-actions">
+                            {#if selected.status === 'monitoring'}<button
+                                    class="primary"
+                                    disabled={busy}
+                                    onclick={() =>
+                                        run(
+                                            () => client.pause(selected.id),
+                                            'Session paused. Jitterbug restored any setting it owned.'
+                                        )}>Stop & restore</button
+                                >{:else if selected.best_configuration.length}<button
+                                    class="primary"
+                                    disabled={busy ||
+                                        selected.stale ||
+                                        Boolean(selected.pending_transaction)}
+                                    onclick={() =>
+                                        run(
+                                            () => client.reapply(selected.id),
+                                            'Cached configuration reapplied and verified.'
+                                        )}>Apply cached profile</button
+                                ><button
+                                    disabled={busy}
+                                    onclick={() =>
+                                        run(
+                                            () => client.start(selected.id),
+                                            'Fresh validation started for this profile.'
+                                        )}>Relearn</button
+                                >{:else}<button
+                                    class="primary"
+                                    disabled={busy}
+                                    onclick={() =>
+                                        run(
+                                            () => client.start(selected.id),
+                                            'Learning started. Jitterbug is collecting a baseline before any supported change.'
+                                        )}>Learn this session</button
+                                >{/if}
+                            <button
+                                class:session-delete-confirm={deleteConfirmId === selected.id}
+                                disabled={busy ||
+                                    selected.status === 'monitoring' ||
+                                    Boolean(selected.pending_transaction) ||
+                                    selected.applied_configuration.length > 0}
+                                onclick={() => remove(selected)}
+                                >{deleteConfirmId === selected.id
+                                    ? 'Confirm delete'
+                                    : 'Delete'}</button
+                            >
+                        </div>
+                    </div>
+
+                    <section class="session-config-card">
+                        <div>
+                            <p class="eyebrow">AI-PROPOSED PROFILE</p>
+                            <h3>
+                                {selected.proposal?.capability === 'keep_awake'
+                                    ? 'Keep Mac awake'
+                                    : 'Measure and monitor'}
+                            </h3>
+                        </div>
+                        {#if proposed(selected)}
+                            <p>{selected.proposal.rationale}</p>
+                            <dl class="session-settings-list">
+                                <div>
+                                    <dt>Capability</dt>
+                                    <dd>
+                                        {selected.proposal.capability === 'keep_awake'
+                                            ? 'Keep this Mac awake while the session is active'
+                                            : 'Watch the task only. No system setting will be changed.'}
+                                    </dd>
+                                </div>
+                                <div>
+                                    <dt>Provider</dt>
+                                    <dd>
+                                        {selected.proposal.provider} · {selected.proposal.model}
+                                    </dd>
+                                </div>
+                            </dl>
+                            <small
+                                >No system change occurs until you choose Learn this session. AI
+                                cannot pick settings outside Settings → System rights.</small
+                            >
+                            {#if selected.status !== 'monitoring'}
+                                <button
+                                    disabled={busy}
+                                    onclick={() =>
+                                        run(
+                                            () => client.propose(selected.id),
+                                            'AI updated this profile. Review it before learning.'
+                                        )}>Ask AI again</button
+                                >
+                            {/if}
+                        {:else}
+                            <p>
+                                This profile has no AI proposal yet. Ask your configured intelligent
+                                provider to classify the task.
+                            </p>
+                            <button
+                                class="primary"
+                                disabled={busy || selected.status === 'monitoring'}
+                                onclick={() =>
+                                    run(
+                                        () => client.propose(selected.id),
+                                        'AI proposed a profile. Review it, then learn during the real task.'
+                                    )}>Ask AI to propose</button
+                            >
+                        {/if}
+                    </section>
+
+                    {#if selected.stale || selected.pending_transaction}<div
+                            class="session-profile-warning"
+                        >
+                            <strong
+                                >{selected.pending_transaction
+                                    ? 'Recovery required'
+                                    : selected.best_configuration.length
+                                      ? 'Cached profile is stale'
+                                      : 'Learning interrupted'}</strong
+                            ><span
+                                >{selected.stale_reason ??
+                                    'Jitterbug retained a durable recovery journal and will not overlap another native action.'}</span
+                            >{#if selected.status !== 'monitoring' && (selected.pending_transaction || selected.applied_configuration.length)}<button
+                                    disabled={busy}
+                                    onclick={() =>
+                                        run(
+                                            () => client.restore(selected.id),
+                                            'Original state restored and verified.'
+                                        )}>Restore original state</button
+                                >{/if}
+                        </div>{/if}
+
+                    <section class="session-config-card">
+                        <div>
+                            <p class="eyebrow">SAVED CONFIGURATION</p>
+                            <h3>
+                                {selected.best_configuration.length
+                                    ? 'Verified settings for this task'
+                                    : selected.applied_configuration.length
+                                      ? 'Settings currently applied'
+                                      : selected.original_configuration.length
+                                        ? 'Original settings captured'
+                                        : 'No settings saved yet'}
+                            </h3>
+                        </div>
+                        {#if settingRows(selected).length}
+                            <dl class="session-settings-list">
+                                {#each settingRows(selected) as row}
+                                    <div>
+                                        <dt>{settingName(row.setting)}</dt>
+                                        <dd>
+                                            Original {row.original} → Saved {row.saved} → Applied {row.applied}
+                                        </dd>
+                                    </div>
+                                {/each}
+                            </dl>
+                        {:else}
+                            <p>
+                                {selected.setting_support ||
+                                    'Learn this session during the real task. Jitterbug will list every setting it is allowed to change.'}
+                            </p>
+                        {/if}
+                        {#if selected.fingerprint}<small
+                                >Bound to this OS and {selected.fingerprint.applications.length} detected
+                                app versions. A changed environment invalidates the cache.</small
+                            >{/if}
+                    </section>
+
+                    <section class="session-recent-use">
+                        <p class="eyebrow">RECENT USE</p>
+                        {#if selected.runs.length}{#each selected.runs.slice(0, 4) as run}<div
+                                    class="session-run"
+                                >
+                                    <strong>{run.outcome.replaceAll('_', ' ')}</strong><span
+                                        >{formatDate(run.completed_at)}</span
+                                    >
+                                </div>{/each}{:else}<p class="muted">
+                                No completed optimization runs yet.
+                            </p>{/if}
+                    </section>
+
+                    <details class="session-log">
+                        <summary>Safety and activity log</summary>{#each selected.events as event}<p
+                            >
+                                <time>{formatDate(event.at)}</time> · {event.message}
+                            </p>{/each}
+                    </details>
+                {:else}<div class="sessions-empty">
+                        <Icon name="activity" size={24} />
+                        <h2>Create an optimization profile</h2>
+                        <p>
+                            Use it during a recurring task so Jitterbug can learn a compatible,
+                            reversible configuration.
+                        </p>
+                        <button class="primary" onclick={() => (composerOpen = true)}
+                            >Create profile</button
+                        >
+                    </div>{/if}
+            </main>
         </div>
-        <div class="session-template-grid">
-            {#each suggestions as suggestion}
-                <button
-                    class="session-template panel"
-                    onclick={() => openComposer(suggestion.prompt)}
-                >
-                    <span><Icon name={suggestion.icon} size={19} /></span>
-                    <strong>{suggestion.title}</strong>
-                    <small>{suggestion.description}</small>
-                    <em>Use template →</em>
-                </button>
-            {/each}
-        </div>
-    </section>
+    {/if}
 </div>
 
-{#if composerOpen}
-    <div class="modal-backdrop sessions-modal-backdrop">
+{#if composerOpen}<div class="modal-backdrop sessions-modal-backdrop">
         <div
             class="sessions-composer panel"
             role="dialog"
             aria-modal="true"
             aria-labelledby="session-composer-title"
-            tabindex="-1"
         >
             <div class="session-card-heading">
                 <div>
-                    <p class="eyebrow">NEW SESSION</p>
-                    <h2 id="session-composer-title">What do you do often?</h2>
+                    <p class="eyebrow">NEW OPTIMIZATION PROFILE</p>
+                    <h2 id="session-composer-title">What task do you repeat?</h2>
                 </div>
                 <button
                     class="icon-button"
@@ -396,34 +494,32 @@
                 >
             </div>
             <p class="composer-intro">
-                Describe the apps, tasks, and outcome in your own words. This preview creates the
-                interface only and will not start monitoring.
+                Name the real activity and describe what matters. Your configured intelligent AI
+                provider proposes one supported profile; Jitterbug never turns your text into
+                commands.
             </p>
-            <label>
-                Session name <span>Optional</span>
-                <input bind:value={sessionName} maxlength="80" placeholder="Claude worktrees" />
-            </label>
-            <label>
-                Describe your workflow
-                <textarea
-                    bind:value={description}
-                    maxlength="500"
-                    rows="6"
-                    placeholder="I run several Claude worktrees, builds, and tests in parallel. Keep enough memory available so the computer stays responsive."
-                ></textarea>
-            </label>
-            <div class="composer-guidance">
-                <Icon name="bulb" size={16} />
-                <span
-                    >Include the apps you use, what usually slows down, and what matters most.</span
-                >
-            </div>
-            <div class="form-actions">
-                <button onclick={() => (composerOpen = false)}>Cancel</button>
-                <button class="primary" disabled={!description.trim()} onclick={savePreview}
-                    >Create session preview</button
+            <label
+                >Profile name<input
+                    bind:value={name}
+                    maxlength="80"
+                    placeholder="Nightly video export"
+                /></label
+            ><label
+                >Optimization goal<textarea
+                    bind:value={goal}
+                    maxlength="480"
+                    rows="5"
+                    placeholder="Keep the export reliable while I continue light work."
+                ></textarea></label
+            >
+            <div class="composer-actions">
+                <button onclick={() => (composerOpen = false)} disabled={busy}>Cancel</button
+                ><button
+                    class="primary"
+                    onclick={create}
+                    disabled={busy || !name.trim() || !goal.trim()}
+                    >{busy ? 'Asking AI…' : 'Create AI profile'}</button
                 >
             </div>
         </div>
-    </div>
-{/if}
+    </div>{/if}

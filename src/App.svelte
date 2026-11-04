@@ -851,7 +851,7 @@
                     <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
                 {/key}
             {:else if page === 'sessions'}
-                <Sessions />
+                <Sessions {desktop} />
             {:else if page === 'inbox'}
                 <div class="page-heading">
                     <div>
