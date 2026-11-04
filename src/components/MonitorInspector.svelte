@@ -217,7 +217,14 @@
     }
     async function reveal() {
         await tick();
-        if (log) log.scrollTop = log.scrollHeight;
+        if (!log) return;
+        const latest =
+            conversation.at(-1)?.role === 'assistant'
+                ? Array.from(log.querySelectorAll('.message')).at(-1)
+                : null;
+        if (latest)
+            log.scrollTop += latest.getBoundingClientRect().top - log.getBoundingClientRect().top;
+        else log.scrollTop = log.scrollHeight;
     }
     async function send(suggestion?: string) {
         if (busy || error || !(suggestion ?? question).trim()) return;
@@ -325,7 +332,14 @@
         <button class="icon-button" aria-label="Close inspector" onclick={onclose}>×</button>
     </header>
     <section class="identity-summary" aria-label="App summary">
-        <p>{summary}</p>
+        <p>
+            {summary}{#if profile?.source === 'model'}
+                <button
+                    class="summary-credit"
+                    title="AI summary · view details and sources"
+                    onclick={() => (tab = 'details')}>AI ↗</button
+                >{/if}
+        </p>
         {#if readings}<div class="quick-readings">
                 <span><strong>{percent(readings.cpu_percent)}</strong> CPU</span><span
                     ><strong>{memory(readings.memory_bytes)}</strong> memory</span
@@ -333,23 +347,15 @@
                         >View whole app</button
                     >{/if}
             </div>{/if}
-        <div class="summary-meta">
-            <button class="text-button" onclick={() => (tab = 'details')}
-                >{profile?.source === 'model'
-                    ? profile.sources?.length
-                        ? 'AI summary · sources'
-                        : 'AI summary'
-                    : demo
-                      ? 'Demo'
-                      : 'About this app'} ↗</button
-            >{#if profileError}<button
+        {#if profileError}<div class="summary-meta">
+                <button
                     class="text-button"
                     title={profileError}
                     onclick={() => {
                         if (detail) void describe(detail, lastProfile);
                     }}>Retry summary</button
-                >{:else if describing}<span>Updating summary…</span>{/if}
-        </div>
+                >
+            </div>{/if}
     </section>
     {#if workload}<nav class="inspector-tabs" aria-label="Inspector views">
             <button class:active={tab === 'chat'} onclick={() => (tab = 'chat')}>Chat</button
@@ -462,7 +468,7 @@
                 bind:value={question}
                 aria-label="Message Jitterbug"
                 placeholder={workload ? `Ask about ${workload.label}…` : 'Ask about your computer…'}
-                rows="2"
+                rows="1"
                 maxlength="1800"
                 disabled={!!error}
                 onkeydown={(event) => {
@@ -573,7 +579,7 @@
     .detail-scroll :global(.unit) {
         grid-template-columns: minmax(0, 1fr) 48px 62px;
         gap: 8px;
-        padding: 10px 0;
+        padding: 8px 0;
         font-size: 11px;
     }
     .detail-scroll :global(.unit-actions) {
@@ -592,7 +598,7 @@
         min-height: 0;
     }
     .inspector-head {
-        padding: 19px 20px 12px;
+        padding: 14px 16px 8px;
         display: flex;
         align-items: start;
         justify-content: space-between;
@@ -622,13 +628,22 @@
         color: var(--muted);
     }
     .identity-summary {
-        padding: 0 20px 12px;
+        padding: 0 16px 8px;
         flex-shrink: 0;
     }
     .identity-summary > p {
         font-size: 12px;
         line-height: 1.6;
-        margin: 0 0 12px;
+        margin: 0 0 6px;
+    }
+    .summary-credit {
+        border: 0;
+        padding: 0;
+        min-height: 0;
+        background: none;
+        box-shadow: none;
+        color: var(--muted);
+        font-size: 10px;
     }
     .quick-readings {
         display: flex;
@@ -664,7 +679,7 @@
     }
     .inspector-tabs {
         display: flex;
-        padding: 0 20px;
+        padding: 0 16px;
         gap: 21px;
         border-bottom: 1px solid var(--border);
         flex-shrink: 0;
@@ -673,7 +688,7 @@
         border: 0;
         border-bottom: 2px solid transparent;
         border-radius: 0;
-        padding: 10px 0;
+        padding: 8px 0;
         background: none;
         box-shadow: none;
         color: var(--muted);
@@ -692,7 +707,7 @@
         flex: 1;
         min-height: 0;
         overflow: auto;
-        padding: 20px;
+        padding: 14px 16px;
         scrollbar-width: thin;
         overflow-wrap: anywhere;
     }
@@ -837,7 +852,7 @@
         font-size: 12px;
         padding: 4px;
         resize: none;
-        min-height: 42px;
+        min-height: 28px;
         line-height: 1.5;
     }
     .composer > div {
@@ -905,7 +920,7 @@
         font-variant-numeric: tabular-nums;
     }
     .technical {
-        padding: 20px;
+        padding: 14px 16px;
         font-size: 12px;
         line-height: 1.6;
     }

@@ -232,9 +232,12 @@ export async function desktop(
                                 .flatMap((d) => d.members)
                                 .find((p) => p.pid === 9101)!;
                             return {
-                                text: args.pid
-                                    ? `Specific finding for PID ${args.pid}. This instance is using memory for a synthetic workload.`
-                                    : 'The app’s helpers separate its interface, graphics and network connections.',
+                                text:
+                                    options.browserEvidence && !args.pid
+                                        ? 'Open pages keep images, scripts and page data in memory, and extensions add their own overhead. The measured content processes below are useful places to start. The local tab labels identify which pages belong to those processes, while shared-process memory remains an estimate. Unload a heavy tab you no longer need, then compare a fresh reading to see what changed.'
+                                        : args.pid
+                                          ? `Specific finding for PID ${args.pid}. This instance is using memory for a synthetic workload.`
+                                          : 'The app’s helpers separate its interface, graphics and network connections.',
                                 action:
                                     options.action && process
                                         ? {

@@ -101,6 +101,7 @@ test('explicit conversation targets the selected instance and survives refreshes
 test('browser answers link local tab evidence to the exact process without sending tab titles', async ({
     page,
 }) => {
+    await page.setViewportSize({ width: 1120, height: 620 });
     await desktop(page, { browserEvidence: true });
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     await send(page, 'Why is it using this much memory?');
@@ -108,6 +109,16 @@ test('browser answers link local tab evidence to the exact process without sendi
         name: /Example documentation tab/,
     });
     await expect(contributor).toBeVisible();
+    const answer = conversation(page).locator('.message:not(.user)').last();
+    await expect
+        .poll(async () => {
+            const [message, viewport] = await Promise.all([
+                answer.boundingBox(),
+                conversation(page).boundingBox(),
+            ]);
+            return message!.y - viewport!.y;
+        })
+        .toBeGreaterThanOrEqual(-1);
     await expect(
         conversation(page).getByRole('link', { name: /Mozilla: memory use/ })
     ).toBeVisible();
