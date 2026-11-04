@@ -16,6 +16,8 @@ pub struct ClaudeSession {
     pub name: Option<String>,
     /// `working` or `idle` (waiting for the person).
     pub status: Option<String>,
+    /// Names the session's transcript, which says what it is doing.
+    pub session_id: Option<String>,
 }
 
 fn directory() -> Option<PathBuf> {
@@ -57,7 +59,16 @@ pub fn parse(text: &str, pid: u32, start_time: u64) -> Option<ClaudeSession> {
         Some("idle") => Some("idle".to_string()),
         _ => None,
     };
-    Some(ClaudeSession { name, status })
+    let session_id = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .map(str::to_string);
+    Some(ClaudeSession {
+        name,
+        status,
+        session_id,
+    })
 }
 
 #[cfg(test)]
@@ -79,7 +90,8 @@ mod tests {
             parse(&text, 213, 1_000_000_000),
             Some(ClaudeSession {
                 name: Some("TEST2".into()),
-                status: Some("idle".into())
+                status: Some("idle".into()),
+                session_id: Some("x".into()),
             })
         );
         let busy = file(213, 1_000_000_004_000, "TEST1", "busy");

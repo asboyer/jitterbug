@@ -3,12 +3,13 @@
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import HarnessBadge from './HarnessBadge.svelte';
     import Icon from './Icon.svelte';
-    import { memory, percent, errorMessage } from '../lib/format';
+    import { errorMessage } from '../lib/format';
     import {
+        cpuShare,
         demoAgents,
         demoBrief,
         elapsed,
-        rowId,
+        size,
         type AgentsBrief,
         type AgentsView,
     } from '../lib/agents';
@@ -18,7 +19,6 @@
     const preview = $derived(demo || !isTauri());
     let view = $state<AgentsView | null>(null);
     let brief = $state<AgentsBrief | null>(null);
-    let briefError = $state('');
     let briefBusy = $state(false);
     let error = $state('');
     let busy = $state(false);
@@ -34,20 +34,9 @@
 
     const connected = $derived(view?.harnesses.filter((h) => h.connected) ?? []);
     const available = $derived(view?.harnesses.filter((h) => h.installed && !h.connected) ?? []);
-    const showSetup = $derived(
-        !!view && (setupOpen || connected.length === 0 || connectedAt !== null)
-    );
-    const heavy = $derived(view?.line.filter((l) => l.state === 'running') ?? []);
-    const waiting = $derived(view?.line.filter((l) => l.state === 'waiting') ?? []);
-    const title = $derived.by(() => {
-        if (!view) return 'Finding your agents…';
-        const agents = view.sessions.reduce((t, s) => t + s.agents.length, 0);
-        if (!view.sessions.length) return 'No coding agents running';
-        const parts = [`${agents} agent${agents === 1 ? '' : 's'}`];
-        if (view.line.length)
-            parts.push(`${view.line.length} heavy command${view.line.length === 1 ? '' : 's'}`);
-        return parts.join(', ');
-    });
+    const showSetup = $derived(!!view && (setupOpen || connectedAt !== null));
+    const working = $derived(view?.sessions.filter((s) => s.state === 'working') ?? []);
+    const quiet = $derived(view?.sessions.filter((s) => s.state !== 'working') ?? []);
 
     async function refresh() {
         if (preview) {
@@ -62,26 +51,25 @@
         }
     }
 
-    async function explain(force = false) {
-        if (!view || !view.sessions.length) return;
+    async function explain() {
+        if (!view || !working.length) return;
         if (preview) {
             brief = demoBrief(view);
             return;
         }
         briefBusy = true;
         try {
-            brief = await invoke<AgentsBrief>('explain_agents', { force });
-            briefError = '';
-        } catch (e) {
-            briefError = errorMessage(e);
+            brief = await invoke<AgentsBrief>('explain_agents', { force: false });
+        } catch {
+            // Notes are optional; each conversation's activity stands on its own.
         } finally {
             briefBusy = false;
             lastAsked = Date.now();
         }
     }
 
-    // Ask the model again only when the agents or their heavy commands change, at most every
-    // 20 seconds. Steady state costs nothing.
+    // Ask the model only when what the working agents are doing changes, at most every 20
+    // seconds. A quiet computer costs nothing.
     $effect(() => {
         const signature = view?.signature ?? '';
         if (!signature || signature === lastSignature || briefBusy) return;
@@ -150,7 +138,7 @@
 
     onMount(() => {
         void refresh();
-        const poll = setInterval(() => void refresh(), preview ? 2500 : 4000);
+        const poll = setInterval(() => void refresh(), preview ? 2500 : 3000);
         const clock = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
         return () => {
             clearInterval(poll);
@@ -161,14 +149,7 @@
 
 <section class="agents" aria-label="Agents" data-tour="agents">
     <div class="heading">
-        <div>
-            <span class="eyebrow">AGENTS</span>
-            <h1>{title}</h1>
-            <p class="muted">
-                Every coding agent on this computer, what its subagents are running, and heavy
-                commands taking turns.
-            </p>
-        </div>
+        <h1>Agents</h1>
         {#if view && connected.length}
             <label class="turns-switch">
                 <input
@@ -180,11 +161,14 @@
                     <strong>Take turns</strong>
                     <small
                         >{view.enabled
-                            ? 'One heavy command at a time'
+                            ? 'Tests and builds run one at a time'
                             : 'Off: everything runs at once'}</small
                     >
                 </span>
             </label>
+        {:else if view && available.length}
+            <button class="primary" onclick={() => (setupOpen = true)}>Let agents take turns</button
+            >
         {/if}
     </div>
 
@@ -208,15 +192,10 @@
         <section class="panel setup" aria-label="Connect your agents">
             {#if connectedAt === null}
                 <div class="setup-head">
-                    <span class="step">1 of 2</span>
-                    <h2>
-                        {available.length
-                            ? `Found ${available.length} coding agent${available.length === 1 ? '' : 's'} on this computer`
-                            : 'No coding agents found yet'}
-                    </h2>
+                    <h2>Let your agents take turns</h2>
                     <p class="muted">
-                        Connect them and their heavy commands (tests, builds) take turns instead of
-                        all running at once. Agents keep working while they wait.
+                        Connected agents run tests and builds one at a time instead of all at once,
+                        and keep working while they wait.
                     </p>
                 </div>
                 {#each view.harnesses.filter((h) => h.installed) as harness (harness.key)}
@@ -248,31 +227,23 @@
                     </div>
                 {/each}
                 <div class="setup-foot">
-                    <span class="muted"
-                        >A backup of each file is saved first. Disconnect anytime below.</span
-                    >
+                    <span class="muted">Each file is backed up first. Disconnect anytime.</span>
                     <div class="actions">
-                        {#if connected.length}<button onclick={() => (setupOpen = false)}
-                                >Cancel</button
-                            >{/if}
+                        <button onclick={() => (setupOpen = false)}>Cancel</button>
                         <button
                             class="primary"
                             disabled={busy || !selected.length}
                             onclick={connect}
                         >
-                            {busy
-                                ? 'Connecting…'
-                                : `Connect ${selected.length || ''} agent${selected.length === 1 ? '' : 's'}`}
+                            {busy ? 'Connecting…' : 'Connect'}
                         </button>
                     </div>
                 </div>
             {:else}
                 <div class="setup-head">
-                    <span class="step">2 of 2</span>
-                    <h2>Connected. Checking each agent…</h2>
+                    <h2>Connected</h2>
                     <p class="muted">
-                        Sessions that were already open pick this up when you restart them. New
-                        sessions use it right away.
+                        Open sessions pick this up when restarted. New sessions use it right away.
                     </p>
                 </div>
                 {#each connected as harness (harness.key)}
@@ -292,7 +263,7 @@
                     </div>
                 {/each}
                 <div class="setup-foot">
-                    <span class="muted">Heavy commands now line up below.</span>
+                    <span></span>
                     <button
                         class="primary"
                         onclick={() => {
@@ -305,52 +276,14 @@
         </section>
     {/if}
 
-    {#if view && view.sessions.length}
-        <section class="panel brief" aria-live="polite">
-            <div class="brief-head">
-                <Icon name="companion" size={16} />
-                <span
-                    >{brief && brief.provider !== 'demo'
-                        ? `${brief.provider === 'meta' ? 'Meta' : brief.provider} · inferred from live processes`
-                        : preview
-                          ? 'Demo · synthetic agents'
-                          : 'AI read of your agents'}</span
-                >
-                <button
-                    class="text-button"
-                    disabled={briefBusy}
-                    onclick={() => explain(true)}
-                    aria-label="Explain again">{briefBusy ? 'Thinking…' : 'Refresh'}</button
-                >
-            </div>
-            {#if brief}
-                <p class="headline">{brief.headline}</p>
-            {:else if briefError}
-                <p class="muted">{briefError}</p>
-            {:else}
-                <p class="muted">Reading what your agents are doing…</p>
-            {/if}
-        </section>
-    {/if}
-
-    {#if view}
-        <section class="panel line" aria-label="Heavy commands taking turns">
-            <div class="section-head">
-                <h2>Taking turns</h2>
-                <span class="muted">{heavy.length} running · {waiting.length} waiting</span>
-            </div>
-            {#if !view.line.length}
-                <p class="muted empty">
-                    {connected.length
-                        ? 'No heavy commands right now. Tests and builds from your agents line up here.'
-                        : 'Connect your agents to see their tests and builds line up here.'}
-                </p>
-            {/if}
+    {#if view && view.line.length}
+        <section class="panel" aria-label="Tests and builds taking turns">
+            <h2>Tests and builds</h2>
             {#each view.line as item, index (item.command + item.agent + item.harness + index)}
                 <div class="turn" class:running={item.state === 'running'}>
                     <span class="slot"
-                        >{#if item.state === 'running'}<i class="pulse"></i>{:else}#{index -
-                                heavy.length +
+                        >{#if item.state === 'running'}<i class="pulse"></i>{:else}{index -
+                                view.line.filter((l) => l.state === 'running').length +
                                 1}{/if}</span
                     >
                     <code>{item.command}</code>
@@ -362,110 +295,109 @@
                         >{item.state === 'running' ? 'running' : 'waiting'}
                         {elapsed(item.since, now)}</span
                     >
-                    <span class="num"
-                        >{item.state === 'running' ? percent(item.cpu_percent) : ''}</span
-                    >
-                    <span class="num muted"
-                        >{item.state === 'running' && item.memory_bytes
-                            ? memory(item.memory_bytes)
-                            : ''}</span
+                    <span class="usage"
+                        >{#if item.state === 'running'}CPU {cpuShare(item.cpu_percent)} · {size(
+                                item.memory_bytes
+                            )}{/if}</span
                     >
                 </div>
             {/each}
         </section>
+    {/if}
 
-        {#each view.sessions as session (session.id)}
-            <section class="panel session" aria-label={`${session.harness_name} session`}>
-                <div class="session-head">
-                    <HarnessBadge harness={session.harness} />
-                    <strong class="session-title">{session.title}</strong>
-                    <span class="muted folder">{session.folder}</span>
-                    <span class="num">{percent(session.cpu_percent)}</span>
-                    <span class="num muted">{memory(session.memory_bytes)}</span>
+    {#each working as session (session.id)}
+        <section
+            class="panel conversation"
+            aria-label={`${session.harness_name}: ${session.title}`}
+        >
+            <div class="conversation-head">
+                <HarnessBadge harness={session.harness} compact />
+                <div class="name">
+                    <strong>{session.title || session.folder}</strong>
+                    <span class="muted">{session.harness_name} · {session.folder}</span>
                 </div>
-                {#each session.agents as agent, index (index)}
-                    {@const note = brief?.notes[rowId(session, index)]}
-                    <div class="agent">
-                        <div class="agent-main">
-                            <span class="agent-label"
-                                >{agent.label}{#if agent.subagent}<small>subagent</small>{/if}</span
-                            >
-                            <span class={`state ${agent.state}`}
-                                >{agent.state === 'waiting' && agent.position
-                                    ? `waiting · #${agent.position}`
-                                    : agent.state}</span
-                            >
-                            {#if agent.command}<code>{agent.command}</code>{/if}
-                            <span class="muted when">{elapsed(agent.since, now)}</span>
-                            <span class="num">{percent(agent.cpu_percent)}</span>
-                            <span class="num muted">{memory(agent.memory_bytes)}</span>
-                        </div>
-                        {#if note}<p class="note">
-                                <Icon name="companion" size={12} />
-                                {note}
-                            </p>{/if}
-                    </div>
-                {/each}
-            </section>
-        {/each}
-
-        {#if !view.sessions.length}
-            <section class="panel empty-state">
-                <Icon name="code" size={22} />
-                <h2>No coding agents are running</h2>
-                <p class="muted">
-                    Start Claude Code, Codex, or Muse Code and they appear here with what they're
-                    using.
-                </p>
-            </section>
-        {/if}
-
-        {#if view.recent.length}
-            <details class="panel recent">
-                <summary>Recent heavy commands · {view.recent.length}</summary>
-                {#each view.recent as item}
-                    <div class="turn">
-                        <span class="slot">✓</span>
-                        <code>{item.command}</code>
-                        <span class="who">{item.agent || item.harness}</span>
-                        <span class="muted when"
-                            >{elapsed(item.started_at, item.ended_at)}{item.waited_seconds
-                                ? ` · waited ${elapsed(item.ended_at - item.waited_seconds, item.ended_at)}`
-                                : ''}</span
-                        >
-                        <span class="num">{percent(item.peak_cpu_percent)}</span>
-                        <span class="num muted"
-                            >{item.peak_memory_bytes ? memory(item.peak_memory_bytes) : ''}</span
-                        >
-                    </div>
-                {/each}
-            </details>
-        {/if}
-
-        <div class="footer">
-            <span class="muted"
-                >Not from an agent: {view.other.labels.join(', ') || 'nothing busy'} · {percent(
-                    view.other.cpu_percent
-                )} CPU</span
-            >
-            <div class="connections">
-                {#each connected as harness (harness.key)}
-                    <span class="chip">
-                        <HarnessBadge harness={harness.key} compact />
-                        {harness.name}
-                        <button
-                            class="text-button"
-                            disabled={busy}
-                            onclick={() => disconnect(harness.key)}
-                            aria-label={`Disconnect ${harness.name}`}>Disconnect</button
-                        >
-                    </span>
-                {/each}
-                {#if connected.length && available.length}<button
-                        class="text-button"
-                        onclick={() => (setupOpen = true)}>Connect more</button
-                    >{/if}
+                <span class="usage" title="Share of this computer's CPU, and memory in use"
+                    >CPU {cpuShare(session.cpu_percent)} · {size(session.memory_bytes)}</span
+                >
             </div>
+            <p class="doing"><i class="pulse"></i>{session.doing ?? 'Working'}</p>
+            {#if session.request}<p class="request">“{session.request}”</p>{/if}
+            {#if brief?.notes[session.id]}<p class="note">{brief.notes[session.id]}</p>{/if}
+            {#each session.agents as agent, index (agent.label + index)}
+                <div class="subagent">
+                    <span class="sub-label">{agent.label || 'Main conversation'}</span>
+                    <span class="sub-doing muted"
+                        >{#if agent.state === 'waiting'}Waiting to run <code>{agent.command}</code
+                            >{#if agent.position}
+                                · #{agent.position} in line{/if}{:else if agent.state === 'running'}Running
+                            <code>{agent.command}</code>{:else}{agent.doing ?? 'Working'}{/if}</span
+                    >
+                    <span class="usage"
+                        >{#if agent.state === 'running'}CPU {cpuShare(agent.cpu_percent)} · {size(
+                                agent.memory_bytes
+                            )}{/if}</span
+                    >
+                </div>
+            {/each}
+        </section>
+    {/each}
+
+    {#if view && quiet.length}
+        <section class="panel" aria-label="Waiting for you">
+            <h2>Waiting for you</h2>
+            {#each quiet as session (session.id)}
+                <div class="quiet-row">
+                    <HarnessBadge harness={session.harness} compact />
+                    <span class="name"
+                        ><strong>{session.title || session.folder}</strong>
+                        {#if session.request}<span class="muted">“{session.request}”</span
+                            >{/if}</span
+                    >
+                    <span class="muted when">{elapsed(session.last_active, now)} ago</span>
+                    <span class="usage" title="Memory still in use"
+                        >{size(session.memory_bytes)}</span
+                    >
+                </div>
+            {/each}
+        </section>
+    {/if}
+
+    {#if view && !view.sessions.length}
+        <section class="panel empty-state">
+            <Icon name="code" size={22} />
+            <h2>No coding agents are running</h2>
+            <p class="muted">
+                Start Claude Code, Codex, or Muse Code and they appear here with what they're doing.
+            </p>
+        </section>
+    {/if}
+
+    {#if view}
+        <div class="footer muted">
+            <span
+                >Other apps: {view.other.labels.join(', ') || 'nothing busy'} · CPU {cpuShare(
+                    view.other.cpu_percent
+                )}</span
+            >
+            {#if connected.length}
+                <details class="manage">
+                    <summary>Connected: {connected.map((h) => h.name).join(', ')}</summary>
+                    <div class="connections">
+                        {#each connected as harness (harness.key)}
+                            <button
+                                class="text-button"
+                                disabled={busy}
+                                onclick={() => disconnect(harness.key)}
+                                >Disconnect {harness.name}</button
+                            >
+                        {/each}
+                        {#if available.length}<button
+                                class="text-button"
+                                onclick={() => (setupOpen = true)}>Connect more</button
+                            >{/if}
+                    </div>
+                </details>
+            {/if}
         </div>
     {/if}
 </section>
@@ -480,13 +412,10 @@
     .heading {
         display: flex;
         justify-content: space-between;
-        align-items: flex-start;
+        align-items: center;
         gap: 16px;
     }
     .heading h1 {
-        margin: 2px 0 4px;
-    }
-    .heading p {
         margin: 0;
     }
     .turns-switch {
@@ -549,8 +478,8 @@
         padding: 14px 16px;
     }
     h2 {
-        font-size: 14px;
-        margin: 0;
+        font-size: 13px;
+        margin: 0 0 6px;
     }
     .setup {
         border: 1px solid var(--accent);
@@ -563,14 +492,10 @@
     }
     .setup-head h2 {
         font-size: 16px;
-        margin: 4px 0;
+        margin: 0 0 4px;
     }
     .setup-head p {
         margin: 0;
-    }
-    .step {
-        font-size: 11px;
-        color: var(--accent);
     }
     .harness-row {
         display: flex;
@@ -631,48 +556,18 @@
         display: flex;
         gap: 8px;
     }
-    .brief {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        background: var(--accent-soft);
-        border-color: transparent;
-    }
-    .brief-head {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: var(--muted);
-    }
-    .brief-head button {
-        margin-left: auto;
-    }
-    .headline {
-        margin: 0;
-        font-size: 15px;
-        line-height: 1.45;
-    }
-    .section-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 6px;
-        font-size: 12px;
-    }
-    .empty {
-        margin: 4px 0 0;
-        font-size: 13px;
-    }
     .turn,
-    .agent-main {
+    .subagent,
+    .quiet-row {
         display: grid;
-        grid-template-columns: 34px minmax(110px, auto) 1fr 110px 64px 74px;
         align-items: center;
         gap: 10px;
         padding: 7px 0;
         border-top: 1px solid var(--border);
         font-size: 13px;
+    }
+    .turn {
+        grid-template-columns: 22px minmax(100px, auto) 1fr 110px 150px;
     }
     .turn.running code {
         color: var(--success);
@@ -684,11 +579,13 @@
         justify-content: center;
     }
     .pulse {
-        width: 9px;
-        height: 9px;
+        display: inline-block;
+        width: 8px;
+        height: 8px;
         border-radius: 50%;
         background: var(--success);
         animation: pulse 1.6s ease-in-out infinite;
+        flex: none;
     }
     @keyframes pulse {
         50% {
@@ -700,8 +597,10 @@
         font-size: 12px;
         background: var(--canvas);
         border-radius: 5px;
-        padding: 2px 6px;
+        padding: 1px 6px;
         white-space: nowrap;
+    }
+    .turn code {
         overflow: hidden;
         text-overflow: ellipsis;
         justify-self: start;
@@ -720,72 +619,83 @@
         font-size: 12px;
         white-space: nowrap;
     }
-    .num {
+    .usage {
         text-align: right;
         font-variant-numeric: tabular-nums;
         font-size: 12px;
+        color: var(--muted);
         white-space: nowrap;
     }
-    .session-head {
-        display: grid;
-        grid-template-columns: auto auto 1fr 64px 74px;
+    .conversation {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .conversation-head {
+        display: flex;
         align-items: center;
         gap: 10px;
-        padding-bottom: 6px;
     }
-    .session-title {
+    .conversation-head .name {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+    }
+    .conversation-head .name strong {
         font-size: 14px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
-    .folder {
+    .conversation-head .name span {
         font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    .agent-main {
-        grid-template-columns: minmax(150px, 1.3fr) 104px minmax(0, 1fr) 64px 64px 74px;
+    .doing {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 2px 0 0;
+        font-size: 15px;
     }
-    .agent-label {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 6px;
+    .request,
+    .note {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .subagent {
+        grid-template-columns: minmax(140px, 0.9fr) minmax(0, 1.4fr) 150px;
+    }
+    .sub-label,
+    .sub-doing {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .sub-doing {
+        font-size: 12px;
+    }
+    .quiet-row {
+        grid-template-columns: auto minmax(0, 1fr) 70px 70px;
+    }
+    .quiet-row .name {
+        display: flex;
+        gap: 8px;
         min-width: 0;
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;
     }
-    .agent-label small {
-        color: var(--muted);
-        font-size: 10px;
-    }
-    .state {
-        font-size: 11px;
-        padding: 2px 8px;
-        border-radius: 999px;
-        background: var(--canvas);
-        color: var(--muted);
-        justify-self: start;
-        white-space: nowrap;
-    }
-    .state.running {
-        background: var(--success-soft);
-        color: var(--success);
-    }
-    .state.waiting {
-        background: var(--warning-soft);
-        color: var(--warning);
-    }
-    .state.working {
-        background: var(--accent-soft);
-        color: var(--accent);
-    }
-    .note {
-        margin: 0 0 6px;
-        font-size: 12px;
-        color: var(--muted);
-        display: flex;
-        gap: 6px;
-        align-items: center;
+    .quiet-row .name .muted {
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .empty-state {
         text-align: center;
@@ -793,43 +703,36 @@
     }
     .empty-state h2 {
         margin: 8px 0 4px;
-    }
-    .recent summary {
-        font-size: 13px;
+        font-size: 14px;
     }
     .footer {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-start;
         gap: 12px;
         flex-wrap: wrap;
         font-size: 12px;
     }
     .connections {
         display: flex;
-        gap: 8px;
+        gap: 10px;
         flex-wrap: wrap;
-        align-items: center;
-    }
-    .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 3px 4px 3px 8px;
-        border: 1px solid var(--border);
-        border-radius: 999px;
+        justify-content: flex-end;
+        margin-top: 6px;
     }
     @media (max-width: 760px) {
         .gauges {
             grid-template-columns: 1fr;
         }
         .turn,
-        .agent-main {
-            grid-template-columns: 1fr auto auto;
+        .subagent,
+        .quiet-row {
+            grid-template-columns: 1fr auto;
         }
+        .turn .who,
         .turn .when,
-        .agent-main .when,
-        .turn .who {
+        .subagent .sub-doing,
+        .quiet-row .when {
             display: none;
         }
     }

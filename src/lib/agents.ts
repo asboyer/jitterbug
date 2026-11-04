@@ -12,8 +12,8 @@ export interface Harness {
 
 export interface AgentRow {
     label: string;
-    subagent: boolean;
-    state: 'running' | 'waiting' | 'working' | 'idle';
+    doing: string | null;
+    state: 'running' | 'waiting' | 'working';
     command: string | null;
     position: number | null;
     since: number | null;
@@ -27,10 +27,12 @@ export interface AgentSession {
     harness_name: string;
     title: string;
     folder: string;
-    status: string | null;
+    state: 'working' | 'waiting' | 'idle';
+    doing: string | null;
+    request: string | null;
+    last_active: number | null;
     cpu_percent: number;
     memory_bytes: number;
-    process_count: number;
     agents: AgentRow[];
 }
 
@@ -46,17 +48,6 @@ export interface LineItem {
     memory_bytes: number;
 }
 
-export interface Finished {
-    harness: string;
-    agent: string;
-    command: string;
-    waited_seconds: number;
-    started_at: number;
-    ended_at: number;
-    peak_cpu_percent: number;
-    peak_memory_bytes: number;
-}
-
 export interface AgentsView {
     captured_at: number;
     live: boolean;
@@ -65,8 +56,8 @@ export interface AgentsView {
     enabled: boolean;
     harnesses: Harness[];
     sessions: AgentSession[];
+    stale: number;
     line: LineItem[];
-    recent: Finished[];
     other: { cpu_percent: number; memory_bytes: number; labels: string[] };
     signature: string;
 }
@@ -80,14 +71,25 @@ export interface AgentsBrief {
     generated_at: number;
 }
 
-export const rowId = (session: AgentSession, index: number) => `${session.id}#${index}`;
-
 export function elapsed(since: number | null, now: number): string {
     if (!since) return '';
     const seconds = Math.max(0, Math.round(now - since));
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
-    return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h`;
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/** Share of the whole computer's CPU, rounded the way people read it. */
+export function cpuShare(value: number): string {
+    if (value < 0.5) return '0%';
+    return `${Math.round(value)}%`;
+}
+
+export function size(bytes: number): string {
+    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+    return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 }
 
 const GIB = 1024 ** 3;
@@ -115,7 +117,7 @@ export function demoAgents(step: number, connected: boolean): AgentsView {
     const together = !connected || step === 0;
     const python: AgentRow = {
         label: 'Run the Python test suite',
-        subagent: true,
+        doing: 'Running pytest',
         state: 'running',
         command: 'pytest',
         position: null,
@@ -125,39 +127,24 @@ export function demoAgents(step: number, connected: boolean): AgentsView {
     };
     const rust: AgentRow = {
         label: 'Validate the Rust change',
-        subagent: true,
+        doing: together ? 'Running cargo test' : 'Editing turns.rs',
         state: together ? 'running' : 'waiting',
         command: 'cargo test',
         position: together ? null : 1,
         since: now - 30,
-        cpu_percent: together ? 28 : 0.4,
-        memory_bytes: together ? 1.4 * GIB : 40 * MIB,
+        cpu_percent: together ? 28 : 0,
+        memory_bytes: together ? 1.4 * GIB : 0,
     };
     const build: AgentRow = {
-        label: 'Main conversation',
-        subagent: false,
+        label: '',
+        doing: null,
         state: together ? 'running' : 'waiting',
         command: 'npm run build',
         position: together ? null : 2,
         since: now - 18,
-        cpu_percent: together ? 24 : 0.3,
-        memory_bytes: together ? 1.1 * GIB : 30 * MIB,
+        cpu_percent: together ? 24 : 0,
+        memory_bytes: together ? 1.1 * GIB : 0,
     };
-    const main: AgentRow = {
-        label: 'Main conversation',
-        subagent: false,
-        state: 'working',
-        command: null,
-        position: null,
-        since: null,
-        cpu_percent: 1.2,
-        memory_bytes: 320 * MIB,
-    };
-    const sum = (rows: AgentRow[]) => ({
-        cpu_percent: rows.reduce((t, r) => t + r.cpu_percent, 0),
-        memory_bytes: rows.reduce((t, r) => t + r.memory_bytes, 0),
-    });
-    const claudeRows = [main, python, rust];
     const sessions: AgentSession[] = [
         {
             id: 'demo-claude',
@@ -165,10 +152,13 @@ export function demoAgents(step: number, connected: boolean): AgentsView {
             harness_name: 'Claude Code',
             title: 'Agents tab redesign',
             folder: '~/Developer/jitterbug',
-            status: 'working',
-            process_count: 14,
-            agents: claudeRows,
-            ...sum(claudeRows),
+            state: 'working',
+            doing: 'Delegating: Validate the Rust change',
+            request: 'Make the agents tab show what each agent is doing',
+            last_active: now - 2,
+            cpu_percent: python.cpu_percent + rust.cpu_percent + 1.2,
+            memory_bytes: python.memory_bytes + rust.memory_bytes + 320 * MIB,
+            agents: [python, rust],
         },
         {
             id: 'demo-codex',
@@ -176,34 +166,46 @@ export function demoAgents(step: number, connected: boolean): AgentsView {
             harness_name: 'Codex',
             title: 'web',
             folder: '~/Developer/web',
-            status: null,
-            process_count: 6,
+            state: 'working',
+            doing: together ? 'Running npm run build' : 'Editing checkout.tsx',
+            request: 'Fix the checkout build and run it',
+            last_active: now - 5,
+            cpu_percent: build.cpu_percent + 0.4,
+            memory_bytes: build.memory_bytes + 240 * MIB,
             agents: [build],
-            ...sum([build]),
+        },
+        {
+            id: 'demo-claude-2',
+            harness: 'claude',
+            harness_name: 'Claude Code',
+            title: 'API docs',
+            folder: '~/Developer/api',
+            state: 'waiting',
+            doing: 'Waiting for you',
+            request: 'Update the README for the new endpoints',
+            last_active: now - 35 * 60,
+            cpu_percent: 0,
+            memory_bytes: 210 * MIB,
+            agents: [],
         },
     ];
     const line: LineItem[] = connected
-        ? [
-              ['claude', 'Claude Code', python.label, 'pytest', 'running', python],
+        ? (
               [
-                  'claude',
-                  'Claude Code',
-                  rust.label,
-                  'cargo test',
-                  together ? 'running' : 'waiting',
-                  rust,
-              ],
-              ['codex', 'Codex', '', 'npm run build', together ? 'running' : 'waiting', build],
-          ].map(([harness, harness_name, agent, command, state, row]) => ({
-              harness: harness as string,
-              harness_name: harness_name as string,
-              agent: agent as string,
-              command: command as string,
+                  ['claude', 'Claude Code', python],
+                  ['claude', 'Claude Code', rust],
+                  ['codex', 'Codex', build],
+              ] as [string, string, AgentRow][]
+          ).map(([harness, harness_name, row]) => ({
+              harness,
+              harness_name,
+              agent: row.label,
+              command: row.command ?? '',
               folder: 'jitterbug',
-              state: state as 'running' | 'waiting',
-              since: (row as AgentRow).since ?? now,
-              cpu_percent: (row as AgentRow).cpu_percent,
-              memory_bytes: (row as AgentRow).memory_bytes,
+              state: row.state === 'waiting' ? 'waiting' : 'running',
+              since: row.since ?? now,
+              cpu_percent: row.cpu_percent,
+              memory_bytes: row.memory_bytes,
           }))
         : [];
     const cpu = sessions.reduce((t, s) => t + s.cpu_percent, 0) + 6;
@@ -215,28 +217,26 @@ export function demoAgents(step: number, connected: boolean): AgentsView {
         enabled: connected,
         harnesses,
         sessions,
+        stale: 2,
         line,
-        recent: [],
         other: { cpu_percent: 6, memory_bytes: 9 * GIB, labels: ['Firefox', 'Safari', 'Slack'] },
         signature: `demo-${connected}-${together}`,
     };
 }
 
 export function demoBrief(view: AgentsView): AgentsBrief {
-    const together = view.sessions[0]?.agents[2]?.state === 'running';
+    const together = view.line.length === 0 || view.line.every((l) => l.state === 'running');
     return {
         headline: together
-            ? '3 test runs from 2 agents are fighting for your CPU: pytest, cargo test, and a Codex build are all running at once.'
-            : 'One heavy command at a time: pytest is running for Claude Code while cargo test and the Codex build wait their turn.',
+            ? 'Three test runs from two agents are fighting for your CPU at once: pytest, cargo test, and a Codex build.'
+            : 'pytest is running for Claude Code; cargo test and the Codex build wait their turn while their agents keep editing.',
         notes: {
-            'demo-claude#1':
-                'CPU-bound test workers. Safe to let finish; the next check starts right after.',
-            'demo-claude#2': together
-                ? 'Compiling and testing at the same time as two other suites, so each runs slower.'
-                : 'Waiting for its turn. The subagent keeps editing in the meantime.',
-            'demo-codex#0': together
+            'demo-claude': together
+                ? 'Two subagents are running test suites side by side, so each runs slower.'
+                : 'One subagent has the slot; the other keeps editing until its turn.',
+            'demo-codex': together
                 ? 'A production build competing with two test suites for memory.'
-                : 'Second in line. Starts when cargo test finishes and CPU has room.',
+                : 'Second in line. Its build starts when cargo test finishes.',
         },
         provider: 'demo',
         model: 'synthetic',
