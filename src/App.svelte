@@ -22,10 +22,14 @@
     import Chat from './components/Chat.svelte';
     import ActionResult from './components/ActionResult.svelte';
     import ProviderSettings from './components/ProviderSettings.svelte';
+    import AiSettings from './components/AiSettings.svelte';
+    import ModeSwitch from './components/ModeSwitch.svelte';
+    import Onboarding from './components/Onboarding.svelte';
     import { demoBootstrap, demoSnapshot, demoIncidents } from './lib/demo';
     import { errorMessage } from './lib/format';
     import type {
         ActionReport,
+        Settings,
         AutomationCase,
         Bootstrap,
         Incident,
@@ -40,6 +44,68 @@
     let demoMenuOpen = $state(false);
     let tourIndex = $state<number | null>(null);
     let tourSeen = $state(true);
+    const onboardingPreference = 'jitterbug.onboarding.v1.done';
+    let onboardingOpen = $state(false);
+    let settingsRevision = $state(0);
+    /** An agent tried to use Jitterbug while agent access was off. */
+    let accessAsk = $state<{ agent: string | null } | null>(null);
+    let accessDeclined = false;
+    let accessBusy = $state(false);
+    async function allowAgentAccess() {
+        accessBusy = true;
+        const policy = { ...$state.snapshot(bootstrap.settings.automation), agent_control: true };
+        try {
+            if (desktop && !demo) {
+                await invoke('save_automation_policy', { policy });
+                await refreshBootstrap();
+            } else {
+                bootstrap.settings.automation = policy;
+            }
+            settingsRevision++;
+            accessAsk = null;
+        } catch (cause) {
+            error = errorMessage(cause);
+        } finally {
+            accessBusy = false;
+        }
+    }
+    function onboardingDone() {
+        try {
+            return localStorage.getItem(onboardingPreference) === '1';
+        } catch {
+            return true;
+        }
+    }
+    function openOnboarding() {
+        if (tourIndex !== null) finishTour();
+        demoMenuOpen = false;
+        onboardingOpen = true;
+    }
+    function finishOnboarding(tour: boolean) {
+        onboardingOpen = false;
+        try {
+            localStorage.setItem(onboardingPreference, '1');
+        } catch {
+            /* Optional preference only. */
+        }
+        navigate('monitor');
+        if (tour) startTour();
+        // Land on the front page with the tour offer, even if the tour was seen before.
+        else tourSeen = false;
+    }
+    /** Saves AI settings from the sidebar switch or onboarding; the preview keeps them in memory. */
+    async function saveAiSettings(next: Settings) {
+        if (desktop) {
+            await invoke('save_settings', { settings: next });
+            await refreshBootstrap();
+        } else {
+            bootstrap.settings = next;
+        }
+        settingsRevision++;
+    }
+    onMount(() => {
+        if (new URLSearchParams(location.search).has('onboarding')) onboardingOpen = true;
+    });
     let beforeTour: {
         page: string;
         demo: boolean;
@@ -122,6 +188,7 @@
         { id: 'sessions', label: 'Sessions', icon: 'play' },
         { id: 'queue', label: 'Validation queue', icon: 'queue' },
         { id: 'inbox', label: 'Inbox', icon: 'inbox' },
+        { id: 'ai', label: 'AI', icon: 'model' },
         { id: 'settings', label: 'Settings', icon: 'settings' },
     ] as const;
     let demoTick = $state(0);
@@ -372,6 +439,18 @@
                     return;
                 }
                 cleanup.push(telemetry);
+                const asking = await listen<{ agent: string | null }>(
+                    'agent-access-requested',
+                    (event) => {
+                        if (!accessDeclined && !bootstrap.settings.automation.agent_control)
+                            accessAsk = event.payload;
+                    }
+                );
+                if (disposed) {
+                    asking();
+                    return;
+                }
+                cleanup.push(asking);
                 const scheduling = await listen('workflow-attention', () => {
                     if (!demo) workflowNotice = true;
                 });
@@ -435,7 +514,7 @@
                             demoPressure = false;
                             alert = null;
                         }
-                        if (page === 'settings') {
+                        if (page === 'settings' || page === 'ai') {
                             chatOpen = false;
                             automationOpen = false;
                         }
@@ -477,6 +556,8 @@
                 cleanup.push(popupDetails);
                 live = await invoke('get_snapshot');
                 await refreshBootstrap();
+                // First launch only, and never once any provider key exists.
+                if (!onboardingDone() && !bootstrap.credentials.length) onboardingOpen = true;
             } catch (cause) {
                 error = errorMessage(cause);
             }
@@ -623,9 +704,14 @@
                 disabled={!!management || !!pendingAction || actionBusy}
                 onclick={startTour}><Icon name="info" size={16} /> Take a tour</button
             >
-            <span class="tag" title="AI mode. Change this in Settings."
-                >{bootstrap.settings.mode.replaceAll('_', ' ')}</span
-            >
+            <ModeSwitch
+                {bootstrap}
+                onsave={saveAiSettings}
+                onkeys={() => {
+                    settingsRevision++;
+                    navigate('ai');
+                }}
+            />
         </div>
     </nav>
     <main bind:this={mainElement}>
@@ -678,6 +764,13 @@
                         >
                         <button onclick={simulatePressure}>Simulate pressure</button>
                         <button onclick={previewPopup}>Preview action popup</button>
+                        <button onclick={openOnboarding}>Replay onboarding</button>
+                        <button
+                            onclick={() => {
+                                demoMenuOpen = false;
+                                accessAsk = { agent: 'Claude Code' };
+                            }}>Preview agent access request</button
+                        >
                         <small
                             >{popupStatus || 'Synthetic data. No extra CPU or memory load.'}</small
                         >
@@ -706,6 +799,27 @@
                     }}>Dismiss demo</button
                 >
             </div>{/if}
+        {#if accessAsk}<div class="banner access-banner" role="alert">
+                <div>
+                    <strong
+                        >{accessAsk.agent ?? 'A coding agent'} wants to see what is using this computer</strong
+                    >
+                    <p>
+                        Allowing lets agents read app names, folder names and tab titles, and ask
+                        before pausing a session. You can turn it off in Settings › Integrations.
+                    </p>
+                </div>
+                <button
+                    class="text-button"
+                    disabled={accessBusy}
+                    onclick={() => {
+                        accessDeclined = true;
+                        accessAsk = null;
+                    }}>Not now</button
+                ><button class="primary" disabled={accessBusy} onclick={allowAgentAccess}
+                    >{accessBusy ? 'Allowing…' : 'Allow'}</button
+                >
+            </div>{/if}
         {#if captureStatus}<div class="banner" role="status">{captureStatus}</div>{/if}
         {#if error}<div class="banner error" role="alert">
                 {error}<button
@@ -728,8 +842,14 @@
                     >
                 </div>
             {/if}
-            {#if page === 'settings'}
-                <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
+            {#if page === 'ai'}
+                {#key settingsRevision}
+                    <AiSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
+                {/key}
+            {:else if page === 'settings'}
+                {#key settingsRevision}
+                    <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
+                {/key}
             {:else if page === 'sessions'}
                 <Sessions />
             {:else if page === 'inbox'}
@@ -923,6 +1043,10 @@
                 void invoke('close_action_popup', { id: later.id }).catch(() => {});
         }}
     />
+{/if}
+
+{#if onboardingOpen}
+    <Onboarding {bootstrap} {desktop} onsave={saveAiSettings} onfinish={finishOnboarding} />
 {/if}
 
 {#if tourIndex !== null}

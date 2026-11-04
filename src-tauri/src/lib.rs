@@ -652,6 +652,12 @@ async fn confirm_system_restore(
     state.confirm_system_restore(&token).await
 }
 
+/// Where `jitterbug-run` lives, so Settings can show copy-ready MCP setup commands.
+#[tauri::command]
+fn get_agent_runner() -> Option<String> {
+    agent_sessions::runner().map(|path| path.display().to_string())
+}
+
 #[tauri::command]
 fn save_credential(provider: settings::Provider, credential: String) -> Result<(), String> {
     settings::save_key(provider, &credential)
@@ -929,10 +935,20 @@ pub fn run() {
             #[cfg(unix)]
             if let Ok(path) = control::socket_path() {
                 let control = runtime.clone();
+                let asks = app.handle().clone();
                 if let Err(error) = control::server::serve(
                     &path,
                     Arc::new(move |caller, method, params| {
-                        control::handlers::handle(&control, caller, method, params)
+                        let result = control::handlers::handle(&control, caller, method, params);
+                        // Access is off: tell the person an agent is asking, by name only.
+                        if matches!(&result, Err(e) if e == control::handlers::ACCESS_OFF) {
+                            let agent = control::handlers::caller_agent(caller);
+                            let _ = asks.emit(
+                                "agent-access-requested",
+                                serde_json::json!({ "agent": agent }),
+                            );
+                        }
+                        result
                     }),
                 ) {
                     eprintln!("Agent control unavailable: {error}");
@@ -1064,6 +1080,7 @@ pub fn run() {
             cancel_system_restore,
             confirm_system_restore,
             save_credential,
+            get_agent_runner,
             list_local_models,
             unload_model,
             ask,
