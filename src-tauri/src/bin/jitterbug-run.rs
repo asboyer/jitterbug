@@ -28,6 +28,23 @@ fn run() -> Result<i32, String> {
         };
     }
     let mut args = std::env::args_os().skip(1).peekable();
+    if args
+        .peek()
+        .is_some_and(|arg| arg == "gate" || arg == "release")
+    {
+        // A pre/post tool hook. Never fail the agent's command because of Jitterbug.
+        let action = args.next().unwrap_or_default();
+        let harness = match (args.next(), args.next()) {
+            (Some(flag), Some(value)) if flag == "--harness" => {
+                value.into_string().unwrap_or_default()
+            }
+            _ => String::new(),
+        };
+        if let Err(error) = turn(action == "gate", &harness) {
+            eprintln!("jitterbug-run: {error}");
+        }
+        return Ok(0);
+    }
     if args.peek().is_some_and(|arg| arg == "control-mcp") {
         return jitterbug_lib::control::mcp::serve();
     }
@@ -211,6 +228,131 @@ fn event() -> Result<(), String> {
     }
     let value = serde_json::from_slice(&bytes).map_err(|_| "Invalid harness event JSON.")?;
     workflows::record_event(&workflows::registry_directory()?, &id, &value)
+}
+
+/// The harness process that ran this hook: the nearest ancestor that is the agent itself.
+fn owner() -> (u32, u64) {
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut fallback = None;
+    for _ in 0..12 {
+        let Some(parent) = system.process(pid).and_then(|p| p.parent()) else {
+            break;
+        };
+        let Some(process) = system.process(parent) else {
+            break;
+        };
+        let name = process.name().to_string_lossy().to_ascii_lowercase();
+        let identity = (parent.as_u32(), process.start_time());
+        fallback.get_or_insert(identity);
+        if name == "claude" || name == "codex" || name.starts_with("muse") {
+            return identity;
+        }
+        let executable = process
+            .exe()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if executable.contains("/claude/versions/") || executable.ends_with("/claude") {
+            return identity;
+        }
+        pid = parent;
+    }
+    fallback.unwrap_or((0, 0))
+}
+
+fn turn(gate: bool, harness: &str) -> Result<(), String> {
+    use jitterbug_lib::turns::{self, classify, Decision, Request};
+    use std::io::Read;
+    if !turns::HARNESSES.contains(&harness) {
+        return Err("Unknown harness; expected claude, codex, or muse.".into());
+    }
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(harness::MAX_EVENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read the hook event.")?;
+    if bytes.len() as u64 > harness::MAX_EVENT_BYTES {
+        return Err("Hook event exceeds 64 KiB.".into());
+    }
+    let input: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid hook event JSON.")?;
+    let request = Request::parse(harness, &input);
+    let directory = turns::directory()?;
+    let heavy = request.command.as_deref().and_then(classify::heavy);
+    if !gate {
+        turns::transaction(&directory, |state| {
+            state.release(&request, heavy.as_deref(), jitterbug_lib::types::now())
+        })?;
+        return Ok(());
+    }
+    let Some(command) = heavy else {
+        turns::transaction(&directory, |state| {
+            state
+                .contacts
+                .insert(harness.to_string(), jitterbug_lib::types::now());
+            state.light_seen += 1;
+        })?;
+        return Ok(());
+    };
+    let enabled = turns::inspect(&directory)?.enabled;
+    // Without fresh telemetry nobody is scheduling: let the command run.
+    let Ok(mut resources) = turns::headroom().map(Some) else {
+        return Ok(());
+    };
+    if !enabled {
+        return Ok(());
+    }
+    let agent = turns::agent_label(&request);
+    let owner = owner();
+    // Wait quietly for a short while; past that, hand the turn back so the agent keeps working.
+    let wait = std::env::var("JITTERBUG_TURN_WAIT_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(45u64)
+        .min(80);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+    loop {
+        let room = resources.as_ref().and_then(|r| r.block_reason(0));
+        let decision = turns::transaction(&directory, |state| {
+            state.ask(
+                &request,
+                &command,
+                &agent,
+                owner,
+                room,
+                jitterbug_lib::types::now(),
+            )
+        })?;
+        match decision {
+            Decision::Pass | Decision::Started => return Ok(()),
+            Decision::Wait {
+                position,
+                ahead,
+                reason,
+            } => {
+                if std::time::Instant::now() >= deadline {
+                    let message = turns::wait_message(&command, position, &ahead, &reason);
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": message,
+                            }
+                        })
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        resources = turns::headroom().ok();
+        if resources.is_none() {
+            return Ok(());
+        }
+    }
 }
 
 fn main() {

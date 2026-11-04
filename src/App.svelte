@@ -14,7 +14,7 @@
     import { hubDemo, demoControl } from './lib/workflow-hub';
     import type { ValidationQueue as QueueState } from './lib/queue';
     import Workloads from './components/Workloads.svelte';
-    import AgentWorkflows from './components/AgentWorkflows.svelte';
+    import Agents from './components/Agents.svelte';
     import Sessions from './components/Sessions.svelte';
     import ValidationQueue from './components/ValidationQueue.svelte';
     import IncidentInbox from './components/IncidentInbox.svelte';
@@ -122,9 +122,7 @@
         { id: 'hub', label: 'Workflows', icon: 'queue' },
         { id: 'dashboard', label: 'Activity', icon: 'activity' },
         { id: 'workloads', label: 'Workloads', icon: 'app' },
-        { id: 'agents', label: 'Agent tasks', icon: 'code' },
-        { id: 'sessions', label: 'Sessions', icon: 'play' },
-        { id: 'queue', label: 'Validation queue', icon: 'queue' },
+        { id: 'agents', label: 'Agents', icon: 'code' },
         { id: 'inbox', label: 'Inbox', icon: 'inbox' },
         { id: 'settings', label: 'Settings', icon: 'settings' },
     ] as const;
@@ -795,25 +793,7 @@
                 {:else if page === 'workloads'}
                     <Workloads {snapshot} onselect={select} />
                 {:else if page === 'agents'}
-                    <div class="page-heading">
-                        <div>
-                            <h1>Agent tasks</h1>
-                            <p class="muted">
-                                What your coding tools are working on, and the resources they use.
-                            </p>
-                        </div>
-                    </div>
-                    <AgentWorkflows
-                        {snapshot}
-                        bind:selectedId={agentTaskId}
-                        onselect={select}
-                        onmanage={(selection) => {
-                            management = selection;
-                        }}
-                        onusage={() => {
-                            void refreshBootstrap().catch(() => {});
-                        }}
-                    />
+                    <Agents {demo} />
                 {:else if page === 'queue'}
                     <div class="page-heading">
                         <div>
