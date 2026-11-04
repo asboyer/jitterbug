@@ -362,23 +362,34 @@
                 )}</span
             >
             {#if connected.length}
-                <details class="manage">
-                    <summary>Connected: {connected.map((h) => h.name).join(', ')}</summary>
-                    <div class="connections">
-                        {#each connected as harness (harness.key)}
-                            <button
-                                class="text-button"
+                <div class="connections" role="group" aria-label="Connected agents">
+                    <span class="connections-label">Connected</span>
+                    {#each connected as harness (harness.key)}
+                        <span class="connection"
+                            ><HarnessBadge harness={harness.key} compact /><span
+                                >{harness.name}</span
+                            ><button
+                                class="disconnect"
+                                aria-label={`Disconnect ${harness.name}`}
+                                title={`Disconnect ${harness.name}`}
                                 disabled={busy}
                                 onclick={() => disconnect(harness.key)}
-                                >Disconnect {harness.name}</button
-                            >
-                        {/each}
-                        {#if available.length}<button
-                                class="text-button"
-                                onclick={() => (setupOpen = true)}>Connect more</button
-                            >{/if}
-                    </div>
-                </details>
+                                ><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"
+                                    ><path
+                                        d="M1.5 1.5l5 5m0-5-5 5"
+                                        stroke="currentColor"
+                                        stroke-width="1.4"
+                                        stroke-linecap="round"
+                                    /></svg
+                                ></button
+                            ></span
+                        >
+                    {/each}
+                    {#if available.length}<button
+                            class="connect-more"
+                            onclick={() => (setupOpen = true)}>Connect another…</button
+                        >{/if}
+                </div>
             {/if}
         </div>
     {/if}
@@ -692,10 +703,46 @@
     }
     .connections {
         display: flex;
-        gap: 10px;
+        align-items: center;
+        gap: 6px;
         flex-wrap: wrap;
         justify-content: flex-end;
-        margin-top: 6px;
+    }
+    .connections-label {
+        color: var(--faint);
+        margin-right: 2px;
+    }
+    .connection {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 26px;
+        padding: 0 4px 0 8px;
+        border-radius: 13px;
+        background: #ffffff0d;
+        box-shadow: inset 0 0 0 0.5px #ffffff1a;
+        color: var(--text);
+    }
+    .disconnect {
+        display: grid;
+        place-items: center;
+        width: 18px;
+        height: 18px;
+        min-height: 0;
+        padding: 0;
+        border-radius: 50%;
+        background: transparent;
+        box-shadow: none;
+        color: var(--faint);
+    }
+    .disconnect:hover:not(:disabled) {
+        background: #ffffff1f;
+        color: var(--text);
+    }
+    .connect-more {
+        min-height: 26px;
+        padding: 0 10px;
+        font-size: 12px;
     }
     @media (max-width: 760px) {
         .gauges {

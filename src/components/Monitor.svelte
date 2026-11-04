@@ -6,9 +6,7 @@
         ProcessRecord,
         ActionReport,
         AutomationCase,
-        Scene,
     } from '../lib/types';
-    import SceneReading from './SceneReading.svelte';
     import Workloads from './Workloads.svelte';
     import MonitorInspector from './MonitorInspector.svelte';
     import Logo from './Logo.svelte';
@@ -46,8 +44,6 @@
     let view = $state('apps');
     let search = $state('');
     let filter = $state('all');
-    let activity = $state<string | null>(null);
-    let scene = $state<Scene | null>(null);
     // Search in your own words: Enter asks Meta which running apps match the request.
     let found = $state<{ query: string; answer: string; ids: string[] } | null>(null);
     let finding = $state(false);
@@ -65,7 +61,6 @@
                     }),
                 15
             );
-            activity = null;
             found = { query, answer: result.answer, ids: result.workload_ids };
             onusage();
         } catch (cause) {
@@ -77,12 +72,6 @@
     $effect(() => {
         if (found && search.trim() !== found.query) found = null;
     });
-    $effect(() => {
-        if (activity) found = null;
-    });
-    const activityIds = $derived(
-        found?.ids ?? scene?.activities.find((a) => a.name === activity)?.workload_ids ?? null
-    );
     function inspect(workload: Workload, target?: ProcessRecord | null) {
         trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         process = target ?? null;
@@ -151,34 +140,19 @@
     </header>
     <div class="monitor-body" class:inspecting={!!selected || systemChat}>
         <div class="monitor-main">
-            <SceneReading
-                {snapshot}
-                {settingsKey}
-                bind:activity
-                {onusage}
-                onfocus={(id) => {
-                    const workload = snapshot.workloads.find((w) => w.id === id);
-                    if (workload) inspect(workload);
-                }}
-                onask={(question) => askAbout(question)}
-                onscene={(value) => (scene = value)}
-                compact={!!selected || systemChat}
-            />
             <Workloads
                 {snapshot}
                 {settingsKey}
                 {view}
                 search={found ? '' : search}
                 {filter}
-                workloadIds={activityIds}
-                activityName={found ? null : activity}
+                workloadIds={found?.ids ?? null}
+                activityName={null}
                 aiAnswer={found?.answer ??
                     (finding ? `Looking for “${search.trim()}”…` : findError || null)}
                 onclearactivity={() => {
-                    activity = null;
                     found = null;
                     findError = '';
-                    if (found === null) search = search;
                 }}
                 pauseEnrichment={false}
                 selectedId={selected?.id ?? null}

@@ -7,6 +7,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -124,7 +125,33 @@ fn setup(id: &str) -> Inside {
     view
 }
 
+/// Tabs from Firefox's debugger when the person connected it; otherwise the open tabs from its
+/// local session file, and every helper process named by the kind Firefox launched it as.
 pub fn inspect(snapshot: &Snapshot, id: &str, members: &[&ProcessRecord], connect: bool) -> Inside {
+    let mut view = inspect_debugger(snapshot, id, members, connect);
+    let (kinds, profile) = launched_as(members);
+    if view.status == "setup" {
+        if let Some(tabs) = profile.as_deref().and_then(session_tabs) {
+            view = local(id, view.setup, tabs);
+        }
+    }
+    for p in members {
+        if view.labels.iter().any(|l| l.pid == p.pid) {
+            continue;
+        }
+        if let Some((title, subtitle)) = kinds.get(&p.pid).and_then(|k| kind_label(k)) {
+            view.labels.push(ProcessLabel::new(p, title, subtitle));
+        }
+    }
+    view
+}
+
+fn inspect_debugger(
+    snapshot: &Snapshot,
+    id: &str,
+    members: &[&ProcessRecord],
+    connect: bool,
+) -> Inside {
     let Ok(mut connection) = CONNECTION.try_lock() else {
         return Inside::status(
             id,
@@ -283,6 +310,232 @@ fn attributed(
     view
 }
 
+/// The kind Firefox gave each child process (its last launch argument), and the profile folder.
+/// Arguments are read for these processes only and dropped here; only allowlisted words remain.
+fn launched_as(members: &[&ProcessRecord]) -> (HashMap<u32, String>, Option<PathBuf>) {
+    let pids: Vec<_> = members
+        .iter()
+        .filter(|p| p.name == "plugin-container" || p.name == "firefox")
+        .take(256)
+        .map(|p| sysinfo::Pid::from_u32(p.pid))
+        .collect();
+    let mut kinds = HashMap::new();
+    let mut profile = None;
+    if pids.is_empty() {
+        return (kinds, profile);
+    }
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&pids),
+        true,
+        sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+    );
+    for p in system.processes().values() {
+        let args: Vec<String> = p
+            .cmd()
+            .iter()
+            .take(96)
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        if profile.is_none() {
+            profile = args
+                .iter()
+                .position(|a| a == "-profile")
+                .and_then(|i| args.get(i + 1))
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute());
+        }
+        if let Some(kind) = args.last().filter(|k| {
+            matches!(
+                k.as_str(),
+                "tab" | "gpu" | "rdd" | "socket" | "utility" | "forkserver" | "gmplugin"
+            )
+        }) {
+            kinds.insert(p.pid().as_u32(), kind.clone());
+        }
+    }
+    (kinds, profile.or_else(default_profile))
+}
+
+fn kind_label(kind: &str) -> Option<(&'static str, &'static str)> {
+    Some(match kind {
+        "tab" => ("Web content", "Pages from one site or a few tabs"),
+        "gpu" => ("Graphics", "Draws every tab on screen"),
+        "rdd" => ("Media decoding", "Decodes audio and video"),
+        "socket" => ("Network", "Firefox’s network connections"),
+        "utility" => (
+            "Utility services",
+            "Audio, file access, and other shared services",
+        ),
+        "gmplugin" => ("Media plug-in", "Plays protected video"),
+        "forkserver" => ("Process launcher", "Starts Firefox’s other processes"),
+        _ => return None,
+    })
+}
+
+/// The most recently used Firefox profile, for when no process names its own.
+fn default_profile() -> Option<PathBuf> {
+    let root = dirs::data_dir()?.join("Firefox/Profiles");
+    std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file = entry.path().join("sessionstore-backups/recovery.jsonlz4");
+            let modified = std::fs::metadata(&file).ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+/// One open tab from the session file: what it shows now, never its history.
+#[derive(Debug, PartialEq)]
+struct OpenTab {
+    title: String,
+    url: String,
+}
+
+/// Open, visible, non-private tabs from Firefox's own crash-recovery file. Read-only; Firefox
+/// rewrites it every few seconds, so this is current to within about 15 seconds.
+fn session_tabs(profile: &Path) -> Option<Vec<OpenTab>> {
+    let file = profile.join("sessionstore-backups/recovery.jsonlz4");
+    if std::fs::metadata(&file).ok()?.len() > 64 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(file).ok()?;
+    let json = moz_lz4(&bytes)?;
+    let session: Value = serde_json::from_slice(&json).ok()?;
+    Some(open_tabs(&session))
+}
+
+fn open_tabs(session: &Value) -> Vec<OpenTab> {
+    let mut tabs = Vec::new();
+    for window in session["windows"].as_array().into_iter().flatten() {
+        if window["isPrivate"] == true {
+            continue;
+        }
+        for tab in window["tabs"].as_array().into_iter().flatten() {
+            if tab["hidden"] == true {
+                continue;
+            }
+            let entries = tab["entries"].as_array();
+            let index = tab["index"].as_u64().unwrap_or(1).max(1) as usize - 1;
+            let Some(entry) = entries.and_then(|e| e.get(index).or(e.last())) else {
+                continue;
+            };
+            let url = entry["url"].as_str().unwrap_or_default();
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                continue;
+            }
+            let title = entry["title"].as_str().filter(|t| !t.trim().is_empty());
+            tabs.push(OpenTab {
+                title: title.unwrap_or(url).chars().take(180).collect(),
+                url: url.chars().take(400).collect(),
+            });
+            if tabs.len() >= 300 {
+                return tabs;
+            }
+        }
+    }
+    tabs
+}
+
+/// Decode Mozilla's `mozLz40` container: an 8-byte magic, the decoded size, one LZ4 block.
+fn moz_lz4(bytes: &[u8]) -> Option<Vec<u8>> {
+    let body = bytes.strip_prefix(b"mozLz40\0")?;
+    let size = u32::from_le_bytes(body.get(..4)?.try_into().ok()?) as usize;
+    if size > 128 * 1024 * 1024 {
+        return None;
+    }
+    lz4_block(body.get(4..)?, size)
+}
+
+fn lz4_block(input: &[u8], size: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(size);
+    let mut i = 0;
+    let length = |i: &mut usize, mut n: usize| -> Option<usize> {
+        if n == 15 {
+            loop {
+                let byte = *input.get(*i)?;
+                *i += 1;
+                n += byte as usize;
+                if byte != 255 {
+                    break;
+                }
+            }
+        }
+        Some(n)
+    };
+    while i < input.len() {
+        let token = input[i];
+        i += 1;
+        let literals = length(&mut i, (token >> 4) as usize)?;
+        out.extend_from_slice(input.get(i..i.checked_add(literals)?)?);
+        i += literals;
+        if i >= input.len() {
+            break;
+        }
+        let offset = u16::from_le_bytes([*input.get(i)?, *input.get(i + 1)?]) as usize;
+        i += 2;
+        let count = length(&mut i, (token & 15) as usize)? + 4;
+        if offset == 0 || offset > out.len() || out.len() + count > size {
+            return None;
+        }
+        let start = out.len() - offset;
+        for k in 0..count {
+            out.push(out[start + k]);
+        }
+    }
+    (out.len() == size).then_some(out)
+}
+
+/// Open tabs grouped by site. Firefox runs each site in its own processes but does not say
+/// which, so no tab gets a process or a number here.
+fn local(id: &str, setup: Vec<String>, tabs: Vec<OpenTab>) -> Inside {
+    let mut sites: Vec<(String, Vec<OpenTab>)> = Vec::new();
+    for tab in tabs {
+        let site = host(&tab.url)
+            .map(|h| h.trim_start_matches("www.").to_string())
+            .unwrap_or_else(|| "Other".into());
+        match sites.iter_mut().find(|(s, _)| *s == site) {
+            Some((_, list)) => list.push(tab),
+            None => sites.push((site, vec![tab])),
+        }
+    }
+    sites.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    let count: usize = sites.iter().map(|(_, t)| t.len()).sum();
+    let mut view = Inside::status(
+        id,
+        "Firefox session",
+        "partial",
+        format!(
+            "{count} open tab{} across {} site{}.",
+            if count == 1 { "" } else { "s" },
+            sites.len(),
+            if sites.len() == 1 { "" } else { "s" }
+        ),
+    );
+    view.setup = setup;
+    view.limits = "Read from Firefox’s own session file on this Mac. Firefox keeps each site in separate web content processes but doesn’t say which process belongs to which tab; connect its debugger to match them. Private windows are never read. Titles and addresses stay on this computer.".into();
+    for (site, tabs) in sites {
+        for (i, tab) in tabs.into_iter().enumerate() {
+            view.units.push(Unit {
+                id: format!("{site}#{i}"),
+                kind: "open-tab".into(),
+                title: tab.title,
+                host: Some(site.clone()),
+                detail: tab.url,
+                confidence: "Firefox session file".into(),
+                evidence: vec![
+                    "Listed in Firefox’s session file; Firefox does not report its process.".into(),
+                ],
+                ..Default::default()
+            });
+        }
+    }
+    view
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +602,48 @@ mod tests {
             .all(|u| u.shared_with == 1 && u.actions.is_empty() && u.start_time == Some(7)));
         assert_eq!(view.labels.len(), 1);
         assert!(view.labels[0].title.starts_with("2 tabs:"));
+    }
+
+    #[test]
+    fn lz4_blocks_decode_literals_and_overlapping_matches() {
+        // "abcabcabcabc!": 3 literals, a 9-byte match at offset 3, then a final literal.
+        let block = [0x35, b'a', b'b', b'c', 3, 0, 0x10, b'!'];
+        assert_eq!(lz4_block(&block, 13).unwrap(), b"abcabcabcabc!");
+        let mut file = b"mozLz40\0".to_vec();
+        file.extend_from_slice(&13u32.to_le_bytes());
+        file.extend_from_slice(&block);
+        assert_eq!(moz_lz4(&file).unwrap(), b"abcabcabcabc!");
+        assert!(lz4_block(&[0x05, b'a', 9, 0], 9).is_none());
+        assert!(moz_lz4(b"not firefox").is_none());
+    }
+
+    #[test]
+    fn session_lists_current_pages_and_skips_private_hidden_and_internal_tabs() {
+        let session = json!({"windows":[
+            {"tabs":[
+                {"index":2,"entries":[{"url":"https://old.example/","title":"Old"},{"url":"https://www.youtube.com/watch","title":"Video"}]},
+                {"index":1,"entries":[{"url":"about:newtab","title":"New Tab"}]},
+                {"hidden":true,"index":1,"entries":[{"url":"https://hidden.example/"}]},
+                {"index":1,"entries":[{"url":"https://mail.example.com/inbox","title":""}]}
+            ]},
+            {"isPrivate":true,"tabs":[{"index":1,"entries":[{"url":"https://secret.example/"}]}]}
+        ]});
+        let tabs = open_tabs(&session);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].title, "Video");
+        assert_eq!(tabs[1].title, "https://mail.example.com/inbox");
+        let view = local("app", vec![], tabs);
+        assert_eq!(view.status, "partial");
+        assert!(view
+            .units
+            .iter()
+            .all(|u| u.pid.is_none() && u.memory_bytes == 0));
+        assert_eq!(view.message, "2 open tabs across 2 sites.");
+    }
+
+    #[test]
+    fn helper_kinds_have_plain_names() {
+        assert_eq!(kind_label("tab").unwrap().0, "Web content");
+        assert!(kind_label("org.mozilla.machname.1").is_none());
     }
 }

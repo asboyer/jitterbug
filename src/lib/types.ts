@@ -887,7 +887,7 @@ export interface ProcessLabel {
 export interface InsideView {
     workload_id: string;
     source: string;
-    status: 'ready' | 'setup' | 'unavailable';
+    status: 'ready' | 'partial' | 'setup' | 'unavailable';
     message: string;
     setup: string[];
     units: InsideUnit[];

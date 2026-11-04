@@ -26,7 +26,7 @@
         <InfoTip label="How this insight was made">
             <p>
                 {reply.source === 'model'
-                    ? `${reply.provider} · ${reply.model}`
+                    ? 'Written by AI from the measurements Jitterbug collected.'
                     : reply.unavailable
                       ? 'AI investigation was unavailable. Local checks are shown below.'
                       : 'Measured locally. No model call was needed.'}

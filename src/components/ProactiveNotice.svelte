@@ -45,9 +45,9 @@
         <span class="bug-mark"><Logo size={22} live={checking} /></span><span class="notice-name"
             >Jitterbug<small
                 >{checking
-                    ? 'Investigating with Meta…'
+                    ? 'Investigating…'
                     : insight
-                      ? 'Investigated with Meta'
+                      ? 'Investigated just now'
                       : 'Noticed just now'}</small
             ></span
         ><button class="icon-button" aria-label="Dismiss assistant prompt" onclick={onlater}

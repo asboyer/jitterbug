@@ -324,7 +324,7 @@
                         <div class="detail-content">
                             <p class="analysis-provenance">
                                 {incident.diagnosis.source === 'model'
-                                    ? `${incident.diagnosis.provider} / ${incident.diagnosis.model} · AI interpretation of collected evidence`
+                                    ? 'AI interpretation of collected evidence'
                                     : 'Deterministic rules applied to collected evidence'}
                             </p>
                             <p class="full-analysis">{incident.diagnosis.text}</p>

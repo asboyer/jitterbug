@@ -79,6 +79,18 @@
     function label(p: ProcessRecord) {
         return labels[`${p.pid}:${p.start_time}`];
     }
+    // Browsers name their helper processes (web content, graphics) without asking anyone.
+    let labelled = '';
+    $effect(() => {
+        const id = workload?.id;
+        if (!id || workload?.category !== 'browser' || labelled === id || !detail) return;
+        labelled = id;
+        void invoke<InsideView>('get_inside_view', { workloadId: id, connect: false })
+            .then((view) => {
+                if (!disposed) named(view);
+            })
+            .catch(() => {});
+    });
     let profile = $state<AppProfile | null>(null);
     let profileError = $state('');
     let describing = $state(false);
@@ -358,7 +370,19 @@
 </script>
 
 <div class="inspector-shell">
-    <header class="inspector-head">
+    {#if process && workload}<button class="back" onclick={() => choose(null)}
+            ><svg width="7" height="12" viewBox="0 0 7 12" aria-hidden="true"
+                ><path
+                    d="M5.5 1.5 1.5 6l4 4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                /></svg
+            >{workload.label}</button
+        >{/if}
+    <header class="inspector-head" class:nested={!!process}>
         {#if workload}<AppIcon
                 workloadId={workload.id}
                 category={workload.category}
@@ -369,7 +393,7 @@
             <h2 {title}>{title}</h2>
             <span
                 >{process
-                    ? `${workload?.label} · PID ${process.pid}`
+                    ? `${label(process) ? process.name : (workload?.label ?? '')} · PID ${process.pid}`
                     : workload
                       ? `${detail?.member_count ?? workload.process_count} ${(detail?.member_count ?? workload.process_count) === 1 ? 'process' : 'processes'}${detail?.application?.version ? ` · version ${detail.application.version}` : ''}`
                       : `Ask about anything running on this Mac`}</span
@@ -389,19 +413,14 @@
     {#if workload}<section class="about" aria-label="App summary">
             <p class="about-text">
                 {#if (!profile || profile.source === 'inference') && !selected && !detail?.launch}
-                    {#if describing}<span class="pending">Meta is identifying this app…</span
-                        >{:else}<button
+                    {#if describing}<span class="pending">Identifying this app…</span>{:else}<button
                             class="link"
                             disabled={busy || !detail}
                             onclick={() => {
                                 if (detail) void describe(detail, lastProfile, true);
-                            }}>Identify this app with Meta</button
+                            }}>Identify this app</button
                         >{/if}
-                {:else}{summary}{#if profile?.source === 'model'}<button
-                            class="credit"
-                            title="Described by Meta · view sources"
-                            onclick={() => (tab = 'details')}>Meta</button
-                        >{/if}{/if}
+                {:else}{summary}{/if}
             </p>
             {#if workload.origin && !process}<p class="origin-line">
                     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"
@@ -433,9 +452,6 @@
                             ).toFixed(1)}%
                         </dd>
                     </div>
-                    {#if process}<button class="link whole" onclick={() => choose(null)}
-                            >Whole app</button
-                        >{/if}
                 </dl>{/if}
             {#if profileError}<p class="quiet-error">
                     Couldn’t describe this app: {profileError}
@@ -481,11 +497,7 @@
                         <div class="who">
                             <Logo size={14} /><span
                                 >{entry.auto ? 'Jitterbug’s read' : 'Jitterbug'}</span
-                            >{#if entry.answer}<small
-                                    >· {entry.answer.provider === 'meta'
-                                        ? 'Meta'
-                                        : entry.answer.provider}</small
-                                >{/if}
+                            >
                         </div>
                         <p>{entry.text}</p>
                         {#if entry.answer?.contributors?.length}<div class="evidence">
@@ -512,8 +524,13 @@
                                         }}
                                     >
                                         <span
-                                            ><strong>{known?.title ?? p.name}</strong><small
-                                                >{known?.subtitle || `PID ${p.pid}`}</small
+                                            ><strong>{(known ?? label(p))?.title ?? p.name}</strong
+                                            ><small
+                                                >{known?.subtitle
+                                                    ? `${known.subtitle} · `
+                                                    : label(p)
+                                                      ? `${p.name} · `
+                                                      : ''}PID {p.pid}</small
                                             ></span
                                         >
                                         <span class="numeric">{memory(p.memory_bytes)}</span>
@@ -680,8 +697,7 @@
                                 rel="noreferrer">{source.title}</a
                             >{/each}
                         {#if profile?.source === 'model'}<p class="muted">
-                                Written by {profile.provider === 'meta' ? 'Meta' : profile.provider} ·
-                                {profile.model}{profile.generated_at
+                                AI-written description{profile.generated_at
                                     ? ` · ${new Date(profile.generated_at * 1000).toLocaleDateString()}`
                                     : ''}
                             </p>{/if}
@@ -707,6 +723,28 @@
         flex-direction: column;
         height: 100%;
         min-height: 0;
+    }
+    .back {
+        align-self: flex-start;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 12px 0 0 12px;
+        min-height: 24px;
+        padding: 2px 10px 2px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--brand);
+        background: transparent;
+        box-shadow: none;
+    }
+    .back:hover:not(:disabled) {
+        background: #ffffff10;
+        color: var(--brand);
+    }
+    .inspector-head.nested {
+        padding-top: 6px;
     }
     .inspector-head {
         padding: 16px 14px 10px 18px;
@@ -759,18 +797,6 @@
         color: var(--faint);
         font-style: italic;
     }
-    .credit {
-        all: unset;
-        cursor: pointer;
-        margin-left: 6px;
-        font-size: 10px;
-        font-weight: 600;
-        color: var(--brand);
-        background: var(--accent-soft);
-        border-radius: 4px;
-        padding: 1px 5px;
-        vertical-align: 1px;
-    }
     .origin-line {
         margin: 0;
         display: flex;
@@ -799,10 +825,6 @@
         font-weight: 600;
         font-variant-numeric: tabular-nums;
         letter-spacing: -0.01em;
-    }
-    .whole {
-        margin-left: auto;
-        font-size: 12px;
     }
     .tabs {
         display: flex;
@@ -885,11 +907,6 @@
         gap: 6px;
         font-size: 12px;
         font-weight: 600;
-    }
-    .who small {
-        font-size: 11px;
-        font-weight: 400;
-        color: var(--faint);
     }
     .evidence {
         margin-top: 4px;

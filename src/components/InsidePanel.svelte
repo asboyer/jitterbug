@@ -44,6 +44,17 @@
     const sleeping = $derived(view?.units.filter(isSleeping) ?? []);
     const active = $derived(view?.units.filter((u) => !isSleeping(u)) ?? []);
     const shown = $derived(showAll ? active : active.slice(0, TOP));
+    // Open tabs known without their processes (Firefox's session file), grouped by site.
+    const sites = $derived.by(() => {
+        if (view?.status !== 'partial') return [];
+        const groups = new Map<string, InsideUnit[]>();
+        for (const unit of view.units) {
+            const site = unit.host ?? 'Other';
+            groups.set(site, [...(groups.get(site) ?? []), unit]);
+        }
+        return [...groups].map(([site, tabs]) => ({ site, tabs }));
+    });
+    let openSite = $state<string | null>(null);
 
     /** `connect` is only true for the person's own request: it may make the browser ask once. */
     async function load(connect: boolean) {
@@ -59,7 +70,8 @@
             if (request !== sequence) return;
             onview?.(next);
             // Without an allowed browser connection, keep offering Show tabs.
-            if (connect || !browser || next.status === 'ready') view = next;
+            if (connect || !browser || next.status === 'ready' || next.status === 'partial')
+                view = next;
             error = '';
         } catch (cause) {
             if (request === sequence && (connect || !browser)) error = errorMessage(cause);
@@ -234,14 +246,14 @@
             <div>
                 <h2>Inside {workload.label}</h2>
                 <span class="muted"
-                    >{view?.status === 'ready'
+                    >{view?.status === 'ready' || view?.status === 'partial'
                         ? view.message
                         : browser
                           ? 'See which tabs use the CPU and memory, then pause or close one.'
                           : 'Agent sessions, dev servers, and other commands started in this app.'}</span
                 >
             </div>
-            {#if browser || view?.status !== 'ready'}<button
+            {#if view?.status !== 'partial' && (browser || view?.status !== 'ready')}<button
                     class:primary={!view}
                     disabled={loading}
                     onclick={() => load(true)}
@@ -254,7 +266,46 @@
             </p>{/if}
         {#if error}<p class="error" role="alert">{error}</p>{/if}
         {#if notice}<p class="notice" role="status">{notice}</p>{/if}
-        {#if view && view.status !== 'ready'}
+        {#if view?.status === 'partial'}
+            <div class="sites" role="list">
+                {#each showAll ? sites : sites.slice(0, TOP) as group (group.site)}
+                    <div class="site" role="listitem">
+                        <button
+                            class="site-row"
+                            aria-expanded={openSite === group.site}
+                            onclick={() => (openSite = openSite === group.site ? null : group.site)}
+                            ><span class="site-name"
+                                ><strong>{group.site}</strong><small
+                                    >{group.tabs.map((t) => t.title).join(' · ')}</small
+                                ></span
+                            ><span class="count"
+                                >{group.tabs.length} tab{group.tabs.length === 1 ? '' : 's'}</span
+                            ></button
+                        >
+                        {#if openSite === group.site}<ul class="site-tabs">
+                                {#each group.tabs as unit (unit.id)}<li title={unit.detail}>
+                                        {unit.title}
+                                    </li>{/each}
+                            </ul>{/if}
+                    </div>
+                {/each}
+                {#if sites.length > TOP}<button
+                        class="text-button more"
+                        onclick={() => (showAll = !showAll)}
+                        >{showAll ? 'Show fewer' : `Show all ${sites.length} sites`}</button
+                    >{/if}
+            </div>
+            <details class="match">
+                <summary>Match each tab to its process</summary>
+                <p class="footnote">{view.limits}</p>
+                {#if view.setup.length}<ol class="setup">
+                        {#each view.setup as step}<li>{step}</li>{/each}
+                    </ol>{/if}
+                <button disabled={loading} onclick={() => load(true)}
+                    >{asking ? 'Connecting…' : 'Connect to Firefox'}</button
+                >
+            </details>
+        {:else if view && view.status !== 'ready'}
             <p>{view.message}</p>
             {#if view.setup.length}<ol class="setup">
                     {#each view.setup as step}<li>{step}</li>{/each}
@@ -398,6 +449,67 @@
     }
     .empty {
         padding: 8px;
+    }
+    .sites {
+        margin-top: 10px;
+        display: grid;
+        gap: 1px;
+    }
+    .site-row {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px;
+        min-height: 0;
+        border-radius: 6px;
+        background: transparent;
+        box-shadow: none;
+        text-align: left;
+        font-weight: 400;
+    }
+    .site-row:hover:not(:disabled) {
+        background: var(--hover);
+    }
+    .site-name {
+        min-width: 0;
+        display: grid;
+        gap: 2px;
+    }
+    .site-name strong {
+        font-weight: 500;
+    }
+    .site-name small,
+    .site-tabs li {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 11px;
+    }
+    .count {
+        flex: none;
+        color: var(--muted);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+    }
+    .site-tabs {
+        margin: 0 0 6px;
+        padding: 0 8px 0 20px;
+        display: grid;
+        gap: 4px;
+    }
+    .match {
+        margin-top: 12px;
+        font-size: 12px;
+    }
+    .match summary {
+        cursor: pointer;
+        color: var(--muted);
+    }
+    .match button {
+        margin-top: 10px;
     }
     .reading-notes {
         font-size: 11px;

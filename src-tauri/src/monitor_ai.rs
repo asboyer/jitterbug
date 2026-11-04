@@ -28,6 +28,19 @@ pub struct Answer {
 }
 
 fn browser_evidence(view: &crate::inside::Inside, selected: Option<(u32, u64)>) -> Value {
+    if view.status == "partial" {
+        // Open tabs are known, but not which process runs which; share only the counts.
+        let sites: std::collections::HashSet<_> = view
+            .units
+            .iter()
+            .filter_map(|u| u.host.as_deref())
+            .collect();
+        return json!({
+            "status":"open tabs known, process mapping unavailable",
+            "open_tabs":view.units.len(),"open_sites":sites.len(),
+            "limits":"Firefox does not report which web content process runs which tab. The person can see the open tabs listed under Processes, and can match them exactly by connecting Firefox's debugger (Show tabs). Never guess which site a process belongs to."
+        });
+    }
     json!({
         "status":view.status,"message":view.message,"limits":view.limits,
         "tabs":view.units.iter().enumerate()
@@ -254,7 +267,15 @@ impl Engine {
                     history.drain(..history.len() - 6);
                 }
             }
-            context["highlighted_processes"] = json!(contributors.iter().map(|p| json!({"pid":p.pid,"name":p.name,"resident_mib":p.memory_bytes / 1048576,"cpu_percent":p.cpu_percent})).collect::<Vec<_>>());
+            // A role the browser itself assigned ("Web content", "Graphics"); tab titles never.
+            let role = |p: &ProcessRecord| {
+                inside
+                    .as_ref()
+                    .filter(|view| view.status != "ready")
+                    .and_then(|view| view.labels.iter().find(|l| l.pid == p.pid))
+                    .map(|l| l.title.clone())
+            };
+            context["highlighted_processes"] = json!(contributors.iter().map(|p| json!({"pid":p.pid,"name":p.name,"browser_role":role(p),"resident_mib":p.memory_bytes / 1048576,"cpu_percent":p.cpu_percent})).collect::<Vec<_>>());
             context["selected_pid"] = json!(selected.map(|p| p.0));
             context["process_readings"] = json!(snapshot
                 .processes

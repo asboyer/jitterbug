@@ -29,7 +29,6 @@ async function send(page: Page, text = 'What is this process doing?') {
 test('the browser never manufactures telemetry or an AI answer', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Connect to your computer' })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'What your Mac is doing' })).toHaveCount(0);
     await expect(page.getByText('Demo & testing', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'AI', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
@@ -247,7 +246,7 @@ test('unavailable Meta is explicit while telemetry and selection remain usable',
     );
     await expect(inspector(page)).toContainText('PID 9101');
     await expect(conversation(page).locator('.turn.reply')).toHaveCount(0);
-    await expect(page.getByRole('region', { name: 'What your Mac is doing' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Activity monitor' })).toBeVisible();
 });
 
 test('inspector and composer are keyboard reachable in a small desktop window', async ({

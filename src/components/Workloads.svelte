@@ -346,8 +346,7 @@
                                     >{/if}</span
                             >{#if identified(row)}<span class="purpose" title={description(row)}
                                     >{description(row)}</span
-                                >{:else}<span class="purpose pending">Identifying with Meta…</span
-                                >{/if}</span
+                                >{:else}<span class="purpose pending">Identifying…</span>{/if}</span
                         ></span
                     >
                     <span class="numeric cpu" class:hot={readings.cpu_percent >= 25}
@@ -395,7 +394,7 @@
         <span
             >{inventory
                 ? `${inventory.total} ${view === 'apps' ? 'apps and tools' : 'processes'} · ${inventory.system_processes} processes on this Mac`
-                : 'Reading…'}{explaining ? ' · Meta is identifying apps' : ''}{profileError
+                : 'Reading…'}{explaining ? ' · Identifying apps' : ''}{profileError
                 ? ' · Descriptions paused'
                 : ''}</span
         >
