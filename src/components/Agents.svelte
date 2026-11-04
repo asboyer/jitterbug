@@ -397,9 +397,6 @@
         align-items: center;
         gap: 16px;
     }
-    .heading h1 {
-        margin: 0;
-    }
     .turns-switch {
         display: flex;
         align-items: center;
