@@ -80,6 +80,38 @@ you made, and never act on an app in the Protected bucket.
 Pauses lift after 15 minutes. A paused tab also wakes if Jitterbug quits, because the freeze lasts
 only while Jitterbug holds the tab's DevTools session.
 
+## Warn agents before heavy work
+
+Agents call MCP tools only when they think to, and a slow build rarely makes them think of
+Jitterbug. The `pressure-hint` hook brings it up at the right moment instead. Print its settings
+and merge them into `~/.claude/settings.json` (Settings › Integrations shows the same JSON):
+
+```sh
+src-tauri/target/debug/jitterbug-run hint-settings
+```
+
+Before each shell command, the hook checks whether the command is heavy (builds, test suites,
+installs, containers, local models). Quick commands return without contacting the app. For a
+heavy one it asks the app with `pressure_hint`. When the machine is at `watch` or `high`, the agent
+gets one note in its context, for example:
+
+> Jitterbug: this computer is under sustained pressure (CPU 88%, 1.1 GB memory free). Other
+> sessions using the most: TEST2 (idle, 1.4 GB, 0% CPU, unit_id session:42-7). Before this
+> command, say so in one line, then wait, run a narrower command, or … ask to pause the least
+> urgent idle one with jitterbug_pause_session.
+
+The hook never blocks or changes a command. It stays silent when the app is closed, agent access
+is off (and doesn't ask for access), or the machine is fine. Each session gets a note at most once
+every three minutes unless pressure gets worse. Codex shell events are read too, if your Codex
+hooks run the same command.
+
+## See what agents asked
+
+Monitor's **AI activity** strip lists model calls and, under **Agents**, every request agents sent
+this app session: the tool, the agent and session that asked, and the outcome. Pressure checks
+show as "Warned before heavy work" or "Checked before heavy work". Only metadata is kept, in memory
+(the last 100), with no arguments, reasons or answers.
+
 ## How it expands
 
 ```mermaid

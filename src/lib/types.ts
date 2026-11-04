@@ -900,3 +900,15 @@ export interface AiActivity {
     ok: boolean;
     error: string | null;
 }
+
+/** One request an agent sent to Jitterbug: metadata only, this app session. */
+export interface AgentCall {
+    at: number;
+    method: string;
+    agent: string | null;
+    session: string | null;
+    ok: boolean;
+    error: string | null;
+    request_id: number | null;
+    hinted: boolean | null;
+}

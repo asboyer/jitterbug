@@ -31,6 +31,30 @@ fn run() -> Result<i32, String> {
     if args.peek().is_some_and(|arg| arg == "control-mcp") {
         return jitterbug_lib::control::mcp::serve();
     }
+    if args.peek().is_some_and(|arg| arg == "pressure-hint") {
+        // A hook must never block or fail the agent's command: any problem means silence.
+        let mut input = String::new();
+        use std::io::Read;
+        if std::io::stdin()
+            .take(harness::MAX_EVENT_BYTES)
+            .read_to_string(&mut input)
+            .is_ok()
+        {
+            if let Some(output) = jitterbug_lib::control::hint::hook(&input) {
+                println!("{output}");
+            }
+        }
+        return Ok(0);
+    }
+    if args.peek().is_some_and(|arg| arg == "hint-settings") {
+        println!(
+            "{}",
+            jitterbug_lib::control::hint::settings(
+                &std::env::current_exe().map_err(|_| "Cannot locate launcher.")?
+            )?
+        );
+        return Ok(0);
+    }
     if args.peek().is_some_and(|arg| arg == "hook-settings") {
         println!(
             "{}",
