@@ -1,5 +1,6 @@
 <script lang="ts">
     import Icon from './Icon.svelte';
+    import Logo from './Logo.svelte';
     import { incidentOutcome, noticeTitle } from '../lib/incidents';
     import { currentTip } from '../lib/task-view';
     import type { AutomationCase, AgentWorkflow } from '../lib/types';
@@ -18,7 +19,13 @@
     } = $props();
     const checking = $derived(['detected', 'investigating'].includes(incident.stage));
     const overlap = $derived(workflow && currentTip(workflow)?.id.startsWith('overlapping-'));
-    const title = $derived(noticeTitle(incident));
+    // Prefer the AI investigation's own words once it has them.
+    const insight = $derived(incident.diagnosis?.insight ?? null);
+    const title = $derived(
+        !checking && insight?.headline
+            ? insight.headline
+            : noticeTitle(incident).replace(/^Hey, (\w)/, (_, c: string) => c.toUpperCase())
+    );
     const body = $derived(
         checking && incident.jitter
             ? `Captured, analyzing… ${incident.jitter.happened}`
@@ -27,16 +34,22 @@
               : overlap && incident.stage === 'awaiting_approval'
                 ? 'Your coding sessions have overlapping checks. A shared queue could help future runs take turns.'
                 : incident.stage === 'awaiting_approval'
-                  ? 'I found a priority change you can review to give other work more room.'
+                  ? (insight?.finding ??
+                    'I found a priority change you can review to give other work more room.')
                   : (incident.diagnosis?.insight?.next_step ?? incidentOutcome(incident))
     );
 </script>
 
 <section class="proactive-notice" aria-label="Jitterbug noticed something" aria-live="polite">
     <div class="notice-top">
-        <span class="bug-mark" class:checking><Icon name="companion" size={21} /></span><span
-            class="notice-name"
-            >Jitterbug <small>{incident.source === 'demo' ? 'EXAMPLE' : 'LIVE'}</small></span
+        <span class="bug-mark"><Logo size={22} live={checking} /></span><span class="notice-name"
+            >Jitterbug<small
+                >{checking
+                    ? 'Investigating with Meta…'
+                    : insight
+                      ? 'Investigated with Meta'
+                      : 'Noticed just now'}</small
+            ></span
         ><button class="icon-button" aria-label="Dismiss assistant prompt" onclick={onlater}
             >×</button
         >
@@ -68,12 +81,12 @@
         right: 22px;
         bottom: 22px;
         width: min(390px, calc(100vw - 40px));
-        padding: 20px;
+        padding: 18px 18px 16px;
         z-index: 18;
-        background: var(--panel);
+        background: #2a2a2e;
         border: 0;
-        border-radius: 18px;
-        box-shadow: 0 12px 50px #0004;
+        border-radius: 14px;
+        box-shadow: var(--shadow-float);
         animation: arrive 200ms ease-out;
     }
     .notice-top {
@@ -86,12 +99,8 @@
         height: 36px;
         display: grid;
         place-items: center;
-        border-radius: 12px;
-        background: var(--accent-soft);
-        color: var(--accent);
-    }
-    .checking {
-        animation: breathe 1.8s ease-in-out infinite;
+        border-radius: 10px;
+        background: #ffffff0d;
     }
     .notice-name {
         flex: 1;
@@ -99,15 +108,16 @@
         font-weight: 600;
     }
     .notice-name small {
-        margin-left: 8px;
-        font-size: 8px;
-        letter-spacing: 0.8px;
+        display: block;
+        font-size: 11px;
+        font-weight: 400;
         color: var(--muted);
     }
     h2 {
-        font-size: 18px;
+        font-size: 16px;
         line-height: 1.35;
-        margin: 15px 0 9px;
+        margin: 14px 0 6px;
+        text-wrap: balance;
     }
     p {
         margin: 0;
@@ -150,14 +160,8 @@
             transform: translateY(0);
         }
     }
-    @keyframes breathe {
-        50% {
-            opacity: 0.5;
-        }
-    }
     @media (prefers-reduced-motion: reduce) {
-        .proactive-notice,
-        .checking {
+        .proactive-notice {
             animation: none;
         }
     }

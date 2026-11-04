@@ -113,7 +113,7 @@
         if (!ready) return;
         const first = untrack(() => !scene);
         const timer = setTimeout(() => void read(), first ? 400 : 0);
-        const repeat = setInterval(() => void read(), 90_000);
+        const repeat = setInterval(() => void read(), 45_000);
         return () => {
             clearTimeout(timer);
             clearInterval(repeat);

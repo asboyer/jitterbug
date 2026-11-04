@@ -19,13 +19,17 @@
         demo?: boolean;
     } = $props();
     let url: string | null = $state(null);
-    // Coding agents have no app bundle of their own: show the agent's mark on a tile.
+    // Command-line agents have no artwork of their own: show the agent's mark on a tile.
+    // A desktop app keeps its own icon.
     const agent = $derived.by(() => {
-        if (category !== 'agent') return null;
         const name = label.toLowerCase();
-        if (name.includes('claude')) return claude;
-        if (name.includes('codex')) return openai;
-        if (name.includes('muse') || name.includes('meta')) return meta;
+        const cli =
+            name.includes(' · ') ||
+            /^(claude|codex|gemini|opencode|aider|goose|amp|cursor-agent)$/.test(name);
+        if (category !== 'agent' || !cli) return null;
+        if (name.includes('claude')) return { image: claude, tint: '#d97757' };
+        if (name.includes('codex')) return { image: openai, tint: '#2f2f34' };
+        if (name.includes('muse') || name.includes('meta')) return { image: meta, tint: '#0866ff' };
         return null;
     });
     $effect(() => {
@@ -42,9 +46,9 @@
 </script>
 
 <span class="app-icon" style={`width:${size}px;height:${size}px`} aria-hidden="true">
-    {#if agent}<span class="agent-tile"
+    {#if agent}<span class="agent-tile" style={`background:${agent.tint}`}
             ><img
-                src={agent}
+                src={agent.image}
                 alt=""
                 width={Math.round(size * 0.58)}
                 height={Math.round(size * 0.58)}
@@ -87,6 +91,7 @@
     .agent-tile img {
         width: 58%;
         height: 58%;
+        filter: brightness(0) invert(1);
     }
     .fallback {
         display: flex;

@@ -249,6 +249,15 @@
         if (!origin || /opened by you|^started by launchd$/i.test(origin)) return null;
         return origin;
     }
+    // Rows stay put while someone is reading them. When the list is at the top and the
+    // pointer is elsewhere, re-rank every few seconds so a newly busy app rises.
+    let hovering = false;
+    $effect(() => {
+        const timer = setInterval(() => {
+            if (!hovering && !expanded && (scroller?.scrollTop ?? 0) < 8 && !loading) refresh++;
+        }, 6000);
+        return () => clearInterval(timer);
+    });
     function orderBy(value: string) {
         sort = value;
         refresh++;
@@ -275,7 +284,15 @@
             >Memory<i>{sort === 'memory' ? '▾' : ''}</i></button
         >
     </div>
-    <div class="activity-scroll" bind:this={scroller} onscroll={() => void enrich()}>
+    <div
+        class="activity-scroll"
+        role="list"
+        aria-label="Running apps"
+        bind:this={scroller}
+        onscroll={() => void enrich()}
+        onpointerenter={() => (hovering = true)}
+        onpointerleave={() => (hovering = false)}
+    >
         {#each rows as row (rowKey(row))}
             {@const readings = row.process ?? row.workload}
             {@const chosen =
