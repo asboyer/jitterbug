@@ -3,6 +3,7 @@
     import Icon from './Icon.svelte';
     import notices from '../../THIRD_PARTY_NOTICES.md?raw';
     import AutomationSettings from './AutomationSettings.svelte';
+    import SettingsPermissions from './SettingsPermissions.svelte';
     import SettingsDefaults from './SettingsDefaults.svelte';
     import { untrack } from 'svelte';
     import type { Bootstrap } from '../lib/types';
@@ -76,6 +77,7 @@
             visible={section === 'assistance' || section === 'integrations'}
         />
         <div hidden={section !== 'system'}>
+            <SettingsPermissions {desktop} />
             <SettingsDefaults {desktop} />
             <details class="preference-detail">
                 <summary

@@ -53,6 +53,11 @@ async function mockDesktop(page: Page) {
                         if (command === 'get_snapshot') return snapshot;
                         if (command === 'get_bootstrap') return bootstrap;
                         if (command === 'get_workload_icon') return null;
+                        if (command === 'get_session_permissions')
+                            return {
+                                environment: { os: 'macos', version: '15.6', arch: 'arm64' },
+                                groups: [],
+                            };
                         calls.push({ command, args });
                         document.documentElement.dataset.settingsCalls = JSON.stringify(calls);
                         if (command === 'get_system_capabilities')

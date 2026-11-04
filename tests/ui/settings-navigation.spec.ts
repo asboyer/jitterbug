@@ -24,6 +24,11 @@ async function mockSettings(page: Page) {
                         if (command === 'get_ai_activity') return [];
                         if (command === 'get_agent_runner')
                             return '/Applications/Jitterbug/jitterbug-run';
+                        if (command === 'get_session_permissions')
+                            return {
+                                environment: { os: 'macos', version: '15.6', arch: 'arm64' },
+                                groups: [],
+                            };
                         if (command === 'get_jitter_tally') return { entries: [], sampling: true };
                         if (command === 'get_system_default_history') {
                             return { entries: [], next_cursor: null, interrupted_operations: 0 };
