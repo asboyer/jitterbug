@@ -667,6 +667,7 @@ fn known_bundle(identifier: &str) -> Option<&'static str> {
         "com.sublimetext.4" | "com.sublimetext.3" => "Sublime Text is a lightweight text and code editor.",
         "com.apple.dt.Xcode" => "Xcode is Apple's app for building, testing and debugging software for Apple devices.",
         "com.github.GitHubClient" => "GitHub Desktop lets you review, commit and sync code changes with GitHub.",
+        "com.jitterbug.desktop" => "Jitterbug is this app: it explains what's running on your Mac and steps in when it slows down.",
         "com.anthropic.claudefordesktop" => "Claude is Anthropic's AI assistant app for chat, writing, coding and research.",
         "com.openai.chat" => "ChatGPT is OpenAI's AI assistant app for chat, writing and research.",
         "com.openai.codex" => "OpenAI's desktop app for ChatGPT and Codex, which can write and run code for you.",
