@@ -229,7 +229,154 @@ pub fn caller_agent(caller: u32) -> Option<&'static str> {
     None
 }
 
+/// Answer one request and add it to the agent activity log.
 pub fn handle(
+    runtime: &Arc<Runtime>,
+    caller: u32,
+    method: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let result = dispatch(runtime, caller, method, params);
+    let session = snapshot(runtime)
+        .ok()
+        .and_then(|s| own_session(&s, &lineage(caller)))
+        .map(|u| u.title.chars().take(60).collect());
+    let known = matches!(
+        method,
+        "overview"
+            | "inspect_app"
+            | "pause_session"
+            | "resume_session"
+            | "pause_tab"
+            | "resume_tab"
+            | "close_tab"
+            | "request_background"
+            | "request_status"
+            | "pressure_hint"
+    );
+    super::activity::record(super::activity::Call {
+        at: now(),
+        method: if known { method } else { "unknown" }.into(),
+        agent: caller_agent(caller).map(Into::into),
+        session,
+        ok: result.is_ok(),
+        error: result.as_ref().err().map(|e| e.chars().take(140).collect()),
+        request_id: result
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("request_id"))
+            .and_then(Value::as_u64),
+        hinted: (method == "pressure_hint").then(|| {
+            result
+                .as_ref()
+                .ok()
+                .and_then(|v| v.get("hint"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        }),
+    });
+    result
+}
+
+/// Hints for one session within this window are repeated only when pressure gets worse.
+const HINT_QUIET_SECONDS: u64 = 180;
+static HINTS: Mutex<Vec<(String, u64, u8)>> = Mutex::new(Vec::new());
+
+fn severity(level: &str) -> u8 {
+    match level {
+        "high" => 2,
+        "watch" => 1,
+        _ => 0,
+    }
+}
+
+/// Whether to tell this session about `level` now, remembering the answer.
+fn hint_due(key: &str, level: &str, at: u64) -> bool {
+    let rank = severity(level);
+    if rank == 0 {
+        return false;
+    }
+    let Ok(mut hints) = HINTS.lock() else {
+        return false;
+    };
+    hints.retain(|(_, last, _)| last + HINT_QUIET_SECONDS > at);
+    if let Some(entry) = hints.iter_mut().find(|(k, _, _)| k == key) {
+        if rank <= entry.2 {
+            return false;
+        }
+        *entry = (key.into(), at, rank);
+        return true;
+    }
+    if hints.len() >= 64 {
+        hints.remove(0);
+    }
+    hints.push((key.into(), at, rank));
+    true
+}
+
+/// Called by the `jitterbug-run pressure-hint` hook before an agent's heavy command. It never
+/// asks the person for access: with agent access off it answers that hints are off.
+fn pressure_hint(
+    runtime: &Arc<Runtime>,
+    caller: u32,
+    params: &Value,
+    enabled: bool,
+) -> Result<Value, String> {
+    if !enabled {
+        return Ok(json!({ "enabled": false, "hint": false }));
+    }
+    let snapshot = snapshot(runtime)?;
+    let lineage = lineage(caller);
+    let level = snapshot.pressure.level.clone();
+    // The harness session ID tells sessions apart even when one app launched them all.
+    let key = params
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        })
+        .map(String::from)
+        .or_else(|| own_session(&snapshot, &lineage).map(|u| session_id(&u)))
+        .unwrap_or_else(|| "unknown".into());
+    let hint = hint_due(&key, &level, snapshot.captured_at);
+    let mut answer = json!({
+        "enabled": true,
+        "hint": hint,
+        "level": level,
+        "reasons": snapshot.pressure.reasons,
+        "cpu_percent": round(snapshot.cpu_percent),
+        "memory_available_gib": gib(snapshot.memory_available_bytes),
+    });
+    if hint {
+        let view = overview(&snapshot, &lineage)?;
+        let mut others: Vec<Value> = view["apps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|app| app["sessions"].as_array().cloned().unwrap_or_default())
+            .filter(|s| s["is_your_session"] != json!(true) && s["paused_until"].is_null())
+            .collect();
+        others.sort_by_key(|s| std::cmp::Reverse(s["memory_mib"].as_u64().unwrap_or(0)));
+        others.truncate(3);
+        answer["sessions"] = json!(others
+            .iter()
+            .map(|s| json!({
+                "unit_id": s["unit_id"],
+                "title": s["title"],
+                "agent_status": s["agent_status"],
+                "memory_mib": s["memory_mib"],
+                "cpu_percent_of_machine": s["cpu_percent_of_machine"],
+            }))
+            .collect::<Vec<_>>());
+    }
+    Ok(answer)
+}
+
+fn dispatch(
     runtime: &Arc<Runtime>,
     caller: u32,
     method: &str,
@@ -241,6 +388,9 @@ pub fn handle(
         .map_err(|_| "Settings unavailable.")?
         .automation
         .clone();
+    if method == "pressure_hint" {
+        return pressure_hint(runtime, caller, params, policy.agent_control);
+    }
     if !policy.agent_control {
         return Err(ACCESS_OFF.into());
     }
@@ -511,6 +661,21 @@ fn inspect_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_hints_repeat_only_after_a_quiet_window_or_when_worse() {
+        let key = "hint-throttle-test";
+        assert!(!hint_due(key, "normal", 1_000));
+        assert!(hint_due(key, "watch", 1_000));
+        assert!(!hint_due(key, "watch", 1_010));
+        // Getting worse is news; staying the same or easing is not.
+        assert!(hint_due(key, "high", 1_020));
+        assert!(!hint_due(key, "watch", 1_030));
+        assert!(!hint_due(key, "high", 1_100));
+        assert!(hint_due(key, "high", 1_020 + HINT_QUIET_SECONDS));
+        // Other sessions get their own note.
+        assert!(hint_due("hint-throttle-other", "high", 1_030));
+    }
 
     fn p(pid: u32, parent: Option<u32>, name: &str, exe: &str, mem: u64) -> ProcessRecord {
         ProcessRecord {

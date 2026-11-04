@@ -265,7 +265,8 @@ test('Monitor lists recent model calls and links investigations to their outcome
 }) => {
     await page.goto('/');
     const strip = page.locator('details.ai-activity');
-    await expect(strip.locator('summary')).toContainText('5 calls this session');
+    await expect(strip.locator('summary')).toContainText('5 model calls');
+    await expect(strip.locator('summary')).toContainText('5 agent requests');
     await expect(strip.locator('summary')).toContainText('1 failed');
     await strip.locator('summary').click();
     const activity = page.getByRole('region', { name: 'AI activity' });
@@ -277,19 +278,25 @@ test('Monitor lists recent model calls and links investigations to their outcome
     await expect(
         activity.getByRole('listitem').filter({ hasText: 'Explained the Monitor overview' })
     ).toContainText('No credential');
+    await expect(
+        activity.getByRole('listitem').filter({ hasText: 'Warned before heavy work' })
+    ).toContainText('Claude Code · TEST1');
+    await expect(
+        activity.getByRole('listitem').filter({ hasText: 'Asked to pause a session' })
+    ).toHaveCount(1);
     await page.getByRole('navigation').getByRole('button', { name: 'AI', exact: true }).click();
     await expect(page.getByRole('region', { name: 'AI activity' })).toHaveCount(0);
 });
 
-test('integrations offer an instruction that makes agents check before heavy work', async ({
-    page,
-}) => {
+test('integrations offer a pressure hook and an instruction for heavy work', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     await page.getByRole('tab', { name: 'Integrations' }).click();
     await page.getByText('Connect an agent', { exact: true }).click();
     const agents = page.getByRole('region', { name: 'Agent access' });
-    await expect(agents).toContainText('Have agents check before heavy work');
+    await expect(agents).toContainText('Warn agents before heavy work');
+    await expect(agents).toContainText('pressure-hint');
+    await expect(agents.getByRole('button', { name: 'Copy pressure hint hook' })).toBeVisible();
     await expect(agents).toContainText('call the jitterbug_overview tool once');
     await expect(agents.getByRole('button', { name: 'Copy agent instruction' })).toBeVisible();
 });

@@ -959,6 +959,12 @@ fn get_ai_activity(state: State<'_, AppState>) -> Vec<providers::Activity> {
     state.engine.activity()
 }
 
+/// What agents asked of Jitterbug this session, newest first: tool, agent, session and outcome.
+#[tauri::command]
+fn get_agent_activity() -> Vec<control::activity::Call> {
+    control::activity::list()
+}
+
 /// Where `jitterbug-run` lives, so Settings can show copy-ready MCP setup commands.
 #[tauri::command]
 fn get_agent_runner() -> Option<String> {
@@ -1412,6 +1418,7 @@ pub fn run() {
             save_credential,
             get_agent_runner,
             get_ai_activity,
+            get_agent_activity,
             list_local_models,
             unload_model,
             ask,

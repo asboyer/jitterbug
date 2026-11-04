@@ -76,9 +76,32 @@
             ),
         },
     ]);
+    // Same JSON as `jitterbug-run hint-settings`, for ~/.claude/settings.json.
+    const hintSettings = $derived(
+        JSON.stringify(
+            {
+                hooks: {
+                    PreToolUse: [
+                        {
+                            matcher: 'Bash',
+                            hooks: [
+                                {
+                                    type: 'command',
+                                    command: `${quote(launcher)} pressure-hint`,
+                                    timeout: 5,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+            null,
+            2
+        )
+    );
     const checkFirst =
         'Before running a build, full test suite, dependency install, or container, call the ' +
-        'jitterbug_overview tool once. If pressure is warning or critical, say so in one line, ' +
+        'jitterbug_overview tool once. If pressure is watch or high, say so in one line, ' +
         'then wait, run a narrower command, or ask Jitterbug to pause the least urgent idle session.';
     async function copy(id: string, text: string) {
         try {
@@ -431,10 +454,25 @@
                         >
                     </div>
                 {/each}
-                <h3 class="setup-subhead">Have agents check before heavy work</h3>
+                <h3 class="setup-subhead">Warn agents before heavy work</h3>
                 <p class="muted">
-                    Claude Code reads this from Jitterbug when it connects. For other agents, add it
-                    to the project’s <code>AGENTS.md</code> or <code>CLAUDE.md</code>.
+                    Add to <code>~/.claude/settings.json</code>. Before a build, test suite, install
+                    or container, Claude Code gets a one-line note when this computer is busy,
+                    naming the sessions using the most. Quiet otherwise.
+                </p>
+                <div class="setup-command">
+                    <pre><code>{hintSettings}</code></pre>
+                    <button
+                        class="copy-button"
+                        aria-label="Copy pressure hint hook"
+                        onclick={() => copy('hint', hintSettings)}
+                        >{copied === 'hint' ? 'Copied' : 'Copy'}</button
+                    >
+                </div>
+                <p class="muted">
+                    Without hooks, add this to the project’s <code>AGENTS.md</code> or
+                    <code>CLAUDE.md</code>. Claude Code also reads it from Jitterbug when it
+                    connects.
                 </p>
                 <div class="setup-command">
                     <pre><code>{checkFirst}</code></pre>
