@@ -844,7 +844,12 @@
             {/if}
             {#if page === 'ai'}
                 {#key settingsRevision}
-                    <AiSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
+                    <AiSettings
+                        {bootstrap}
+                        {desktop}
+                        onrefresh={refreshBootstrap}
+                        cases={visibleCases}
+                    />
                 {/key}
             {:else if page === 'settings'}
                 {#key settingsRevision}

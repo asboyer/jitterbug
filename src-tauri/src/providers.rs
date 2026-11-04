@@ -6,7 +6,47 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{path::Path, time::Duration};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    path::Path,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
+/// Why a model call happened, carried to `send` so the activity log can say what it was for.
+#[derive(Clone, Copy, Debug)]
+pub struct Purpose {
+    pub kind: &'static str,
+    pub case_id: Option<u64>,
+}
+
+tokio::task_local! {
+    static PURPOSE: Purpose;
+}
+
+/// Run `work` with every model call inside it recorded as `kind` (and linked to an incident).
+pub async fn purpose<F: Future>(kind: &'static str, case_id: Option<u64>, work: F) -> F::Output {
+    PURPOSE.scope(Purpose { kind, case_id }, work).await
+}
+
+const ACTIVITY_LIMIT: usize = 100;
+
+/// One model call: metadata only. No prompt, reply, or telemetry is kept, and nothing is
+/// written to disk; the log lasts for this app session.
+#[derive(Clone, Debug, Serialize)]
+pub struct Activity {
+    pub at: u64,
+    pub purpose: &'static str,
+    pub case_id: Option<u64>,
+    pub provider: String,
+    pub model: String,
+    pub routing: bool,
+    pub duration_ms: u64,
+    pub cost_usd: f64,
+    pub ok: bool,
+    pub error: Option<String>,
+}
 
 const LOCAL_URL: &str = "http://127.0.0.1:11434";
 const MAX_LOCAL_MODEL_BYTES: u64 = 1536 * 1024 * 1024;
@@ -105,6 +145,7 @@ pub struct Engine {
     client: reqwest::Client,
     budget: Budget,
     directory: std::path::PathBuf,
+    activity: Mutex<VecDeque<Activity>>,
 }
 
 impl Engine {
@@ -120,7 +161,15 @@ impl Engine {
             client,
             budget: Budget::new(directory),
             directory: directory.into(),
+            activity: Mutex::new(VecDeque::new()),
         }
+    }
+    /// Model calls this session, newest first.
+    pub fn activity(&self) -> Vec<Activity> {
+        self.activity
+            .lock()
+            .map(|log| log.iter().rev().cloned().collect())
+            .unwrap_or_default()
     }
     pub fn spending(&self) -> Result<Ledger, String> {
         self.budget.status()
@@ -771,8 +820,11 @@ impl Engine {
                 json!({"model":tier.model,"messages":[{"role":"user","content":prompt}],"max_tokens":64})
             }
         };
-        let (response, _) = self
-            .send(
+        let case_id = PURPOSE.try_with(|p| p.case_id).ok().flatten();
+        let (response, _) = purpose(
+            "routing",
+            case_id,
+            self.send(
                 tier,
                 settings.budget_usd,
                 body,
@@ -782,12 +834,49 @@ impl Engine {
                     64
                 },
                 systemone,
-            )
-            .await?;
+            ),
+        )
+        .await?;
         decision_choice(&tier.provider, &response, systemone)
     }
 
     async fn send(
+        &self,
+        tier: &Tier,
+        budget: f64,
+        body: Value,
+        output_limit: u64,
+        decision: bool,
+    ) -> Result<(Value, f64), String> {
+        let started = Instant::now();
+        let result = self
+            .send_once(tier, budget, body, output_limit, decision)
+            .await;
+        let purpose = PURPOSE.try_with(|p| *p).unwrap_or(Purpose {
+            kind: "other",
+            case_id: None,
+        });
+        if let Ok(mut log) = self.activity.lock() {
+            if log.len() >= ACTIVITY_LIMIT {
+                log.pop_front();
+            }
+            log.push_back(Activity {
+                at: crate::types::now(),
+                purpose: purpose.kind,
+                case_id: purpose.case_id,
+                provider: tier.provider.name().into(),
+                model: tier.model.clone(),
+                routing: decision || purpose.kind == "routing",
+                duration_ms: started.elapsed().as_millis() as u64,
+                cost_usd: result.as_ref().map(|(_, cost)| *cost).unwrap_or(0.0),
+                ok: result.is_ok(),
+                error: result.as_ref().err().map(|e| e.chars().take(140).collect()),
+            });
+        }
+        result
+    }
+
+    async fn send_once(
         &self,
         tier: &Tier,
         budget: f64,
@@ -1222,6 +1311,36 @@ mod tests {
         investigation.responsiveness = "not_responding".into();
         investigation.stack_checks[0].state = "event_loop_wait".into();
         assert!(observed_wait(&investigation).is_none());
+    }
+    #[tokio::test]
+    async fn model_calls_are_logged_by_purpose_without_their_content() {
+        let directory =
+            std::env::temp_dir().join(format!("jitterbug-activity-test-{}", std::process::id()));
+        let engine = Engine::new(&directory);
+        // An unpriced model fails before any network request, so this stays offline.
+        let tier = Tier {
+            provider: Provider::Meta,
+            model: "unpriced-model".into(),
+        };
+        let body = json!({"messages": [{"content": "private question text"}]});
+        let result = purpose(
+            "investigation",
+            Some(7),
+            engine.send(&tier, 1.0, body.clone(), 64, false),
+        )
+        .await;
+        assert!(result.is_err());
+        let _ = engine.send(&tier, 1.0, body, 64, false).await;
+        let log = engine.activity();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].purpose, "other");
+        assert_eq!(log[1].purpose, "investigation");
+        assert_eq!(log[1].case_id, Some(7));
+        assert!(!log[1].ok && log[1].error.is_some());
+        assert_eq!(log[1].cost_usd, 0.0);
+        let serialized = serde_json::to_string(&log).unwrap();
+        assert!(!serialized.contains("private question text"));
+        let _ = std::fs::remove_dir_all(directory);
     }
     #[tokio::test]
     async fn a_reported_slowdown_keeps_scope_and_exposes_unavailable_ai() {

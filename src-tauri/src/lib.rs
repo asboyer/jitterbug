@@ -178,10 +178,12 @@ async fn plan_workflow_queue(state: State<'_, AppState>) -> Result<queue::contro
     {
         return Err("No upcoming checks need a plan.".into());
     }
-    state
-        .engine
-        .workflow_plan(&settings, &snapshot, &queue)
-        .await
+    providers::purpose(
+        "queue_plan",
+        None,
+        state.engine.workflow_plan(&settings, &snapshot, &queue),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -378,7 +380,12 @@ async fn summarize_monitor(state: State<'_, AppState>) -> Result<providers::Repl
     if !snapshot.sample_ready || snapshot.captured_at + 20 < types::now() {
         return Err("Wait for a fresh telemetry sample.".into());
     }
-    state.engine.monitor_overview(&settings, &snapshot).await
+    providers::purpose(
+        "monitor",
+        None,
+        state.engine.monitor_overview(&settings, &snapshot),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -456,10 +463,12 @@ async fn summarize_agent_task(
         .lock()
         .map_err(|_| "Settings unavailable.")?
         .clone();
-    let profile = state
-        .engine
-        .task_summary(&settings, &snapshot, workflow)
-        .await?;
+    let profile = providers::purpose(
+        "task_summary",
+        None,
+        state.engine.task_summary(&settings, &snapshot, workflow),
+    )
+    .await?;
     state
         .task_summaries
         .lock()
@@ -652,6 +661,12 @@ async fn confirm_system_restore(
     state.confirm_system_restore(&token).await
 }
 
+/// Model calls this session, newest first: what each was for, model, time and cost only.
+#[tauri::command]
+fn get_ai_activity(state: State<'_, AppState>) -> Vec<providers::Activity> {
+    state.engine.activity()
+}
+
 /// Where `jitterbug-run` lives, so Settings can show copy-ready MCP setup commands.
 #[tauri::command]
 fn get_agent_runner() -> Option<String> {
@@ -717,17 +732,19 @@ async fn ask(
             );
         }
     }
-    state
-        .engine
-        .chat(
+    providers::purpose(
+        "question",
+        None,
+        state.engine.chat(
             &settings,
             &snapshot,
             messages,
             workload_id.as_deref(),
             &tier,
             pid.zip(start_time),
-        )
-        .await
+        ),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1081,6 +1098,7 @@ pub fn run() {
             confirm_system_restore,
             save_credential,
             get_agent_runner,
+            get_ai_activity,
             list_local_models,
             unload_model,
             ask,
