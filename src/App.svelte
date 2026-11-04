@@ -27,7 +27,12 @@
     const pages = [
         { id: 'monitor', label: 'Monitor', icon: 'activity', sub: 'What is running and why' },
         { id: 'agents', label: 'Agents', icon: 'code', sub: 'Coding agents and their heavy work' },
-        { id: 'sessions', label: 'Sessions', icon: 'play', sub: 'Saved setups for focused work' },
+        {
+            id: 'sessions',
+            label: 'Sessions',
+            icon: 'play',
+            sub: 'Saved resource setups for the work you repeat',
+        },
         { id: 'inbox', label: 'Inbox', icon: 'inbox', sub: 'Slowdowns, suggestions and results' },
     ] as const;
     function pressureWord(level: string) {

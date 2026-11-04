@@ -2,6 +2,8 @@
     import type { Scene } from '../lib/types';
     // Survives navigating away from Monitor and back; the backend also caches by signature.
     let saved: { scene: Scene; settings: string } | null = null;
+    // Each distinct reading becomes a line in tonight's journal: what Jitterbug noticed, when.
+    let journal: { at: number; headline: string }[] = [];
 </script>
 
 <script lang="ts">
@@ -35,6 +37,8 @@
         untrack(() => (saved?.settings === settingsKey ? saved.scene : null))
     );
     let busy = $state(false);
+    let entries = $state(journal);
+    let showJournal = $state(false);
     let error = $state('');
     let disposed = false;
     let now = $state(Date.now() / 1000);
@@ -87,6 +91,12 @@
             if (disposed || key !== settingsKey) return;
             scene = next;
             saved = { scene: next, settings: key };
+            if (journal.at(-1)?.headline !== next.headline) {
+                journal = [...journal, { at: next.generated_at, headline: next.headline }].slice(
+                    -12
+                );
+                entries = journal;
+            }
             onscene(next);
             if (activity && !next.activities.some((a) => a.name === activity)) activity = null;
             onusage();
@@ -240,6 +250,13 @@
                     now
                 )}</span
             >{/if}
+        <span class="spacer"></span>
+        {#if entries.length > 1}<button
+                class="link"
+                aria-expanded={showJournal}
+                onclick={() => (showJournal = !showJournal)}
+                >{showJournal ? 'Hide earlier' : `Earlier (${entries.length - 1})`}</button
+            >{/if}
         <button
             class="link"
             disabled={busy || !snapshot.sample_ready}
@@ -247,6 +264,16 @@
             >{busy ? 'Reading…' : scene ? 'Read again' : 'Read now'}</button
         >
     </footer>
+    {#if showJournal && entries.length > 1}<ol class="journal">
+            {#each entries.slice(0, -1).reverse() as entry}<li>
+                    <time
+                        >{new Date(entry.at * 1000).toLocaleTimeString([], {
+                            hour: 'numeric',
+                            minute: '2-digit',
+                        })}</time
+                    ><span>{entry.headline}</span>
+                </li>{/each}
+        </ol>{/if}
 </section>
 
 <style>
@@ -499,6 +526,30 @@
     }
     .provenance .link {
         font-size: 11px;
+    }
+    .spacer {
+        flex: 1;
+    }
+    .journal {
+        list-style: none;
+        margin: -4px 0 0;
+        padding: 0;
+        display: grid;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--muted);
+    }
+    .journal li {
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        gap: 8px;
+    }
+    .journal time {
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+    }
+    .compact .journal {
+        display: none;
     }
     @container (max-width: 760px) {
         .reading:not(.compact) .reading-main {

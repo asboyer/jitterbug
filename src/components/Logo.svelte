@@ -49,21 +49,32 @@
     .seam {
         stroke: var(--brand-deep);
     }
-    .live .seam {
-        stroke-dasharray: 26;
-        animation: pulse 2.4s ease-in-out infinite;
+    /* A short jitter every few seconds while telemetry is live. */
+    .live {
+        transform-origin: 50% 60%;
+        animation: jitter 5s ease-in-out infinite;
     }
-    @keyframes pulse {
+    @keyframes jitter {
         0%,
+        88%,
         100% {
-            stroke-dashoffset: 0;
+            transform: rotate(0);
         }
-        50% {
-            stroke-dashoffset: 52;
+        90% {
+            transform: rotate(-7deg);
+        }
+        92% {
+            transform: rotate(6deg);
+        }
+        94% {
+            transform: rotate(-4deg);
+        }
+        96% {
+            transform: rotate(2deg);
         }
     }
     @media (prefers-reduced-motion: reduce) {
-        .live .seam {
+        .live {
             animation: none;
         }
     }

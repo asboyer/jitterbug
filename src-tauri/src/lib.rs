@@ -690,6 +690,47 @@ async fn read_scene(
     Ok(result)
 }
 
+/// Monitor search in the person's own words ("AI apps", "what can I quit").
+#[tauri::command]
+async fn find_workloads(state: State<'_, AppState>, query: String) -> Result<scene::Found, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() || query.len() > 160 {
+        return Err("Type a shorter request.".into());
+    }
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let (payload, ids) = {
+        let mut cache = state
+            .profiles
+            .lock()
+            .map_err(|_| "Descriptions unavailable.")?;
+        scene::find_payload(&snapshot, &query, &mut |w: &types::Workload| {
+            let members = details::members(&snapshot, &w.id).ok()?;
+            let path = details::representative(&members).executable.as_ref()?;
+            let app = applications::identify(path);
+            Some(cache.get(&profiles::key(&app))?.text)
+        })
+    };
+    providers::purpose(
+        "search",
+        None,
+        state.engine.find(&settings, &snapshot, payload, &ids),
+    )
+    .await
+}
+
 #[tauri::command]
 async fn summarize_monitor(state: State<'_, AppState>) -> Result<providers::Reply, String> {
     let _guard = state
@@ -1461,6 +1502,7 @@ pub fn run() {
             explain_monitor_profiles,
             summarize_monitor,
             read_scene,
+            find_workloads,
             list_sessions,
             delete_session,
             create_session,

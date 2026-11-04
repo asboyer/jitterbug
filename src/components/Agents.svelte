@@ -121,7 +121,19 @@
 
 <section class="agents" aria-label="Agents" data-tour="agents">
     <div class="heading">
-        <h1>Agents</h1>
+        {#if view}
+            <div class="gauges" aria-label="Whole computer">
+                {#each [['CPU', view.cpu_percent], ['Memory', view.memory_used_percent]] as [label, value]}
+                    <div class="gauge">
+                        <span>{label}</span>
+                        <div class="track" class:hot={(value as number) >= 80}>
+                            <i style={`width:${Math.min(100, value as number)}%`}></i>
+                        </div>
+                        <strong>{Math.round(value as number)}%</strong>
+                    </div>
+                {/each}
+            </div>
+        {:else}<span></span>{/if}
         {#if view && connected.length}
             <label class="turns-switch">
                 <input
@@ -143,20 +155,6 @@
             >
         {/if}
     </div>
-
-    {#if view}
-        <div class="gauges" aria-label="Whole computer">
-            {#each [['CPU', view.cpu_percent], ['Memory', view.memory_used_percent]] as [label, value]}
-                <div class="gauge">
-                    <span>{label}</span>
-                    <div class="track" class:hot={(value as number) >= 80}>
-                        <i style={`width:${Math.min(100, value as number)}%`}></i>
-                    </div>
-                    <strong>{Math.round(value as number)}%</strong>
-                </div>
-            {/each}
-        </div>
-    {/if}
 
     {#if !view && !error}<p class="muted" role="status">Reading agent activity…</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -406,11 +404,10 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 8px 12px;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        background: var(--panel);
-        cursor: pointer;
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: var(--raised);
+        cursor: default;
         white-space: nowrap;
     }
     .turns-switch span {
@@ -424,7 +421,9 @@
     .gauges {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 18px;
+        gap: 28px;
+        flex: 1;
+        max-width: 620px;
     }
     .gauge {
         display: grid;

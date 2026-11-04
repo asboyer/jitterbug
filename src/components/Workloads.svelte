@@ -21,6 +21,7 @@
     } from '../lib/monitor';
     import { appFallback, processRole } from '../lib/monitor-copy';
     import AppIcon from './AppIcon.svelte';
+    import Logo from './Logo.svelte';
     let {
         snapshot,
         onselect,
@@ -33,6 +34,7 @@
         filter = 'all',
         workloadIds = null,
         activityName = null,
+        aiAnswer = null,
         onclearactivity = () => {},
         onusage,
     }: {
@@ -47,6 +49,7 @@
         filter?: string;
         workloadIds?: string[] | null;
         activityName?: string | null;
+        aiAnswer?: string | null;
         onclearactivity?: () => void;
         onusage: () => void;
     } = $props();
@@ -253,7 +256,11 @@
 </script>
 
 <section class="activity-list" data-tour="workloads" aria-label="Activity monitor">
-    {#if activityName}<div class="activity-filter">
+    {#if aiAnswer}<div class="activity-filter answer" role="status">
+            <Logo size={14} /><span>{aiAnswer}</span><button class="link" onclick={onclearactivity}
+                >Show everything</button
+            >
+        </div>{:else if activityName}<div class="activity-filter">
             <span>Showing <strong>{activityName}</strong></span><button
                 class="link"
                 onclick={onclearactivity}>Show everything</button
@@ -417,6 +424,10 @@
         padding: 10px 28px 0;
         font-size: 12px;
         color: var(--muted);
+    }
+    .activity-filter.answer {
+        color: var(--text);
+        font-size: 13px;
     }
     .activity-filter strong {
         color: var(--text);

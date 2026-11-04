@@ -12,6 +12,9 @@
     import Workloads from './Workloads.svelte';
     import MonitorInspector from './MonitorInspector.svelte';
     import Logo from './Logo.svelte';
+    import { invoke } from '@tauri-apps/api/core';
+    import { queueInference } from '../lib/monitor';
+    import { errorMessage } from '../lib/format';
     let {
         snapshot,
         selected,
@@ -45,8 +48,40 @@
     let filter = $state('all');
     let activity = $state<string | null>(null);
     let scene = $state<Scene | null>(null);
+    // Search in your own words: Enter asks Meta which running apps match the request.
+    let found = $state<{ query: string; answer: string; ids: string[] } | null>(null);
+    let finding = $state(false);
+    let findError = $state('');
+    async function findInWords() {
+        const query = search.trim();
+        if (!query || finding) return;
+        finding = true;
+        findError = '';
+        try {
+            const result = await queueInference(
+                () =>
+                    invoke<{ answer: string; workload_ids: string[] }>('find_workloads', {
+                        query,
+                    }),
+                15
+            );
+            activity = null;
+            found = { query, answer: result.answer, ids: result.workload_ids };
+            onusage();
+        } catch (cause) {
+            findError = errorMessage(cause);
+        } finally {
+            finding = false;
+        }
+    }
+    $effect(() => {
+        if (found && search.trim() !== found.query) found = null;
+    });
+    $effect(() => {
+        if (activity) found = null;
+    });
     const activityIds = $derived(
-        scene?.activities.find((a) => a.name === activity)?.workload_ids ?? null
+        found?.ids ?? scene?.activities.find((a) => a.name === activity)?.workload_ids ?? null
     );
     function inspect(workload: Workload, target?: ProcessRecord | null) {
         trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -97,10 +132,18 @@
                 /></svg
             ><input
                 aria-label="Filter workloads"
-                placeholder="Search apps or PID"
+                placeholder="Search, or ask in words"
+                title="Type a name to filter. Press Return to ask Jitterbug, like “AI apps” or “what can I quit”."
                 maxlength="128"
                 bind:value={search}
-            />
+                onkeydown={(event) => {
+                    if (event.key === 'Enter' && !event.isComposing) {
+                        event.preventDefault();
+                        void findInWords();
+                    }
+                    if (event.key === 'Escape') search = '';
+                }}
+            />{#if finding}<span class="finding"><Logo size={13} live /></span>{/if}
         </label>
         <button class="ask-button" onclick={() => askAbout(null)}
             ><Logo size={16} /> Ask Jitterbug</button
@@ -125,11 +168,18 @@
                 {snapshot}
                 {settingsKey}
                 {view}
-                {search}
+                search={found ? '' : search}
                 {filter}
                 workloadIds={activityIds}
-                activityName={activity}
-                onclearactivity={() => (activity = null)}
+                activityName={found ? null : activity}
+                aiAnswer={found?.answer ??
+                    (finding ? `Looking for “${search.trim()}”…` : findError || null)}
+                onclearactivity={() => {
+                    activity = null;
+                    found = null;
+                    findError = '';
+                    if (found === null) search = search;
+                }}
                 pauseEnrichment={false}
                 selectedId={selected?.id ?? null}
                 selectedProcess={process}
@@ -211,7 +261,7 @@
         position: relative;
         display: flex;
         align-items: center;
-        width: 200px;
+        width: 230px;
         color: var(--faint);
     }
     .search-field svg {
@@ -225,6 +275,11 @@
         padding-left: 28px;
         font-size: 12px;
         border-radius: 7px;
+    }
+    .finding {
+        position: absolute;
+        right: 8px;
+        display: grid;
     }
     .ask-button {
         display: inline-flex;

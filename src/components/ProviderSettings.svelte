@@ -49,10 +49,9 @@
 </script>
 
 <div class="settings-workspace">
-    <div class="settings-title">
-        <h1>Settings</h1>
-        {#if !desktop}<span class="tag">Preview · changes stay here</span>{/if}
-    </div>
+    {#if !desktop}<div class="settings-title">
+            <span class="tag">Preview · changes stay here</span>
+        </div>{/if}
     <div class="settings-layout">
         <div
             class="settings-tabs"

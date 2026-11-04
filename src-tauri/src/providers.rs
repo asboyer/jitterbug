@@ -844,6 +844,39 @@ impl Engine {
         })
     }
 
+    /// Monitor search in the person's own words, answered by choosing running apps.
+    pub async fn find(
+        &self,
+        settings: &Settings,
+        snapshot: &Snapshot,
+        payload: Value,
+        ids: &[String],
+    ) -> Result<crate::scene::Found, String> {
+        settings.validate()?;
+        let tier = &settings.intelligent;
+        if !settings.mode.permits(&tier.provider) {
+            return Err("The intelligent provider is excluded by your mode. Choose an allowed provider in Settings.".into());
+        }
+        if tier.provider.local() {
+            self.check_local(tier, snapshot).await?;
+        }
+        let (text, _) = self
+            .generate_with_instruction(
+                tier,
+                settings,
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: payload.to_string(),
+                }],
+                crate::scene::FIND_INSTRUCTION,
+            )
+            .await?;
+        let mut found = crate::scene::parse_found(&text, ids)?;
+        found.provider = tier.provider.name().into();
+        found.model = tier.model.clone();
+        Ok(found)
+    }
+
     /// The Monitor's reading of the whole computer as named activities and one finding.
     pub async fn scene(
         &self,

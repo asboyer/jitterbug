@@ -198,10 +198,7 @@
 
 <div class="sessions-page sessions-simple">
     <header class="sessions-heading">
-        <div>
-            <h1>Sessions</h1>
-            <p class="muted">Save a resource configuration for the work you repeat.</p>
-        </div>
+        <span></span>
         <button
             class="primary sessions-new"
             onclick={() => (composerOpen = true)}
