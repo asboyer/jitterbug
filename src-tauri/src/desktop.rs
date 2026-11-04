@@ -302,24 +302,41 @@ fn panel_position(anchor: [f64; 4], area: [f64; 4], panel: [f64; 2], gap: f64) -
 }
 
 fn template_icon() -> tauri::image::Image<'static> {
-    // Original 18 pt companion glyph, rendered at 2x. macOS supplies the appearance tint.
-    // Transparent background, antialiased alpha, no baked-in color or white square.
+    // The jitterbug mark as an 18 pt template glyph, rendered at 2x: a beetle whose wing seam
+    // is a pulse line, drawn in the same 32-unit space as the app logo. macOS supplies the
+    // tint; the seam is cut out so it reads at menu bar size.
+    fn segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+    }
+    let seam = [
+        (16.0, 9.4),
+        (16.0, 13.6),
+        (13.4, 16.7),
+        (18.6, 20.1),
+        (16.0, 23.2),
+        (16.0, 26.6),
+    ];
     let mut rgba = vec![0u8; 36 * 36 * 4];
     for y in 0..36 {
         for x in 0..36 {
             let mut hits = 0;
             for sy in 0..4 {
                 for sx in 0..4 {
-                    let px = (x as f64 + (sx as f64 + 0.5) / 4.0) / 2.0;
-                    let py = (y as f64 + (sy as f64 + 0.5) / 4.0) / 2.0;
-                    let radius = ((px - 9.0).powi(2) + (py - 9.0).powi(2)).sqrt();
-                    let outline = (6.1..=7.4).contains(&radius);
-                    let eyes = [6.0, 12.0]
-                        .iter()
-                        .any(|cx| (px - cx).abs() <= 0.65 && (6.8..=8.7).contains(&py));
-                    let smile_y = 12.6 - (px - 9.0).powi(2) * 0.22;
-                    let smile = (6.0..=12.0).contains(&px) && (py - smile_y).abs() < 0.65;
-                    if outline || eyes || smile {
+                    // 36 px covers the 32-unit logo with a little margin.
+                    let px = (x as f64 + (sx as f64 + 0.5) / 4.0) * (32.0 / 36.0);
+                    let py = (y as f64 + (sy as f64 + 0.5) / 4.0) * (32.0 / 36.0) + 0.3;
+                    let p = (px, py);
+                    let body = ((px - 16.0) / 9.6).powi(2) + ((py - 18.4) / 10.4).powi(2) <= 1.0;
+                    let head = py <= 9.6
+                        && ((px - 16.0) / 5.4).powi(2) + ((py - 9.6) / 4.2).powi(2) <= 1.0;
+                    let antennae = segment(p, (12.6, 7.4), (10.0, 4.6)) <= 1.1
+                        || segment(p, (10.0, 4.6), (8.0, 4.0)) <= 1.1
+                        || segment(p, (19.4, 7.4), (22.0, 4.6)) <= 1.1
+                        || segment(p, (22.0, 4.6), (24.0, 4.0)) <= 1.1;
+                    let cut = seam.windows(2).any(|w| segment(p, w[0], w[1]) <= 1.15);
+                    if (body || head || antennae) && !cut {
                         hits += 1;
                     }
                 }
