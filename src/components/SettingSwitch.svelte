@@ -52,35 +52,47 @@
         font-size: 12px;
         line-height: 1.4;
     }
+    /* Reset the global text-input sizing so the switch keeps its own shape. */
     input {
         appearance: none;
         -webkit-appearance: none;
-        width: 32px;
-        height: 20px;
-        flex: 0 0 32px;
-        padding: 2px;
+        position: relative;
+        width: 36px;
+        height: 22px;
+        min-height: 0;
+        flex: 0 0 36px;
+        padding: 0;
         margin: 0;
         border: 0;
-        border-radius: 20px;
+        border-radius: 11px;
         background: var(--track);
+        box-shadow: inset 0 0 0 1px #0000000d;
         cursor: inherit;
-        transition: background 120ms;
+        transition: background-color 160ms ease;
     }
     input::before {
         content: '';
-        display: block;
-        width: 16px;
-        height: 16px;
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 18px;
+        height: 18px;
         background: #fff;
         border-radius: 50%;
-        box-shadow: 0 1px 3px #0003;
-        transition: transform 120ms;
+        box-shadow:
+            0 1px 2px #0000002e,
+            0 0 0 0.5px #0000000a;
+        transition: transform 160ms ease;
     }
     input:checked {
         background: var(--accent);
+        box-shadow: none;
     }
     input:checked::before {
-        transform: translateX(12px);
+        transform: translateX(14px);
+    }
+    input:focus {
+        border: 0;
     }
     input:focus-visible {
         outline: 2px solid var(--accent);
