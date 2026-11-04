@@ -144,7 +144,9 @@ pub fn inspect(snapshot: &Snapshot, id: &str, members: &[&ProcessRecord], connec
         let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
         let mut rdp = Rdp {
             stream,
-            deadline: Instant::now() + Duration::from_secs(4),
+            // Explicit Show tabs can trigger Firefox's permission prompt. Give the person
+            // time to answer; automatic chat evidence never opens this connection.
+            deadline: Instant::now() + Duration::from_secs(30),
             bytes: 0,
         };
         let Ok(greeting) = rdp.read() else {
