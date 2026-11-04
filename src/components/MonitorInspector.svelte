@@ -229,7 +229,17 @@
             log.scrollTop += latest.getBoundingClientRect().top - log.getBoundingClientRect().top;
         else log.scrollTop = log.scrollHeight;
     }
+    // A question typed while the automatic first look is running waits for it, then goes.
+    let queued = $state('');
     async function send(suggestion?: string, auto = false) {
+        if (!busy || auto) queued = '';
+        if (busy && !auto && !error && (suggestion ?? question).trim()) {
+            queued = (suggestion ?? question).trim();
+            question = '';
+            // Background descriptions yield so the waiting question is not stuck behind them.
+            void invoke('prioritize_monitor_chat').catch(() => {});
+            return;
+        }
         if (busy || error || !(suggestion ?? question).trim()) return;
         const text = (suggestion ?? question).trim();
         const key = context;
@@ -277,6 +287,11 @@
         } finally {
             if (pendingContext === key) pendingContext = null;
             if (!auto) void tick().then(() => input?.focus({ preventScroll: true }));
+            if (queued && pendingContext === null) {
+                const next = queued;
+                queued = '';
+                void send(next);
+            }
         }
     }
     // The first look happens on its own: opening an app asks Jitterbug for its read, once per
@@ -529,6 +544,7 @@
                     </div>
                 {/if}
             {/each}
+            {#if queued}<div class="turn mine"><p>{queued}</p></div>{/if}
             {#if busy}<div class="thinking" role="status">
                     <span class="dots"><i></i><i></i><i></i></span>
                     {conversation.length <= 1 && conversation[0]?.auto

@@ -177,6 +177,27 @@ export async function desktop(
                             }
                             return detail;
                         }
+                        if (command === 'read_scene')
+                            return {
+                                headline: 'Example Browser holds the most memory',
+                                detail: 'Synthetic fixture reading.',
+                                suggestion: null,
+                                focus_workload_id: null,
+                                activities: [],
+                                other_memory_bytes: 0,
+                                provider: 'meta',
+                                model: 'synthetic-model',
+                                generated_at: sample.captured_at,
+                                signature: 'fixture',
+                                estimated_cost_usd: 0,
+                            };
+                        if (command === 'find_workloads')
+                            return {
+                                answer: 'Found Example Browser.',
+                                workload_ids: ['demo-browser'],
+                                provider: 'meta',
+                                model: 'synthetic-model',
+                            };
                         if (command === 'summarize_monitor') {
                             document.documentElement.dataset.summaryCalls = String(++summaries);
                             if (options.unavailable)

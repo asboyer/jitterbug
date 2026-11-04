@@ -9,7 +9,9 @@ test('Monitor combines resource health and the full activity table', async ({ pa
         .getByRole('button', { name: 'Monitor', exact: true })
         .click();
     await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'System resources' })).toContainText('Normal');
+    await expect(page.getByRole('region', { name: 'What your Mac is doing' })).toContainText(
+        'Normal'
+    );
     await expect(page.getByRole('region', { name: 'Activity monitor' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Shared validation queue' })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Agent workflows' })).toHaveCount(0);

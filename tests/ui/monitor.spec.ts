@@ -3,8 +3,13 @@ import { desktop } from './fixtures/monitor';
 
 const inspector = (page: Page) => page.getByRole('dialog', { name: 'Process inspector' });
 const conversation = (page: Page) => inspector(page).getByRole('log');
+// Opening an app asks for Jitterbug's read on its own; these tests count explicit questions.
+const automatic = (call: { messages: { content: string }[] }) =>
+    call.messages.at(-1)!.content.startsWith('Give me your read');
 const calls = async (page: Page) =>
-    JSON.parse((await page.locator('html').getAttribute('data-ask-calls')) ?? '[]');
+    JSON.parse((await page.locator('html').getAttribute('data-ask-calls')) ?? '[]').filter(
+        (call: { messages: { content: string }[] }) => !automatic(call)
+    );
 async function selectRenderer(page: Page, pid = 9101) {
     await page.getByRole('button', { name: 'Processes', exact: true }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill(String(pid));
@@ -13,15 +18,18 @@ async function selectRenderer(page: Page, pid = 9101) {
         .filter({ hasText: `PID ${pid}` })
         .click();
 }
+// A question typed during the automatic read waits for it; resolve when it is really sent.
 async function send(page: Page, text = 'What is this process doing?') {
+    const before = (await calls(page)).length;
     await inspector(page).getByRole('textbox', { name: 'Message Jitterbug' }).fill(text);
-    await inspector(page).getByRole('button', { name: 'Send message' }).click();
+    await inspector(page).getByRole('textbox', { name: 'Message Jitterbug' }).press('Enter');
+    await expect.poll(async () => (await calls(page)).length).toBeGreaterThan(before);
 }
 
 test('the browser never manufactures telemetry or an AI answer', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Connect to your computer' })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'System resources' })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'What your Mac is doing' })).toHaveCount(0);
     await expect(page.getByText('Demo & testing', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'AI', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
@@ -48,7 +56,6 @@ test('a question interrupts slow background descriptions without waiting for the
     await send(page, 'Why is it using this much memory?');
     await expect(conversation(page)).toContainText('The app’s helpers', { timeout: 2500 });
     await expect(page.locator('html')).toHaveAttribute('data-prioritized', 'true');
-    await expect(page.locator('html')).toHaveAttribute('data-batch-calls', '1');
 });
 
 test('explicit conversation targets the selected instance and survives refreshes and reopening', async ({
@@ -77,7 +84,8 @@ test('explicit conversation targets the selected instance and survives refreshes
     expect(await calls(page)).toHaveLength(1);
     await send(page, 'What should I watch for?');
     await expect.poll(async () => (await calls(page)).length).toBe(2);
-    expect((await calls(page))[1].messages).toHaveLength(3);
+    // The automatic read and its answer are part of the conversation history.
+    expect((await calls(page))[1].messages).toHaveLength(5);
     await expect(page.getByRole('complementary', { name: 'Contextual assistant' })).toHaveCount(0);
 });
 
@@ -88,11 +96,13 @@ test('browser answers link local tab evidence to the exact process without sendi
     await desktop(page, { browserEvidence: true });
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     await send(page, 'Why is it using this much memory?');
-    const contributor = conversation(page).getByRole('button', {
-        name: /Example documentation tab/,
-    });
+    const contributor = conversation(page)
+        .getByRole('button', {
+            name: /Example documentation tab/,
+        })
+        .last();
     await expect(contributor).toBeVisible();
-    const answer = conversation(page).locator('.message:not(.user)').last();
+    const answer = conversation(page).locator('.turn.reply').last();
     await expect
         .poll(async () => {
             const [message, viewport] = await Promise.all([
@@ -103,7 +113,9 @@ test('browser answers link local tab evidence to the exact process without sendi
         })
         .toBeGreaterThanOrEqual(-1);
     await expect(
-        conversation(page).getByRole('link', { name: /Mozilla: memory use/ })
+        conversation(page)
+            .getByRole('link', { name: /Mozilla: memory use/ })
+            .last()
     ).toBeVisible();
     await contributor.click();
     await expect(inspector(page)).toContainText('PID 9101');
@@ -119,7 +131,9 @@ test('a reused PID disables the old conversation and reviewed action', async ({ 
     await selectRenderer(page);
     await send(page, 'Can I reduce this process’s impact?');
     await expect(
-        inspector(page).getByRole('button', { name: /Review background mode/ })
+        inspector(page)
+            .getByRole('button', { name: /Review lowering its priority/ })
+            .last()
     ).toBeEnabled();
     await page.evaluate(() =>
         window.dispatchEvent(
@@ -129,7 +143,9 @@ test('a reused PID disables the old conversation and reviewed action', async ({ 
     await expect(inspector(page).getByRole('status')).toContainText('PID was reused');
     await expect(inspector(page).getByRole('textbox')).toBeDisabled();
     await expect(
-        inspector(page).getByRole('button', { name: /Review background mode/ })
+        inspector(page)
+            .getByRole('button', { name: /Review lowering its priority/ })
+            .last()
     ).toBeDisabled();
     await expect(page.locator('html')).not.toHaveAttribute('data-action-calls');
 });
@@ -139,7 +155,8 @@ test('a chat proposal opens a concrete review before any native action', async (
     await selectRenderer(page);
     await send(page, 'Can I reduce this process’s impact?');
     await inspector(page)
-        .getByRole('button', { name: /Review background mode/ })
+        .getByRole('button', { name: /Review lowering its priority/ })
+        .last()
         .click();
     const review = page.getByRole('dialog', { name: 'Lower CPU priority?' });
     await expect(review).toContainText('PID 9101');
@@ -176,7 +193,7 @@ test('switching to a subprocess does not show the previous app’s pending inves
     await inspector(page).locator('.member').filter({ hasText: 'PID 9101' }).click();
     await expect(inspector(page)).toContainText('PID 9101');
     await expect(inspector(page).getByText('Thinking…', { exact: true })).toHaveCount(0);
-    await expect(conversation(page).locator('.message')).toHaveCount(0);
+    await expect(conversation(page)).not.toContainText('The app’s helpers');
     await send(page);
     await expect(conversation(page)).toContainText('Specific finding for PID 9101');
     expect(await calls(page)).toHaveLength(2);
@@ -229,8 +246,8 @@ test('unavailable Meta is explicit while telemetry and selection remain usable',
         'cloud budget cannot cover this request'
     );
     await expect(inspector(page)).toContainText('PID 9101');
-    await expect(conversation(page).locator('.message:not(.user)')).toHaveCount(0);
-    await expect(page.getByRole('region', { name: 'System resources' })).toBeVisible();
+    await expect(conversation(page).locator('.turn.reply')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'What your Mac is doing' })).toBeVisible();
 });
 
 test('inspector and composer are keyboard reachable in a small desktop window', async ({

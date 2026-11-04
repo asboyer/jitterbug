@@ -7,7 +7,7 @@ async function openBrowser(page: Page, launch = false) {
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
 }
 
-test('recognized jobs and origin evidence remain available without an automatic investigation', async ({
+test('recognized jobs and origin evidence remain available beside the automatic read', async ({
     page,
 }) => {
     await openBrowser(page, true);
@@ -19,7 +19,10 @@ test('recognized jobs and origin evidence remain available without an automatic 
     await expect(inspector).toContainText('Running command: hermes gateway run');
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('fixture-sample')));
     await expect(inspector).toContainText('Running command: hermes gateway run');
-    await expect(page.locator('html')).not.toHaveAttribute('data-ask-calls');
+    // The only model call is the automatic read of the selected app.
+    const asks = JSON.parse((await page.locator('html').getAttribute('data-ask-calls')) ?? '[]');
+    expect(asks.length).toBeLessThanOrEqual(1);
+    for (const ask of asks) expect(ask.messages.at(-1).content).toMatch(/^Give me your read/);
 });
 
 test('a memory prompt closes after recovery while its findings stay in Inbox', async ({ page }) => {
@@ -34,7 +37,7 @@ test('a memory prompt closes after recovery while its findings stay in Inbox', a
         window.dispatchEvent(new CustomEvent('fixture-incident', { detail }));
     }, incident);
     const prompt = page.getByRole('region', { name: 'Jitterbug noticed something' });
-    await expect(prompt).toContainText('your computer is short on memory');
+    await expect(prompt).toContainText(/your computer is short on memory/i);
     incident.stage = 'completed';
     await page.evaluate((detail) => {
         window.dispatchEvent(new CustomEvent('fixture-incident', { detail }));
@@ -82,7 +85,8 @@ test('chat preserves readable history in one keyboard-scrollable pane', async ({
         await expect(inspector.getByText('Thinking…', { exact: true })).toHaveCount(0);
     }
     const log = inspector.getByRole('log', { name: 'Process conversation' });
-    await expect(log.locator('.message')).toHaveCount(6);
+    // Three questions and answers, after Jitterbug's automatic read of the app.
+    await expect(log.locator('.turn')).toHaveCount(7);
     await expect(log).toContainText('Why is this app lagging?');
     await log.focus();
     await page.keyboard.press('Home');
