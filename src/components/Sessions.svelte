@@ -197,14 +197,14 @@
 />
 
 <div class="sessions-page sessions-simple">
-    <header class="sessions-heading">
-        <span></span>
-        <button
-            class="primary sessions-new"
-            onclick={() => (composerOpen = true)}
-            disabled={!desktop}>＋ New session</button
-        >
-    </header>
+    {#if sessions.length}<header class="sessions-heading">
+            <span></span>
+            <button
+                class="primary sessions-new"
+                onclick={() => (composerOpen = true)}
+                disabled={!desktop}>＋ New session</button
+            >
+        </header>{/if}
 
     {#if notice}<div class="sessions-notice" role="status">
             <span>{notice}</span><button
@@ -227,9 +227,12 @@
             <Icon name="activity" size={24} />
             <h2>No saved sessions</h2>
             <p>
-                Create a profile for work you repeat, such as a long coding session. Review the
-                proposed settings before applying them.
+                Describe work you repeat, such as a long coding session. Jitterbug proposes a
+                resource setup for it, and nothing changes until you review it.
             </p>
+            <button class="primary" onclick={() => (composerOpen = true)} disabled={!desktop}
+                >New session</button
+            >
         </section>
     {:else}
         <div class="session-profile-layout">

@@ -737,10 +737,20 @@
 }
 
 .session-first-use {
-    padding: 32px;
+    padding: 40px 32px;
     background: var(--panel);
-    border-radius: 8px;
-    max-width: 680px;
+    border-radius: 12px;
+    max-width: 560px;
+    margin: 6vh auto 0;
+    display: grid;
+    justify-items: center;
+    text-align: center;
+}
+.session-first-use p {
+    color: var(--muted);
+}
+.session-first-use button {
+    margin-top: 6px;
 }
 .session-first-use svg {
     color: var(--muted);
