@@ -76,7 +76,7 @@ test('tour completes all steps without external calls and restores the previous 
 test('tour supports back, keyboard exit, replay, and the smallest window', async ({ page }) => {
     await page.setViewportSize({ width: 760, height: 560 });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Take a quick tour' }).click();
+    await page.getByRole('button', { name: 'Take a tour', exact: true }).click();
     const tour = page.getByRole('dialog', { name: 'Jitterbug tour' });
     await tour.getByRole('button', { name: 'Next', exact: true }).click();
     await tour.getByRole('button', { name: 'Back', exact: true }).click();

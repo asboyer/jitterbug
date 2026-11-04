@@ -8,9 +8,7 @@ test('Monitor combines resource health and the full activity table', async ({ pa
         .getByRole('button', { name: 'Monitor', exact: true })
         .click();
     await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Computer health' })).toContainText(
-        'Your computer has room to work'
-    );
+    await expect(page.getByRole('region', { name: 'System resources' })).toContainText('Normal');
     await expect(page.getByRole('region', { name: 'Activity monitor' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Shared validation queue' })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Agent workflows' })).toHaveCount(0);
@@ -90,9 +88,7 @@ test('simulated pressure and inbox keep explanations concise and demo actions di
         .getByRole('navigation')
         .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await expect(page.getByRole('region', { name: 'Computer health' })).toContainText(
-        'Your computer is working hard'
-    );
+    await expect(page.getByRole('region', { name: 'System resources' })).toContainText('High');
     await page
         .getByRole('navigation')
         .getByRole('button', { name: /^Inbox/ })

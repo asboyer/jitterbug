@@ -11,8 +11,16 @@ use std::{
 };
 
 const TTL: u64 = 30 * 24 * 60 * 60;
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Source {
+    pub title: String,
+    pub url: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Profile {
+    #[serde(default)]
+    pub sources: Vec<Source>,
     pub text: String,
     pub source: String,
     pub provider: Option<String>,
@@ -24,18 +32,19 @@ pub struct Profile {
 pub fn reference(app: Option<&Application>, workload: &Workload) -> Profile {
     // Bundle identity is OS evidence, not publisher/signature verification.
     let known = app.and_then(|app| match app.identifier.as_deref()? {
-        "com.jitterbug.desktop" => Some("Jitterbug monitors resource use and explains which apps and background tasks are active. It collects system readings locally and uses configured models for explanations and investigations."),
-        "com.spotify.client" => Some("Spotify plays music and podcasts. Its helpers draw the interface, play media and handle networking; several processes are normal."),
-        "com.apple.Safari" | "com.google.Chrome" | "org.mozilla.firefox" | "com.microsoft.edgemac" | "company.thebrowser.Browser" => Some("This browser runs tabs, extensions and graphics in separate processes. Those helpers belong to the same app; the process name alone does not identify a specific tab."),
-        "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92" => Some("This code editor runs the interface, extensions, code analysis and terminals. Helpers can continue working while a project is open."),
-        "com.apple.Terminal" | "com.googlecode.iterm2" | "com.mitchellh.ghostty" => Some("This terminal hosts command-line sessions. Commands beneath it can run servers, builds or coding agents; their parent chain and working folder help identify the source."),
-        "com.apple.finder" => Some("Finder is the macOS file browser and desktop. It handles folder windows, file operations and desktop items."),
-        "com.apple.WindowManager" | "com.apple.dock" => Some("This macOS component manages windows or the Dock. It runs as part of the desktop interface."),
-        "com.tinyspeck.slackmacgap" | "com.hnc.Discord" => Some("This messaging app uses helpers for conversations, calls, updates and shared media. Several processes can belong to the same application."),
-        "ai.ollama.ollama" => Some("Ollama runs language models on this computer. Loaded models can use substantial memory; an idle server does not necessarily have a model loaded."),
+        "com.jitterbug.desktop" => Some("Jitterbug explains what is running on your computer and helps you manage its resource use."),
+        "com.spotify.client" => Some("Spotify streams music, podcasts and audiobooks."),
+        "com.apple.Safari" | "com.google.Chrome" | "org.mozilla.firefox" | "com.microsoft.edgemac" | "company.thebrowser.Browser" => Some("This web browser loads websites and runs tabs, extensions and graphics in separate processes."),
+        "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92" => Some("This code editor provides tools for writing, checking and running software."),
+        "com.apple.Terminal" | "com.googlecode.iterm2" | "com.mitchellh.ghostty" => Some("This terminal runs command-line sessions, including servers, builds and development tools."),
+        "com.apple.finder" => Some("Finder lets you browse, organize and move files on your Mac."),
+        "com.apple.WindowManager" | "com.apple.dock" => Some("This macOS component manages windows or the Dock."),
+        "com.tinyspeck.slackmacgap" | "com.hnc.Discord" => Some("This messaging app provides conversations, calls and shared media."),
+        "ai.ollama.ollama" => Some("Ollama runs AI language models directly on your computer."),
         _ => None,
     });
     Profile {
+        sources: vec![],
         text: known.unwrap_or(&workload.description).into(),
         source: if known.is_some() {
             "reference"
@@ -55,7 +64,7 @@ pub fn key(app: &Application) -> String {
     // Schema, install identity, and version prevent cross-app/stale-version reuse.
     let modified = std::fs::metadata(&app.path).and_then(|m| m.modified()).ok();
     (
-        3u32,
+        5u32,
         &app.path,
         &app.executable_name,
         &app.identifier,
@@ -199,6 +208,7 @@ mod tests {
     fn cache_is_bounded_and_expired_descriptions_are_discarded() {
         let mut cache = Cache::default();
         let profile = Profile {
+            sources: vec![],
             text: "General purpose only.".into(),
             source: "model".into(),
             provider: Some("meta".into()),
@@ -222,6 +232,7 @@ mod tests {
             std::env::temp_dir().join(format!("jitterbug-profile-test-{}", std::process::id()));
         let mut cache = Cache::default();
         let profile = Profile {
+            sources: vec![],
             text: "Synthetic app description.".into(),
             source: "model".into(),
             provider: Some("meta".into()),

@@ -7,26 +7,23 @@ async function openBrowser(page: Page, launch = false) {
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
 }
 
-test('runtime details lead with the running job and do not request an interpreter biography', async ({
+test('recognized jobs and origin evidence remain available without an automatic investigation', async ({
     page,
 }) => {
     await openBrowser(page, true);
-    await expect(page.getByRole('heading', { name: 'Recognized job' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Hermes · Background gateway' })).toBeVisible();
-    await expect(page.getByLabel('Origin overview')).toContainText('Hermes · Gateway log wrapper');
-    await expect(page.locator('html')).not.toHaveAttribute('data-explanation-requests');
-    await page.getByRole('button', { name: /Show origin evidence/ }).click();
-    await expect(page.getByText('Running command: hermes gateway run')).toBeVisible();
+    const inspector = page.getByRole('dialog', { name: 'Process inspector' });
+    await expect(inspector.getByRole('region', { name: 'App summary' })).toContainText(
+        'Hermes is running its background gateway'
+    );
+    await inspector.getByRole('button', { name: 'Details', exact: true }).click();
+    await expect(inspector).toContainText('Running command: hermes gateway run');
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('fixture-sample')));
-    await expect(page.getByText('Running command: hermes gateway run')).toBeVisible();
-    await expect(page.locator('html')).not.toHaveAttribute('data-explanation-requests');
+    await expect(inspector).toContainText('Running command: hermes gateway run');
+    await expect(page.locator('html')).not.toHaveAttribute('data-ask-calls');
 });
 
 test('a memory prompt closes after recovery while its findings stay in Inbox', async ({ page }) => {
     await openBrowser(page);
-    await expect(page.getByRole('region', { name: 'Process activity insight' })).toContainText(
-        'Activity of PID'
-    );
     const incident = demoIncidents()[0];
     incident.source = 'live';
     incident.stage = 'detected';
@@ -56,43 +53,42 @@ test('a memory prompt closes after recovery while its findings stay in Inbox', a
     await expect(page.getByText('Trigger cleared', { exact: true })).toBeVisible();
 });
 
-test('origin headings have deliberate spacing and the compact page fits a small window', async ({
-    page,
-}) => {
+test('origin details fit a small window and keep names separate from PIDs', async ({ page }) => {
     await page.setViewportSize({ width: 760, height: 650 });
     await openBrowser(page);
-    await page.getByRole('button', { name: 'Show origin evidence' }).click();
-    const origin = page.getByRole('region', { name: 'Process origins' });
-    await expect(origin).toBeFocused();
-    const heading = origin.locator('.ancestor-heading').last();
+    const inspector = page.getByRole('dialog', { name: 'Process inspector' });
+    await inspector.getByRole('button', { name: 'Details', exact: true }).click();
+    const heading = inspector.locator('.technical ol li').last();
     const name = await heading.locator('strong').boundingBox();
-    const pid = await heading.locator('.pid').boundingBox();
+    const pid = await heading.locator('span').boundingBox();
     expect(pid!.x - name!.x - name!.width).toBeGreaterThanOrEqual(10);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
         760
     );
 });
 
-test('the investigation keeps its latest answer readable and preserves keyboard-scrollable history', async ({
-    page,
-}) => {
+test('chat preserves readable history in one keyboard-scrollable pane', async ({ page }) => {
     await openBrowser(page);
-    await page.getByRole('button', { name: 'Ask a follow-up' }).click();
-    const assistant = page.getByRole('complementary', { name: 'Contextual assistant' });
-    const question = assistant.getByRole('textbox', { name: 'Ask Jitterbug' });
-    await question.fill('Why is this app lagging?');
-    await assistant.getByRole('button', { name: 'Ask ↑', exact: true }).click();
-    await assistant.getByRole('button', { name: 'The whole window is stuck', exact: true }).click();
-    await expect(assistant.locator('.insight-card')).toHaveCount(1);
-    const history = assistant.locator('.conversation-history');
-    await expect(history).not.toHaveAttribute('open');
-    await history.locator('summary').click();
-    await expect(history).toContainText('Why is this app lagging?');
-    const scroll = assistant.getByRole('log', { name: 'Investigation conversation' });
-    await expect(scroll).toHaveCSS('scrollbar-width', 'none');
-    await scroll.focus();
+    const inspector = page.getByRole('dialog', { name: 'Process inspector' });
+    const question = inspector.getByRole('textbox', { name: 'Message Jitterbug' });
+    for (const text of [
+        'Why is this app lagging?',
+        'What should I watch for?',
+        'Which helper uses memory?',
+    ]) {
+        await question.fill(text);
+        await question.press('Enter');
+        await expect(inspector.getByRole('button', { name: 'Send message' })).toBeDisabled();
+        await expect(inspector.getByText('Thinking…', { exact: true })).toHaveCount(0);
+    }
+    const log = inspector.getByRole('log', { name: 'Process conversation' });
+    await expect(log.locator('.message')).toHaveCount(6);
+    await expect(log).toContainText('Why is this app lagging?');
+    await log.focus();
     await page.keyboard.press('Home');
     await page.keyboard.press('End');
-    await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-    await expect(assistant.getByRole('textbox')).toBeVisible();
+    await expect.poll(() => log.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect(question).toBeInViewport();
+    await expect(page.locator('.insight-card')).toHaveCount(0);
+    await expect(page.getByRole('complementary', { name: 'Contextual assistant' })).toHaveCount(0);
 });

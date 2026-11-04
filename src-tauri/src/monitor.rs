@@ -66,6 +66,8 @@ pub struct Query {
     pub sort: String,
     pub filter: String,
     pub offset: usize,
+    #[serde(default)]
+    pub pinned: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -73,6 +75,7 @@ pub struct Row {
     pub workload: Workload,
     pub process: Option<ProcessRecord>,
     pub identity: Option<Identity>,
+    pub profile: Option<profiles::Profile>,
 }
 
 #[derive(Serialize)]
@@ -86,7 +89,9 @@ pub struct Inventory {
 }
 
 pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String> {
-    if query.search.len() > 128
+    if query.pinned.len() > 40
+        || query.pinned.iter().any(|id| id.len() > 1024)
+        || query.search.len() > 128
         || !matches!(query.view.as_str(), "apps" | "processes")
         || !matches!(query.sort.as_str(), "impact" | "cpu" | "memory" | "name")
         || !matches!(query.filter.as_str(), "all" | "apps" | "system")
@@ -124,6 +129,7 @@ pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String
         if query.view == "apps" {
             if group_match || members.iter().any(process_match) {
                 rows.push(Row {
+                    profile: None,
                     workload: workload.clone(),
                     process: None,
                     identity: (!members.is_empty())
@@ -133,6 +139,7 @@ pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String
         } else {
             for process in members.iter().filter(|p| group_match || process_match(p)) {
                 rows.push(Row {
+                    profile: None,
                     workload: workload.clone(),
                     process: Some((*process).clone()),
                     identity: Some(identity(process)),
@@ -171,8 +178,31 @@ pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String
     });
     let total = rows.len();
     let offset = query.offset.min(total.saturating_sub(1) / 40 * 40);
+    let row_key = |row: &Row| {
+        row.process.as_ref().map_or_else(
+            || row.workload.id.clone(),
+            |p| format!("{}:{}:{}", p.workload_id, p.pid, p.start_time),
+        )
+    };
+    let mut page = Vec::new();
+    let mut included = HashSet::new();
+    for key in &query.pinned {
+        if let Some(row) = rows.iter().find(|row| row_key(row) == *key) {
+            if included.insert(key.clone()) {
+                page.push(row.clone());
+            }
+        }
+    }
+    for row in rows.iter().skip(offset) {
+        if page.len() >= 40 {
+            break;
+        }
+        if included.insert(row_key(row)) {
+            page.push(row.clone());
+        }
+    }
     Ok(Inventory {
-        rows: rows.into_iter().skip(offset).take(40).collect(),
+        rows: page,
         total,
         offset,
         captured_at: snapshot.captured_at,
@@ -188,6 +218,34 @@ pub struct Explanation {
 }
 
 impl Runtime {
+    pub fn monitor_inventory(&self, query: &Query) -> Result<Inventory, String> {
+        let snapshot = self.snapshot.read().map_err(|_| "Telemetry unavailable.")?;
+        let mut inventory = inventory(&snapshot, query)?;
+        let mut cache = self
+            .profiles
+            .lock()
+            .map_err(|_| "Descriptions unavailable.")?;
+        for row in &mut inventory.rows {
+            let process = row.identity.as_ref().and_then(|id| {
+                snapshot
+                    .processes
+                    .iter()
+                    .find(|p| p.pid == id.pid && p.start_time == id.start_time)
+            });
+            if let Some(app) = process
+                .and_then(|p| p.executable.as_ref())
+                .map(|path| crate::applications::identify(path))
+            {
+                row.profile = Some(
+                    cache
+                        .get(&profiles::key(&app))
+                        .unwrap_or_else(|| profiles::reference(Some(&app), &row.workload)),
+                );
+            }
+        }
+        Ok(inventory)
+    }
+
     pub async fn monitor_profiles(
         &self,
         identities: Vec<Identity>,
@@ -215,22 +273,30 @@ impl Runtime {
         let mut pending = Vec::new();
         let mut seen = HashSet::new();
         for identity in identities {
-            let detail = details::inspect(
-                &snapshot,
-                &identity.workload_id,
-                Some((identity.pid, identity.start_time)),
-            )?;
-            let Some(app) = detail.application else {
+            let members = details::members(&snapshot, &identity.workload_id)?;
+            let Some(process) = members
+                .iter()
+                .find(|p| p.pid == identity.pid && p.start_time == identity.start_time)
+            else {
                 continue;
             };
+            let Some(path) = &process.executable else {
+                continue;
+            };
+            let app = crate::applications::identify(path);
+            let workload = snapshot
+                .workloads
+                .iter()
+                .find(|w| w.id == identity.workload_id)
+                .ok_or("This application exited.")?;
             let key = profiles::key(&app);
             let profile = self
                 .profiles
                 .lock()
                 .map_err(|_| "Profile cache unavailable.")?
                 .get(&key)
-                .unwrap_or(detail.profile);
-            if profile.source != "inference" {
+                .unwrap_or_else(|| profiles::reference(Some(&app), workload));
+            if profile.source == "model" || !generate {
                 output.push(Explanation { identity, profile });
             } else if generate {
                 pending.push((identity, key, app));
@@ -247,10 +313,11 @@ impl Runtime {
                 .filter(|(_, key, _)| seen.insert(key.clone()))
                 .collect();
             let apps: Vec<_> = unique.iter().map(|(_, _, app)| app.clone()).collect();
-            let profiles = self
-                .engine
-                .app_profiles(&settings, &snapshot, &apps)
-                .await?;
+            let profiles = tokio::select! {
+                biased;
+                _ = self.monitor_cancel.notified() => return Err("Description deferred for your question.".into()),
+                result = self.engine.app_profiles(&settings, &snapshot, &apps) => result?,
+            };
             let mut generated = HashMap::new();
             for ((_, key, _), profile) in unique.into_iter().zip(profiles) {
                 self.profiles
@@ -309,6 +376,58 @@ pub fn overview_context(snapshot: &Snapshot) -> serde_json::Value {
 mod tests {
     use super::*;
     #[test]
+    fn pinned_rows_update_readings_without_reordering_and_never_reuse_process_identity() {
+        let mut s = Snapshot {
+            workloads: vec![Workload {
+                id: "app".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for (pid, cpu) in [(1, 50.0), (2, 10.0), (3, 1.0)] {
+            s.processes.push(ProcessRecord {
+                pid,
+                start_time: 42,
+                cpu_percent: cpu,
+                workload_id: "app".into(),
+                ..Default::default()
+            });
+        }
+        let mut q = Query {
+            search: String::new(),
+            view: "processes".into(),
+            sort: "cpu".into(),
+            filter: "all".into(),
+            offset: 0,
+            pinned: vec!["app:1:42".into(), "app:2:42".into(), "app:3:42".into()],
+        };
+        s.processes[2].cpu_percent = 90.0;
+        let page = inventory(&s, &q).unwrap();
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(|r| r.process.as_ref().unwrap().pid)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(page.rows[2].process.as_ref().unwrap().cpu_percent, 90.0);
+        s.processes[0].start_time = 100;
+        s.processes.remove(1);
+        let page = inventory(&s, &q).unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0].process.as_ref().unwrap().pid, 3);
+        assert_eq!(page.rows[1].process.as_ref().unwrap().start_time, 100);
+        q.pinned.clear();
+        assert_eq!(
+            inventory(&s, &q).unwrap().rows[0]
+                .process
+                .as_ref()
+                .unwrap()
+                .pid,
+            3
+        );
+    }
+    #[test]
     fn inventory_searches_and_sorts_beyond_the_dashboard_and_rejects_bad_queries() {
         let mut s = Snapshot {
             memory_total_bytes: 1 << 30,
@@ -336,6 +455,7 @@ mod tests {
             sort: "cpu".into(),
             filter: "all".into(),
             offset: 0,
+            pinned: vec![],
         };
         let found = inventory(&s, &q).unwrap();
         assert_eq!(found.rows[0].process.as_ref().unwrap().pid, 199);

@@ -11,7 +11,7 @@ use jitterbug_lib::{
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), String> {
     if std::env::args().nth(1).as_deref() != Some("--live-provider") {
-        return Err("Use --live-provider to make three paid Meta requests with synthetic data. No real process inventory is collected or sent.".into());
+        return Err("Use --live-provider to make two paid Meta requests with synthetic data. No real process inventory is collected or sent.".into());
     }
     jitterbug_lib::load_development_env();
     let directory = dirs::data_dir()
@@ -25,8 +25,8 @@ async fn main() -> Result<(), String> {
     }
     let engine = Engine::new(&directory);
     let before = engine.spending()?;
-    settings.budget_usd = settings.budget_usd.min(before.reserved_usd + 0.05);
-    let snapshot = Snapshot {
+    settings.budget_usd = settings.budget_usd.min(before.reserved_usd + 0.20);
+    let mut snapshot = Snapshot {
         source: "live".into(),
         sample_ready: true,
         captured_at: now(),
@@ -60,33 +60,54 @@ async fn main() -> Result<(), String> {
         }],
         ..Default::default()
     };
-    let overview = engine.monitor_overview(&settings, &snapshot).await?;
-    assert_eq!(overview.source, "model");
-    assert!(overview.insight.is_some());
     let apps = [
         Application {
-            name: "Python".into(),
-            executable_name: "python3".into(),
-            installation: "Standalone executable".into(),
+            name: "Grok Bot".into(),
+            executable_name: "Grok Bot".into(),
+            installation: "Application bundle".into(),
             ..Default::default()
         },
         Application {
-            name: "Node.js".into(),
-            executable_name: "node".into(),
-            installation: "Standalone executable".into(),
+            name: "Google Chrome".into(),
+            executable_name: "Google Chrome Helper (GPU)".into(),
+            identifier: Some("com.google.Chrome".into()),
+            component: Some("Google Chrome Helper (GPU)".into()),
+            component_kind: "app helper".into(),
+            installation: "Application bundle".into(),
             ..Default::default()
         },
     ];
-    let profiles = engine.app_profiles(&settings, &snapshot, &apps).await?;
-    assert_eq!(profiles.len(), 2);
+    if !std::env::args().any(|argument| argument == "--chat-only") {
+        let profiles = engine.app_profiles(&settings, &snapshot, &apps).await?;
+        assert_eq!(profiles.len(), 2);
+        for profile in &profiles {
+            println!(
+                "Synthetic identity: {} Sources: {}",
+                profile.text,
+                profile.sources.len()
+            );
+        }
+        assert!(
+            !profiles[0].sources.is_empty(),
+            "Unfamiliar app research must retain retrieved sources"
+        );
+    }
+    snapshot.captured_at = now();
     let process = &snapshot.processes[0];
-    let reply=engine.chat(&settings,&snapshot,vec![ChatMessage{role:"user".into(),content:"Investigate this selected process. Explain this instance's observed role and resource use; distinguish inference from measurements.".into()}],Some(&process.workload_id),"auto",Some((process.pid,process.start_time))).await?;
-    assert_eq!(reply.source, "model");
-    assert_eq!(
-        reply.investigation.as_ref().and_then(|i| i.target.pid),
-        Some(process.pid)
+    let started = std::time::Instant::now();
+    let reply = engine.monitor_answer(
+        &settings, &snapshot,
+        vec![ChatMessage { role: "user".into(), content: "Why is this Python process using memory, and what can you actually tell about this instance?".into() }],
+        Some(&process.workload_id), Some((process.pid, process.start_time)), None,
+    ).await?;
+    assert!(!reply.text.is_empty());
+    assert!(reply.action.is_none());
+    println!(
+        "Synthetic conversation ({} ms): {}",
+        started.elapsed().as_millis(),
+        reply.text
     );
     let after = engine.spending()?;
-    println!("Monitor overview, batched descriptions and process investigation passed with Meta. Requests: {}. Estimated additional usage: ${:.6}.",after.requests-before.requests,after.reported_estimate_usd-before.reported_estimate_usd);
+    println!("Requested Monitor provider checks passed with Meta. Requests: {}. Estimated additional usage: ${:.6}.",after.requests-before.requests,after.reported_estimate_usd-before.reported_estimate_usd);
     Ok(())
 }

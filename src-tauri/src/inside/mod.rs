@@ -2,6 +2,7 @@
 //! terminal/editor/agent sessions) with each unit's measured share. Local and on demand only:
 //! titles, URLs, and working directories reach the detail view, never events or model prompts.
 pub mod chrome;
+pub mod firefox;
 pub mod options;
 pub mod sessions;
 
@@ -112,7 +113,7 @@ pub fn lens(members: &[&ProcessRecord]) -> Lens {
         .map(|s| s.to_string_lossy().to_lowercase())
         .collect();
     let any = |names: &[&str]| bundles.iter().any(|b| names.iter().any(|n| b == n));
-    if any(chrome::BROWSERS) {
+    if any(chrome::BROWSERS) || firefox::matches(members) {
         Lens::Browser
     } else if any(sessions::HOSTS) {
         Lens::Sessions
@@ -136,6 +137,7 @@ pub fn inspect_with(
     let members = crate::details::members(snapshot, workload_id)?;
     let lens = lens(&members);
     let mut inside = match lens {
+        Lens::Browser if firefox::matches(&members) => firefox::inspect(snapshot, workload_id, &members, connect),
         Lens::Browser if connect => chrome::inspect(snapshot, workload_id, &members),
         Lens::Browser if chrome::connected() => {
             chrome::inspect_connected(snapshot, workload_id, &members)

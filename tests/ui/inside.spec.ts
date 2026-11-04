@@ -8,6 +8,10 @@ test('browser workloads list tabs automatically with demo actions disabled', asy
         .click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
+    await page
+        .getByRole('dialog')
+        .getByRole('button', { name: /^Processes / })
+        .click();
     const inside = page.getByRole('region', { name: 'Inside Example Browser' });
     // The demo stands in for a browser connection the person already allowed.
     await expect(inside.getByRole('listitem').first()).toContainText('Video call');
@@ -41,11 +45,15 @@ test('editor workloads list commands with pause, and other apps show no inside v
         .click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Editor');
     await page.locator('.inspect').filter({ hasText: 'Example Editor' }).click();
+    await page
+        .getByRole('dialog')
+        .getByRole('button', { name: /^Processes / })
+        .click();
     const inside = page.getByRole('region', { name: 'Inside Example Editor' });
     await expect(inside.getByRole('listitem').first()).toContainText('npm · sample-web-app');
     await expect(inside.getByRole('button', { name: 'Pause' }).first()).toBeDisabled();
     await expect(inside).toContainText('claude · feat-search');
-    await page.getByRole('button', { name: 'Close inspector ×' }).click();
+    await page.getByRole('button', { name: 'Close inspector' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('model');
     await page.locator('.inspect').filter({ hasText: 'Tiny local model' }).click();
     await expect(
@@ -54,34 +62,29 @@ test('editor workloads list commands with pause, and other apps show no inside v
     await expect(page.getByRole('region', { name: /^Inside / })).toHaveCount(0);
 });
 
-test('processes are named by the tab or session they run, not by helper name', async ({ page }) => {
+test('processes show observed tab and session names while preserving exact PID selection', async ({
+    page,
+}) => {
     await page.goto('/');
-    await page
-        .getByRole('navigation')
-        .getByRole('button', { name: 'Monitor', exact: true })
-        .click();
-    await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
-    const list = page.getByRole('group', { name: 'Workload processes' });
-    await expect(list.getByRole('button', { name: 'Inspect Video call' })).toBeVisible();
+    const inspector = page.getByRole('dialog', { name: 'Process inspector' });
+    await inspector.getByRole('button', { name: /^Processes / }).click();
+    const list = inspector.getByRole('group', { name: 'App processes' });
+    await expect(list.locator('.member').filter({ hasText: 'Video call' })).toBeVisible();
     await expect(list).toContainText('meet.example.com');
+    expect(await list.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     await expect(list).toContainText('2 tabs: Docs, Mail');
     await expect(list).toContainText('Graphics (shared by all tabs)');
-    await expect(list).not.toContainText('Helper (Renderer)');
-    await expect(list).not.toContainText('PID');
-    // Identical helpers collapse into one row; the technical names stay one click away.
-    const network = list.getByRole('button', { name: 'Network & storage, 2 processes' });
-    await network.click();
-    await expect(network).toHaveAttribute('aria-expanded', 'true');
-    await expect(list).toContainText('Example Browser Helper');
-    await list.getByRole('button', { name: /PID 9105/ }).click();
-    await expect(page.getByRole('region', { name: 'Process origins' })).toContainText('PID 9105');
-    await page.getByRole('textbox', { name: 'Filter processes' }).fill('video');
-    await expect(list.getByRole('button')).toHaveCount(1);
-
-    await page.getByRole('button', { name: 'Close inspector ×' }).click();
-    await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Editor');
+    await list.getByRole('textbox', { name: 'Filter processes' }).fill('video');
+    await expect(list.locator('.member')).toHaveCount(1);
+    await list.locator('.member').click();
+    await expect(inspector.getByRole('heading', { name: 'Video call' })).toBeVisible();
+    await expect(inspector).toContainText('PID 9101');
+    await expect(inspector.getByRole('log').locator('.message')).toHaveCount(0);
+    await inspector.getByRole('button', { name: 'Close inspector' }).click();
     await page.locator('.inspect').filter({ hasText: 'Example Editor' }).click();
-    await expect(list).toContainText('Claude Code session · feat-search');
-    await expect(list.getByRole('button', { name: 'Idle shell, 2 processes' })).toBeVisible();
+    await inspector.getByRole('button', { name: /^Processes / }).click();
+    await expect(inspector.getByRole('group', { name: 'App processes' })).toContainText(
+        'Claude Code session · feat-search'
+    );
 });

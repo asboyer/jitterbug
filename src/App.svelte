@@ -829,19 +829,10 @@
                     }}>Dismiss</button
                 >
             </div>{/if}
-        {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
+        {#if actionReport && !chatOpen && page !== 'monitor'}<ActionResult
+                report={actionReport}
+            />{/if}
         <div class="page-content">
-            {#if !tourSeen && tourIndex === null && page === 'monitor' && !selectedId}
-                <div class="tour-invitation">
-                    <span>New to Jitterbug?</span><button class="text-button" onclick={startTour}
-                        >Take a quick tour</button
-                    ><button
-                        class="icon-button"
-                        aria-label="Dismiss tour invitation"
-                        onclick={markTourSeen}>×</button
-                    >
-                </div>
-            {/if}
             {#if page === 'ai'}
                 {#key settingsRevision}
                     <AiSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
@@ -865,32 +856,21 @@
             {:else if snapshot && snapshot.memory_total_bytes > 0}
                 {#if page === 'monitor'}
                     <Monitor
-                        assistantOpen={chatOpen || automationOpen}
                         {snapshot}
                         {selected}
                         {actionBusy}
+                        {actionReport}
                         settingsKey={JSON.stringify([
                             bootstrap.settings.mode,
                             bootstrap.settings.intelligent,
                             bootstrap.settings.budget_usd,
                             bootstrap.credentials,
                         ])}
-                        provider={bootstrap.settings.intelligent.provider === 'meta'
-                            ? 'Meta'
-                            : bootstrap.settings.intelligent.provider}
                         onselect={select}
                         onclose={() => {
                             selectedId = null;
                             selectedContext = null;
                             chatOpen = false;
-                        }}
-                        onask={ask}
-                        onprocessask={(process, reply) => {
-                            questionProcess = process;
-                            questionInsight = reply ?? null;
-                            followUpContext = null;
-                            automationOpen = false;
-                            chatOpen = true;
                         }}
                         onaction={(process, action) => {
                             error = '';

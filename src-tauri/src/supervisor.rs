@@ -115,6 +115,7 @@ pub struct Runtime {
     pub settings: Mutex<settings::Settings>,
     pub engine: providers::Engine,
     pub inference: tokio::sync::Mutex<()>,
+    pub monitor_cancel: tokio::sync::Notify,
     pub icons: crate::applications::Icons,
     pub profiles: Mutex<crate::profiles::Cache>,
     pub task_summaries: Mutex<crate::profiles::Cache>,
@@ -224,6 +225,7 @@ impl Runtime {
             settings: Mutex::new(settings),
             engine: providers::Engine::new(&directory),
             inference: tokio::sync::Mutex::new(()),
+            monitor_cancel: tokio::sync::Notify::new(),
             icons: crate::applications::Icons::default(),
             profiles: Mutex::new(crate::profiles::Cache::read(&directory)),
             task_summaries: Mutex::new(crate::profiles::Cache::default()),
@@ -2628,6 +2630,7 @@ mod tests {
         f.runtime.profiles.lock().unwrap().insert_memory(
             profiles::key(&app),
             profiles::Profile {
+                sources: vec![],
                 text: "Synthetic service explanation.".into(),
                 source: "model".into(),
                 provider: Some("meta".into()),

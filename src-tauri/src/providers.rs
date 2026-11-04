@@ -1,9 +1,12 @@
+#[path = "monitor_ai.rs"]
+mod monitor_ai;
 use crate::{
     budget::{Budget, Ledger},
     diagnostics::{self, Investigation, Resolution, Target},
     settings::{self, Provider, Settings, Tier},
     types::Snapshot,
 };
+pub use monitor_ai::Answer as MonitorAnswer;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
@@ -553,6 +556,9 @@ impl Engine {
         if tier.provider.local() {
             self.check_local(tier, snapshot).await?;
         }
+        if tier.provider == Provider::Meta {
+            return self.researched_profiles(settings, apps).await;
+        }
         let payload: Vec<_> = apps
             .iter()
             .enumerate()
@@ -605,6 +611,7 @@ impl Engine {
             return Err("Process explanation was empty or exceeded the cache size limit.".into());
         }
         Ok(crate::profiles::Profile {
+            sources: vec![],
             text,
             source: "model".into(),
             provider: Some(tier.provider.name().into()),
@@ -703,6 +710,7 @@ impl Engine {
             return Err("Task summary was empty or exceeded its size limit.".into());
         }
         Ok(crate::profiles::Profile {
+            sources: vec![],
             text,
             source: "model".into(),
             provider: Some(tier.provider.name().into()),
@@ -1126,6 +1134,7 @@ fn parse_profiles(
         .descriptions
         .into_iter()
         .map(|d| crate::profiles::Profile {
+            sources: vec![],
             text: d.text,
             source: "model".into(),
             provider: Some(tier.provider.name().into()),

@@ -198,19 +198,19 @@
                         class="primary"
                         disabled={demo || tabBusy}
                         onclick={() => tab(unit, 'resume_tab')}>Resume</button
-                    >{:else}<button
+                    >{:else if unit.actions.includes('focus_tab')}<button
                         disabled={demo || tabBusy}
                         onclick={() => tab(unit, 'focus_tab')}>Show</button
                     >{/if}{#if unit.actions.includes('pause_tab')}<button
                         disabled={demo || tabBusy}
                         title="Freeze this tab's scripts and timers. Nothing is closed; it resumes by itself after 15 minutes. Its memory stays allocated."
                         onclick={() => tab(unit, 'pause_tab')}>Pause</button
-                    >{/if}<button
-                    class="danger-text"
-                    disabled={demo || tabBusy}
-                    onclick={() => tab(unit, 'close_tab')}
-                    >{confirming === unit.id ? 'Confirm close' : 'Close tab…'}</button
-                >
+                    >{/if}{#if unit.actions.includes('close_tab')}<button
+                        class="danger-text"
+                        disabled={demo || tabBusy}
+                        onclick={() => tab(unit, 'close_tab')}
+                        >{confirming === unit.id ? 'Confirm close' : 'Close tab…'}</button
+                    >{/if}
             {:else}
                 {#each unit.actions.filter((a) => a === 'pause' || a === 'resume') as action}<button
                         class:primary={action === 'resume'}
