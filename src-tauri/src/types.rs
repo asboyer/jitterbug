@@ -81,6 +81,9 @@ pub struct Workload {
     #[serde(default)]
     pub unresponsive: Option<bool>,
     pub history: Vec<ResourcePoint>,
+    /// What started this workload, as a short sentence ("Started by Claude Code in iTerm").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

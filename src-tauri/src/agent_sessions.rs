@@ -877,6 +877,7 @@ mod tests {
                 process_count: 1,
                 unresponsive: None,
                 history: vec![],
+                ..Default::default()
             }],
             ..Default::default()
         };

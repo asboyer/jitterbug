@@ -19,6 +19,10 @@ pub struct Ledger {
     pending: BTreeMap<u64, f64>,
 }
 
+/// Requests per rolling 24 hours. High enough for continuous, event-driven AI use; the
+/// configured dollar ceiling remains the binding spending limit.
+pub const DAILY_REQUESTS: u64 = 1500;
+
 pub struct Budget {
     path: PathBuf,
 }
@@ -92,8 +96,8 @@ impl Budget {
                 l.request_window_started = now;
                 l.window_requests = 0;
             }
-            if l.window_requests >= 200 || l.pending.len() >= 200 {
-                return Err("The 200-request daily limit was reached. Try again after the current 24-hour window.".into());
+            if l.window_requests >= DAILY_REQUESTS || l.pending.len() >= 200 {
+                return Err(format!("The {DAILY_REQUESTS}-request daily limit was reached. Try again after the current 24-hour window."));
             }
             if l.reserved_usd + amount > limit {
                 let remedy = if environment_limit < configured_limit {
@@ -152,16 +156,16 @@ mod tests {
             std::env::temp_dir().join(format!("jitterbug-budget-window-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         let b = Budget::new(&path);
-        for _ in 0..200 {
-            let request = b.reserve_at(0.01, 5.0, 1_000).unwrap();
-            b.settle(request, 0.001).unwrap();
+        for _ in 0..DAILY_REQUESTS {
+            let request = b.reserve_at(0.0001, 5.0, 1_000).unwrap();
+            b.settle(request, 0.00001).unwrap();
         }
         assert!(b
-            .reserve_at(0.01, 5.0, 1_001)
+            .reserve_at(0.0001, 5.0, 1_001)
             .unwrap_err()
             .contains("daily limit"));
         let before = b.status().unwrap().reserved_usd;
-        assert_eq!(b.reserve_at(0.01, 5.0, 87_400).unwrap(), 201);
+        assert_eq!(b.reserve_at(0.01, 5.0, 87_400).unwrap(), DAILY_REQUESTS + 1);
         assert!(b.status().unwrap().reserved_usd > before);
         assert!(b
             .reserve_at(0.01, 0.10, 174_000)

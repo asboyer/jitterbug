@@ -844,6 +844,39 @@ impl Engine {
         })
     }
 
+    /// The Monitor's reading of the whole computer as named activities and one finding.
+    pub async fn scene(
+        &self,
+        settings: &Settings,
+        snapshot: &Snapshot,
+        payload: Value,
+    ) -> Result<crate::scene::Scene, String> {
+        settings.validate()?;
+        let tier = &settings.intelligent;
+        if !settings.mode.permits(&tier.provider) {
+            return Err("The intelligent provider is excluded by your mode. Choose an allowed provider in Settings.".into());
+        }
+        if tier.provider.local() {
+            self.check_local(tier, snapshot).await?;
+        }
+        let (text, cost) = self
+            .generate_with_instruction(
+                tier,
+                settings,
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: payload.to_string(),
+                }],
+                crate::scene::INSTRUCTION,
+            )
+            .await?;
+        let mut scene = crate::scene::parse(&text, snapshot)?;
+        scene.provider = tier.provider.name().into();
+        scene.model = tier.model.clone();
+        scene.estimated_cost_usd = cost;
+        Ok(scene)
+    }
+
     /// One explanation of the Agents view: a headline plus a note per busy agent. Event-driven:
     /// the view asks again only when its agents or heavy commands change.
     pub async fn agents_brief(

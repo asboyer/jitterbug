@@ -35,6 +35,7 @@ pub mod providers;
 pub mod pulse;
 pub mod queue;
 pub mod research;
+pub mod scene;
 pub mod session_permissions;
 pub mod settings;
 pub mod settings_history;
@@ -631,6 +632,62 @@ async fn ask_monitor(
         ),
     )
     .await
+}
+
+/// The AI reading of the whole computer. Reuses the last reading until the coarse signature
+/// changes, unless `force` is set.
+#[tauri::command]
+async fn read_scene(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<scene::Scene, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    if !snapshot.sample_ready {
+        return Err("Wait for a fresh telemetry sample.".into());
+    }
+    if !force.unwrap_or(false) {
+        if let Some(last) = scene::last() {
+            if last.signature == scene::signature(&snapshot)
+                && last.generated_at + 900 > types::now()
+            {
+                return Ok(last);
+            }
+        }
+    }
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let payload = {
+        let mut cache = state
+            .profiles
+            .lock()
+            .map_err(|_| "Descriptions unavailable.")?;
+        scene::payload(&snapshot, &mut |w: &types::Workload| {
+            let members = details::members(&snapshot, &w.id).ok()?;
+            let path = details::representative(&members).executable.as_ref()?;
+            let app = applications::identify(path);
+            let profile = cache.get(&profiles::key(&app))?;
+            Some(profile.text)
+        })
+    };
+    let result = providers::purpose(
+        "scene",
+        None,
+        state.engine.scene(&settings, &snapshot, payload),
+    )
+    .await?;
+    scene::remember(&result);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1403,6 +1460,7 @@ pub fn run() {
             prioritize_monitor_chat,
             explain_monitor_profiles,
             summarize_monitor,
+            read_scene,
             list_sessions,
             delete_session,
             create_session,

@@ -316,7 +316,7 @@
                 ${bootstrap.spending.reserved_usd.toFixed(4)} is accounted against the ceiling. Successful
                 requests settle to reported usage; unknown charges stay reserved after errors and restarts.
                 The lower of this ceiling and the environment ceiling applies. Limits: $0.10 per request,
-                200 requests per 24 hours, $100 maximum.
+                1,500 requests per 24 hours, $100 maximum.
             </p>
         </details>
     </section>

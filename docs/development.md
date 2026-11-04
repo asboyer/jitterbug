@@ -34,7 +34,7 @@ small, and unload the model afterwards. A tiny model is still fallible, and reso
 guarantee every model's peak memory usage.
 
 Set the in-app cloud budget before using AI. The lower of it and `JITTERBUG_SPEND_LIMIT_USD` applies.
-The default budget is $2, with at most $0.10 reserved per request, a 200-request rolling
+The default budget is $2, with at most $0.10 reserved per request, a 1,500-request rolling
 24-hour limit, and a $100 absolute ceiling. The request window renews without clearing spending. Reservations persist before transmission; failed requests or
 missing usage retain their reservation. This is an estimated app ledger, not provider billing,
 and excludes other clients using the same key.
