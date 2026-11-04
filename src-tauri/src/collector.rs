@@ -91,6 +91,8 @@ impl Collector {
                 .unwrap_or(0),
         };
         let mut groups: HashMap<String, Workload> = HashMap::new();
+        // The earliest member speaks for the whole workload's origin (its app or agent root).
+        let mut origin_from: HashMap<String, (bool, u64, u32)> = HashMap::new();
         let mut processes = Vec::new();
         for p in self.system.processes().values() {
             let label = self.attribution.label(p, &self.system);
@@ -103,6 +105,18 @@ impl Collector {
                 attribution: label.confidence,
                 ..Default::default()
             });
+            if let Some(origin) = label.group_origin {
+                let rank = (
+                    !label.group_root,
+                    start_of(p.pid().as_u32()),
+                    p.pid().as_u32(),
+                );
+                let earliest = origin_from.entry(label.id.clone()).or_insert(rank);
+                if group.origin.is_none() || rank <= *earliest {
+                    *earliest = rank;
+                    group.origin = Some(origin);
+                }
+            }
             group.cpu_percent += cpu;
             group.memory_bytes = group.memory_bytes.saturating_add(p.memory());
             group.process_count += 1;
@@ -134,6 +148,7 @@ impl Collector {
                 workload_id: label.id,
                 description: label.description,
                 evidence: label.evidence,
+                origin: label.origin,
                 actionable: !actions.is_empty(),
                 actions,
                 unresponsive,

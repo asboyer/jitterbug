@@ -320,7 +320,8 @@ impl Investigation {
             .workloads
             .iter()
             .find(|w| w.id == self.target.workload_id)
-            .is_some_and(|w| w.category == "project");
+            // Project and agent labels can carry a folder name; keep them local.
+            .is_some_and(|w| matches!(w.category.as_str(), "project" | "agent"));
         let history: Vec<_> = self.history.iter().map(|p| json!({"seconds_ago":self.captured_at.saturating_sub(p.time),"cpu_percent":p.cpu_percent,"resident_mib":p.memory_bytes/1048576})).collect();
         let processes: Vec<_> = self.processes.iter().map(|p| json!({"name":p.name,"cpu_percent":p.cpu_percent,"cpu_percent_one_core_scale":p.cpu_percent*snapshot.logical_cpus as f32,"resident_mib":p.memory_bytes/1048576,"disk_read_bytes":p.disk_read_bytes,"disk_written_bytes":p.disk_written_bytes,"available_actions":p.actions})).collect();
         let members: Vec<_> = snapshot

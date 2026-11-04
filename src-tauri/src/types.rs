@@ -47,6 +47,10 @@ pub struct ProcessRecord {
     pub disk_written_bytes: u64,
     #[serde(default)]
     pub unresponsive: Option<bool>,
+    /// What started this process, in a short sentence ("Started by Claude Code in iTerm").
+    /// Names only, never paths or arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -81,6 +85,10 @@ pub struct Workload {
     #[serde(default)]
     pub unresponsive: Option<bool>,
     pub history: Vec<ResourcePoint>,
+    /// What started this workload, from its earliest observed member ("Opened by you or at
+    /// login", "Started by Claude Code in iTerm"). Names only, never paths or arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

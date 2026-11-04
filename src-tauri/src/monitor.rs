@@ -102,7 +102,14 @@ pub fn inventory(snapshot: &Snapshot, query: &Query) -> Result<Inventory, String
     let matches_group = |w: &Workload| match query.filter.as_str() {
         "apps" => matches!(
             w.category.as_str(),
-            "application" | "app" | "browser" | "editor"
+            "application"
+                | "app"
+                | "browser"
+                | "editor"
+                | "terminal"
+                | "agent"
+                | "model"
+                | "jitterbug"
         ),
         "system" => w.category == "system",
         _ => true,
@@ -473,6 +480,42 @@ mod tests {
         assert_eq!(inventory(&s, &q).unwrap().rows.len(), 20);
         q.sort = "bad".into();
         assert!(inventory(&s, &q).is_err());
+    }
+    #[test]
+    fn apps_and_system_filters_follow_workload_categories() {
+        let mut s = Snapshot::default();
+        for (id, category) in [
+            ("installed", "application"),
+            ("agent", "agent"),
+            ("service", "system"),
+            ("runtime", "python"),
+        ] {
+            s.workloads.push(Workload {
+                id: id.into(),
+                label: id.into(),
+                category: category.into(),
+                ..Default::default()
+            });
+        }
+        let ids = |filter: &str| {
+            let q = Query {
+                search: String::new(),
+                view: "apps".into(),
+                sort: "name".into(),
+                filter: filter.into(),
+                offset: 0,
+                pinned: vec![],
+            };
+            inventory(&s, &q)
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|r| r.workload.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("apps"), ["agent", "installed"]);
+        assert_eq!(ids("system"), ["service"]);
+        assert_eq!(ids("all").len(), 4);
     }
     #[test]
     fn inspected_history_is_bounded_deduplicated_and_separates_reused_pids() {

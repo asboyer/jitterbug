@@ -75,7 +75,7 @@ impl Resources {
             recommendation: match w.category.as_str() {
                 "model" => "If unused, unload its local model. For your next inference, consider a cloud provider within your budget.".into(),
                 "browser" => "Close unused tabs or pause background media after checking what you still need.".into(),
-                "project" | "build" | "test" | "python" | "javascript" => "Defer optional work or reduce its workers. A configured remote runner could move this work off this computer; remote execution is not connected yet.".into(),
+                "project" | "agent" | "build" | "test" | "python" | "javascript" => "Defer optional work or reduce its workers. A configured remote runner could move this work off this computer; remote execution is not connected yet.".into(),
                 "system" => "Inspect this service before changing it. System services may be essential; do not stop it based on usage alone.".into(),
                 _ => "If you are not using this app, save your work and quit it, or pause its background activity in the app's settings.".into(),
             },

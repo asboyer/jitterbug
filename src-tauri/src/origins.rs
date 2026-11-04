@@ -46,7 +46,7 @@ struct Cached {
 }
 static CACHE: Mutex<VecDeque<Cached>> = Mutex::new(VecDeque::new());
 
-fn hermes_location(path: Option<&Path>) -> bool {
+pub(crate) fn hermes_location(path: Option<&Path>) -> bool {
     path.is_some_and(|path| path.components().any(|p| p.as_os_str() == ".hermes"))
 }
 

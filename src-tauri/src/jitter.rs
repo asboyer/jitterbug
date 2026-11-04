@@ -1082,6 +1082,12 @@ impl Report {
         {
             if category == "project" && !label.is_empty() {
                 aliases.push((label, "a development workload".into()));
+            } else if category == "agent" {
+                // "Claude Code · my-project" → "Claude Code": folder names stay local.
+                if let Some((agent, _)) = label.split_once(" · ") {
+                    let agent = agent.to_string();
+                    aliases.push((label, agent));
+                }
             } else if category == "command" {
                 // "claude (my-project) in Code" → "claude in Code": folder names stay local.
                 if let (Some(open), Some(close)) = (label.find(" ("), label.rfind(") in ")) {
