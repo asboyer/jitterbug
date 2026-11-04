@@ -55,8 +55,7 @@
         height: 88%;
         align-items: center;
         justify-content: center;
-        border-radius: 22%;
-        background: var(--surface-secondary, rgba(128, 128, 128, 0.1));
+
         color: var(--muted);
     }
 </style>

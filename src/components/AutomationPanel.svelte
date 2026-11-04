@@ -486,7 +486,7 @@
         margin: 0 0 20px;
     }
     .proposal-card {
-        border: 1px solid var(--border);
+        border: 0;
         background: var(--hover);
         padding: 16px;
         border-radius: 9px;
@@ -523,12 +523,6 @@
     .outcome {
         padding-bottom: 22px;
     }
-    .incident-details {
-        border-top: 1px solid var(--border);
-    }
-    .detail-row {
-        border-bottom: 1px solid var(--border);
-    }
     .detail-row > summary {
         padding: 13px 0;
         cursor: pointer;
@@ -537,7 +531,7 @@
     }
     .detail-hint {
         float: right;
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
     }
     .detail-content {
@@ -550,7 +544,7 @@
     }
     .analysis-provenance {
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
         overflow-wrap: anywhere;
     }
     .full-analysis {
@@ -596,7 +590,7 @@
     }
     .incident-timeline time {
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
         white-space: nowrap;
     }
     .incident-timeline p {
@@ -608,7 +602,7 @@
         display: flex;
         gap: 10px;
         align-items: center;
-        border-top: 1px solid var(--border);
+
         padding-top: 14px;
     }
     .followup-button {
@@ -639,7 +633,7 @@
         bottom: 42px;
         right: 0;
         width: 240px;
-        border: 1px solid var(--border);
+        border: 0;
         border-radius: 9px;
         padding: 10px;
         display: grid;

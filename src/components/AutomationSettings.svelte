@@ -152,13 +152,13 @@
             />
             <SettingSwitch
                 title="Pause agents when the computer is strained"
-                description="When memory or CPU stays tight, pause the busiest working agent session and resume it once there is room. Sessions waiting for you, and the last one working, keep running."
+                description="Temporarily pause a busy agent when resources are tight; resume it when there is room."
                 bind:checked={policy.hold_agents}
                 disabled={!policy.enabled}
             />
             <SettingSwitch
                 title="Investigate with AI"
-                description="Use your intelligent model when a problem persists. Cloud costs may apply."
+                description="Explain persistent slowdowns and suggest a next step."
                 bind:checked={policy.model_analysis}
             />
             <SettingSwitch
@@ -374,14 +374,12 @@
     {:else}
         <section class="settings-group" aria-label="Agent access">
             <h2>
-                Coding agents · MCP<span
-                    class="integration-status"
-                    class:configured={policy.agent_control}
+                Agent access<span class="integration-status" class:configured={policy.agent_control}
                     >{policy.agent_control ? 'On' : 'Off'}</span
                 >
             </h2>
             <p class="group-note">
-                Let Claude Code, Codex and other agents see what uses this computer.
+                Let connected coding agents check resources before they start heavy work.
             </p>
             <SettingSwitch
                 title="Allow agent access"

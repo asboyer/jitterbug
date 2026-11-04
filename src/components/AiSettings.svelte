@@ -119,15 +119,7 @@
     }
 </script>
 
-<div class="settings-workspace ai-page">
-    <div class="settings-title">
-        <div>
-            <h1>AI</h1>
-            <p class="muted">Monitoring always runs on this computer. AI explains and suggests.</p>
-        </div>
-        {#if !desktop}<span class="tag">Preview · changes stay here</span>{/if}
-    </div>
-
+<div class="ai-page">
     <section class="settings-group" aria-labelledby="ai-where">
         <h2 id="ai-where">Where AI runs</h2>
         <div class="mode-options">
@@ -323,8 +315,8 @@
             <p>
                 ${bootstrap.spending.reserved_usd.toFixed(4)} is accounted against the ceiling. Successful
                 requests settle to reported usage; unknown charges stay reserved after errors and restarts.
-                The lower of this ceiling and the environment ceiling applies. Prototype caps: $0.10 per
-                request, 200 requests, $100 maximum.
+                The lower of this ceiling and the environment ceiling applies. Limits: $0.10 per request,
+                200 requests per 24 hours, $100 maximum.
             </p>
         </details>
     </section>

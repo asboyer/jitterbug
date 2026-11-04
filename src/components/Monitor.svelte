@@ -11,7 +11,6 @@
     import Workloads from './Workloads.svelte';
     import MonitorInspector from './MonitorInspector.svelte';
     import Icon from './Icon.svelte';
-    import AiActivityLog from './AiActivityLog.svelte';
     let {
         snapshot,
         selected,
@@ -50,7 +49,7 @@
         systemChat = false;
         process = null;
         onclose();
-        trigger?.focus({ preventScroll: true });
+        void tick().then(() => trigger?.focus({ preventScroll: true }));
     }
 </script>
 
@@ -66,9 +65,6 @@
         >
     </header>
     <MonitorStats {snapshot} />
-    {#if !selected && !systemChat}<div class="monitor-activity">
-            <AiActivityLog live={snapshot.source === 'live'} {cases} />
-        </div>{/if}
     <div class="monitor-workspace" class:inspecting={!!selected || systemChat}>
         <Workloads
             {snapshot}
@@ -107,76 +103,61 @@
 
 <style>
     .monitor-page {
-        animation: none !important;
         display: flex;
         flex-direction: column;
-        gap: 18px;
-        height: calc(100dvh - 136px);
-        min-height: 390px;
-        max-width: 1600px;
-        margin: 0 auto;
-    }
-    .monitor-activity {
-        flex: 0 0 auto;
-        max-height: min(260px, 30dvh);
-        overflow: auto;
-    }
-    .monitor-activity :global(.ai-activity) {
-        margin-bottom: 0;
+        min-height: 0;
+        height: 100%;
+        gap: 20px;
     }
     .monitor-title {
         display: flex;
-        align-items: center;
         justify-content: space-between;
-        flex: 0 0 auto;
-    }
-    .monitor-title h1 {
-        font-size: 25px;
-        margin: 0;
-        letter-spacing: -0.7px;
+        align-items: center;
+        gap: 16px;
+        flex-shrink: 0;
     }
     .monitor-title button {
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 8px;
         font-size: 12px;
     }
     .monitor-workspace {
-        min-height: 0;
         flex: 1;
         display: grid;
+        min-height: 0;
         grid-template-columns: minmax(0, 1fr);
-        gap: 16px;
+        gap: 20px;
     }
     .monitor-workspace.inspecting {
-        grid-template-columns: minmax(350px, 1fr) minmax(360px, 0.9fr);
+        grid-template-columns: minmax(340px, 1fr) 400px;
     }
     .monitor-inspector {
         min-height: 0;
-        min-width: 0;
-        border: 1px solid var(--border);
-        border-radius: 12px;
         overflow: hidden;
-        background: linear-gradient(var(--panel), var(--panel)), var(--canvas);
+        background: var(--panel);
+        border-radius: 6px;
+        border: 0;
+        outline: none;
     }
-    @media (max-width: 1100px) {
+    @media (max-width: 1000px) {
+        .monitor-workspace.inspecting {
+            grid-template-columns: minmax(280px, 1fr) minmax(340px, 0.95fr);
+            gap: 16px;
+        }
+    }
+    @media (max-width: 760px) {
         .monitor-workspace.inspecting {
             grid-template-columns: minmax(0, 1fr);
         }
-        .monitor-inspector {
-            position: fixed;
-            top: 66px;
-            right: 16px;
-            bottom: 16px;
-            width: min(520px, calc(100vw - 200px));
-            z-index: 30;
-            box-shadow: var(--shadow-float);
+        .monitor-workspace.inspecting :global(.activity-list) {
+            display: none;
         }
-    }
-    @media (max-height: 700px) {
+        .monitor-inspector {
+            width: 100%;
+        }
         .monitor-page {
-            height: calc(100dvh - 112px);
-            gap: 12px;
+            gap: 18px;
         }
     }
 </style>

@@ -31,7 +31,7 @@
             for (const action of group.actions) enabled[action.id] = action.session_enabled;
         try {
             view = await invoke<SessionPermissionView>('save_session_permissions', { enabled });
-            status = 'Session rights saved for this PC.';
+            status = 'Session permissions saved.';
         } catch (reason) {
             error = errorMessage(reason);
         } finally {
@@ -48,26 +48,20 @@
     <div class="preference-heading">
         <span class="preference-icon"><Icon name="settings" size={20} /></span>
         <div>
-            <h2>Session rights</h2>
-            <p>
-                {#if view}This {view.environment.os}
-                    {view.environment.version} ({view.environment.arch}).{:else}Rights for this PC.{/if}
-                Off until you allow a group. Sessions can only use compiled, reversible actions that exist
-                on this OS.
-            </p>
+            <h2>Session permissions</h2>
+            <p>Choose what an optimization session may change. Everything starts off.</p>
         </div>
     </div>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if status}<p class="success" role="status">{status}</p>{/if}
     {#if view}
         {#each view.groups as group}
-            <details class="preference-detail" open={group.id === 'power_and_sleep'}>
+            <details class="preference-detail">
                 <summary><span class="detail-name">{group.label}</span></summary>
                 <div class="detail-body">
-                    <p class="muted">{group.detail}</p>
                     {#each group.actions as action}
                         <SettingSwitch
-                            title={action.label}
+                            title={action.label.replace('this PC', 'this computer')}
                             description={action.status === 'available'
                                 ? action.detail
                                 : `${action.status.replaceAll('_', ' ')} — ${action.detail}`}
@@ -79,7 +73,7 @@
             </details>
         {/each}
         <button class="primary" disabled={!desktop || busy} onclick={save}
-            >{busy ? 'Saving…' : 'Save session rights'}</button
+            >{busy ? 'Saving…' : 'Save permissions'}</button
         >
     {/if}
 </section>

@@ -2,21 +2,19 @@
     import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory, percent } from '../lib/format';
-    import { demoInside } from '../lib/demo';
     import type { InsideUnit, InsideView, ProcessRecord, Snapshot, Workload } from '../lib/types';
     import InfoTip from './InfoTip.svelte';
 
     let {
         snapshot,
         workload,
-        demo,
         actionBusy,
         onaction,
         onview,
     }: {
         snapshot: Snapshot;
         workload: Workload;
-        demo: boolean;
+        demo?: boolean;
         actionBusy: boolean;
         onaction: (process: ProcessRecord, action: string) => void;
         /** Every loaded view, including one only used to name the workload's processes. */
@@ -54,12 +52,10 @@
         asking = connect && browser;
         if (browser) measured = Date.now();
         try {
-            const next = demo
-                ? demoInside(workload, snapshot)
-                : await invoke<InsideView>('get_inside_view', {
-                      workloadId: workload.id,
-                      connect,
-                  });
+            const next = await invoke<InsideView>('get_inside_view', {
+                workloadId: workload.id,
+                connect,
+            });
             if (request !== sequence) return;
             onview?.(next);
             // Without an allowed browser connection, keep offering Show tabs.
@@ -100,7 +96,7 @@
         unit: InsideUnit,
         action: 'focus_tab' | 'pause_tab' | 'resume_tab' | 'close_tab'
     ) {
-        if (demo || tabBusy) return;
+        if (tabBusy) return;
         if (action === 'close_tab' && confirming !== unit.id) {
             confirming = unit.id;
             return;
@@ -124,7 +120,7 @@
     }
 
     async function session(unit: InsideUnit, action: 'pause' | 'resume') {
-        if (demo || tabBusy || unit.pid === null || unit.start_time === null) return;
+        if (tabBusy || unit.pid === null || unit.start_time === null) return;
         tabBusy = true;
         try {
             notice = await invoke<string>('session_control', {
@@ -196,25 +192,25 @@
             {#if unit.kind === 'tab'}
                 {#if unit.actions.includes('resume_tab')}<button
                         class="primary"
-                        disabled={demo || tabBusy}
+                        disabled={tabBusy}
                         onclick={() => tab(unit, 'resume_tab')}>Resume</button
                     >{:else if unit.actions.includes('focus_tab')}<button
-                        disabled={demo || tabBusy}
+                        disabled={tabBusy}
                         onclick={() => tab(unit, 'focus_tab')}>Show</button
                     >{/if}{#if unit.actions.includes('pause_tab')}<button
-                        disabled={demo || tabBusy}
+                        disabled={tabBusy}
                         title="Freeze this tab's scripts and timers. Nothing is closed; it resumes by itself after 15 minutes. Its memory stays allocated."
                         onclick={() => tab(unit, 'pause_tab')}>Pause</button
                     >{/if}{#if unit.actions.includes('close_tab')}<button
                         class="danger-text"
-                        disabled={demo || tabBusy}
+                        disabled={tabBusy}
                         onclick={() => tab(unit, 'close_tab')}
                         >{confirming === unit.id ? 'Confirm close' : 'Close tab…'}</button
                     >{/if}
             {:else}
                 {#each unit.actions.filter((a) => a === 'pause' || a === 'resume') as action}<button
                         class:primary={action === 'resume'}
-                        disabled={demo || tabBusy}
+                        disabled={tabBusy}
                         title={action === 'pause'
                             ? 'Freeze this command and everything it started. Nothing is closed; it resumes by itself after 15 minutes.'
                             : ''}
@@ -223,7 +219,7 @@
                     >{/each}
                 {#each unit.actions.filter((a) => a !== 'pause' && a !== 'resume') as action}<button
                         class:danger-text={action === 'terminate'}
-                        disabled={demo || actionBusy}
+                        disabled={actionBusy}
                         onclick={() => processAction(unit, action)}
                         >{action === 'terminate' ? 'Stop…' : 'Lower priority…'}</button
                     >{/each}
@@ -323,7 +319,7 @@
                 {/each}
             </div>
             <details class="reading-notes">
-                <summary>{demo ? 'Synthetic example · ' : ''}About these readings</summary>
+                <summary>About these readings</summary>
                 <p class="footnote">{view.limits}</p>
             </details>
             {#if view.units.some((u) => u.kind === 'tab')}

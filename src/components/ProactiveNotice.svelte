@@ -71,7 +71,7 @@
         padding: 20px;
         z-index: 18;
         background: var(--panel);
-        border: 1px solid var(--border);
+        border: 0;
         border-radius: 18px;
         box-shadow: 0 12px 50px #0004;
         animation: arrive 200ms ease-out;

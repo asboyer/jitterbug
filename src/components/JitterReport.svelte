@@ -137,7 +137,7 @@
         justify-content: space-between;
         gap: 8px;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
         margin-top: 4px;
     }
     .victim {
@@ -145,11 +145,11 @@
     }
     .evidence-tag {
         display: inline-block;
-        font-size: 9px;
+        font-size: 11px;
         letter-spacing: 0.4px;
         text-transform: uppercase;
         color: var(--muted);
-        border: 1px solid var(--border);
+        border: 0;
         border-radius: 4px;
         padding: 1px 4px;
         margin-right: 6px;
@@ -176,7 +176,7 @@
     }
     .jitter-findings {
         margin-top: 18px;
-        border-top: 1px solid var(--border);
+
         font-size: 12px;
     }
     .jitter-findings > summary {
@@ -203,7 +203,7 @@
         line-height: 1.5;
     }
     .strength {
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
     }
     .strength.strong {

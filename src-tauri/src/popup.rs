@@ -8,7 +8,7 @@ use crate::{
     AppState,
 };
 use serde_json::{json, Value};
-use std::{collections::VecDeque, sync::Mutex, time::Duration};
+use std::{collections::VecDeque, sync::Mutex};
 use tauri::{Emitter, Manager};
 
 pub const LABEL: &str = "popup";
@@ -486,23 +486,7 @@ pub fn open_action_case(app: tauri::AppHandle, id: u64, source: String) -> Resul
     Ok(())
 }
 
-/// Demo menu: after a short delay (time to switch apps), offer a synthetic approval request.
-#[tauri::command]
-pub fn preview_action_popup(app: tauri::AppHandle) -> Result<(), String> {
-    let case = demo_case(now())?;
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        if let Some(popups) = app.try_state::<Popups>() {
-            if let Ok(mut inner) = popups.inner.lock() {
-                inner.deferred.retain(|id| *id != case.id);
-                inner.demo = Some(case);
-            }
-        }
-        refresh(&app);
-    });
-    Ok(())
-}
-
+#[cfg(test)]
 fn demo_case(at: u64) -> Result<Case, String> {
     let mut case = automation::simulated_case(at)?;
     let process = case

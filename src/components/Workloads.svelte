@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { invoke, isTauri } from '@tauri-apps/api/core';
+    import { invoke } from '@tauri-apps/api/core';
     import { untrack, onDestroy } from 'svelte';
     import type {
         AppProfile,
@@ -9,9 +9,7 @@
         WorkloadDetails,
     } from '../lib/types';
     import { memory, percent, errorMessage } from '../lib/format';
-    import { demoDetails } from '../lib/demo';
     import {
-        demoInventory,
         identityKey,
         queueInference,
         cancelled,
@@ -63,7 +61,6 @@
     let lastQuery = '';
     let inventoryTimer: ReturnType<typeof setTimeout>;
     let enrichmentTimer: ReturnType<typeof setTimeout>;
-    const demo = $derived(snapshot.source !== 'live' || !isTauri());
     const rows = $derived(inventory?.rows ?? []);
     const query = $derived<Query>({ search, sort, view, filter, offset });
     const queryKey = $derived(
@@ -113,19 +110,10 @@
             inventoryTimer = setTimeout(
                 async () => {
                     try {
-                        let result = demo
-                            ? demoInventory(sample, next)
-                            : await invoke<Inventory>('get_monitor_inventory', {
-                                  query: { ...next, pinned },
-                              });
+                        const result = await invoke<Inventory>('get_monitor_inventory', {
+                            query: { ...next, pinned },
+                        });
                         if (id !== requestId || disposed) return;
-                        if (demo && pinned.length) {
-                            const index = new Map(pinned.map((key, i) => [key, i]));
-                            result.rows.sort(
-                                (a, b) =>
-                                    (index.get(rowKey(a)) ?? 1000) - (index.get(rowKey(b)) ?? 1000)
-                            );
-                        }
                         inventory = result;
                         error = '';
                         clearTimeout(enrichmentTimer);
@@ -147,15 +135,11 @@
         const sample = snapshot;
         let active = true;
         if (!id) return;
-        void (
-            demo
-                ? Promise.resolve(demoDetails(sample, id))
-                : invoke<WorkloadDetails>('get_workload_details', {
-                      workloadId: id,
-                      pid: null,
-                      startTime: null,
-                  })
-        )
+        void invoke<WorkloadDetails>('get_workload_details', {
+            workloadId: id,
+            pid: null,
+            startTime: null,
+        })
             .then((detail) => {
                 if (active) {
                     const order = new Map(members.map((p, i) => [identityKey(p), i]));
@@ -181,14 +165,7 @@
         );
     }
     async function enrich() {
-        if (
-            demo ||
-            pauseEnrichment ||
-            explaining ||
-            disposed ||
-            !snapshot.sample_ready ||
-            document.hidden
-        )
+        if (pauseEnrichment || explaining || disposed || !snapshot.sample_ready || document.hidden)
             return;
         const start = Math.max(0, Math.floor((scroller?.scrollTop ?? 0) / 66) - 1);
         const candidates = rows
@@ -240,9 +217,7 @@
     function description(row: MonitorRow): string {
         return (
             profile(row)?.text ??
-            (row.process
-                ? processRole(row.process, row.workload.label)
-                : appFallback(row.workload, demo))
+            (row.process ? processRole(row.process, row.workload.label) : appFallback(row.workload))
         );
     }
     function orderBy(value: string) {
@@ -315,7 +290,6 @@
                             workloadId={row.workload.id}
                             category={row.workload.category}
                             size={28}
-                            {demo}
                         /><span class="identity-copy"
                             ><strong>{row.process?.name ?? row.workload.label}</strong><span
                                 class="purpose"
@@ -362,7 +336,7 @@
     </div>
     <footer>
         <span
-            >{explaining ? 'Identifying apps…' : demo ? 'Demo data' : 'Live readings'}{profileError
+            >{explaining ? 'Identifying apps…' : 'Live readings'}{profileError
                 ? ' · Descriptions paused'
                 : ''}</span
         >
@@ -396,17 +370,17 @@
         flex-direction: column;
         min-height: 0;
         min-width: 0;
-        border: 1px solid var(--border);
-        border-radius: 12px;
+        border: 0;
+        border-radius: 0;
         overflow: hidden;
-        background: var(--panel);
+        background: transparent;
     }
     .list-title {
         display: flex;
         gap: 8px;
         align-items: center;
         justify-content: space-between;
-        padding: 16px 16px 12px;
+        padding: 0 0 16px;
         flex-wrap: wrap;
     }
     h2 {
@@ -416,35 +390,36 @@
     }
     h2 span {
         color: var(--muted);
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 400;
         margin-left: 6px;
     }
     .view-switch {
         display: flex;
-        padding: 2px;
-        background: var(--hover);
-        border-radius: 7px;
+        gap: 16px;
+        padding: 0;
+        background: transparent;
+        border-radius: 0;
     }
     .view-switch button {
         min-height: 25px;
-        padding: 3px 9px;
-        font-size: 11px;
+        padding: 3px 0 7px;
+        font-size: 12px;
         border: 0;
         box-shadow: none;
         background: none;
         color: var(--muted);
-        border-radius: 5px;
+        border-radius: 0;
     }
     .view-switch button[aria-pressed='true'] {
-        background: var(--control);
+        background: transparent;
         color: var(--text);
-        box-shadow: 0 1px 3px #0001;
+        box-shadow: none;
     }
     .list-tools {
         display: flex;
         gap: 6px;
-        padding: 0 16px 12px;
+        padding: 0 0 12px;
     }
     input {
         flex: 1;
@@ -452,7 +427,7 @@
         font-size: 12px;
     }
     select {
-        font-size: 11px;
+        font-size: 12px;
         max-width: 100px;
     }
     .reorder {
@@ -463,9 +438,9 @@
         display: grid;
         grid-template-columns: minmax(0, 1fr) 62px 80px;
         padding: 0 12px 0 40px;
-        border-block: 1px solid var(--border);
+
         flex-shrink: 0;
-        background: var(--hover);
+        background: transparent;
     }
     .table-head button {
         text-align: right;
@@ -474,7 +449,7 @@
         border-radius: 0;
         box-shadow: none;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 12px;
         padding: 6px 0;
         min-height: 28px;
     }
@@ -482,7 +457,7 @@
         text-align: left;
     }
     .table-head button.active {
-        color: var(--accent);
+        color: var(--text);
     }
     .activity-scroll {
         flex: 1;
@@ -495,12 +470,12 @@
     .activity-row {
         display: flex;
         align-items: stretch;
-        border-bottom: 1px solid var(--border);
-        min-height: 65px;
+
+        min-height: 59px;
     }
     .activity-row.chosen,
     .child-row.chosen {
-        background: var(--accent-soft);
+        background: var(--hover);
     }
     .expand,
     .indent {
@@ -538,7 +513,7 @@
         background: var(--hover);
     }
     .activity-row.chosen:hover {
-        background: var(--accent-soft);
+        background: var(--hover);
     }
     .identity {
         display: flex;
@@ -562,7 +537,7 @@
     }
     .purpose,
     small {
-        font-size: 11px;
+        font-size: 12px;
         line-height: 1.35;
         color: var(--muted);
         white-space: nowrap;
@@ -570,16 +545,15 @@
         overflow: hidden;
     }
     small {
-        font-size: 10px;
+        font-size: 12px;
     }
     .numeric {
         text-align: right;
-        font-size: 11px;
+        font-size: 12px;
         font-variant-numeric: tabular-nums;
     }
     .children {
         background: var(--hover);
-        border-bottom: 1px solid var(--border);
     }
     .child-row {
         width: 100%;
@@ -587,7 +561,7 @@
         grid-template-columns: minmax(0, 1fr) 62px 80px;
         padding: 10px 12px 10px 40px;
         border: 0;
-        border-bottom: 1px solid var(--border);
+
         border-radius: 0;
         background: none;
         box-shadow: none;
@@ -603,7 +577,7 @@
         padding-right: 12px;
     }
     .children > .text-button {
-        font-size: 11px;
+        font-size: 12px;
         margin: 5px 16px;
     }
     .empty {
@@ -612,20 +586,20 @@
         font-size: 12px;
     }
     .error {
-        font-size: 11px;
+        font-size: 12px;
         padding: 12px;
     }
     footer {
         min-height: 40px;
         padding: 7px 12px;
-        border-top: 1px solid var(--border);
+
         display: flex;
         gap: 8px;
         align-items: center;
         justify-content: space-between;
         flex-shrink: 0;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 12px;
     }
     footer div {
         display: flex;

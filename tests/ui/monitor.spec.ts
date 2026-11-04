@@ -18,31 +18,14 @@ async function send(page: Page, text = 'What is this process doing?') {
     await inspector(page).getByRole('button', { name: 'Send message' }).click();
 }
 
-test('one compact Monitor keeps synthetic exploration offline and selection does not investigate', async ({
-    page,
-}) => {
-    const requests: string[] = [];
-    page.on('request', (r) => {
-        if (!r.url().startsWith(test.info().project.use.baseURL!)) requests.push(r.url());
-    });
+test('the browser never manufactures telemetry or an AI answer', async ({ page }) => {
     await page.goto('/');
-    const nav = page.getByRole('navigation', { name: 'Main navigation' });
-    await expect(nav.getByRole('button', { name: 'Monitor', exact: true })).toBeVisible();
-    for (const name of ['Activity', 'Workloads', 'Workflows'])
-        await expect(nav.getByRole('button', { name, exact: true })).toHaveCount(0);
-    await expect(page.getByRole('region', { name: 'System resources' })).toContainText('Normal');
-    await expect(page.getByRole('region', { name: 'Computer explanation' })).toHaveCount(0);
-    await page.getByRole('button', { name: 'Show processes for Example Browser' }).click();
-    await page
-        .getByRole('group', { name: 'Example Browser processes', exact: true })
-        .getByRole('button')
-        .first()
-        .click();
-    await expect(inspector(page)).toContainText('PID 9101');
-    await expect(conversation(page).locator('.message')).toHaveCount(0);
-    await send(page);
-    await expect(conversation(page)).toContainText('Jitterbug · demo');
-    expect(requests).toEqual([]);
+    await expect(page.getByRole('heading', { name: 'Connect to your computer' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'System resources' })).toHaveCount(0);
+    await expect(page.getByText('Demo & testing', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'AI', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Agents', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Connect to your computer' })).toBeVisible();
 });
 
 test('native app artwork is rendered and retained across telemetry updates', async ({ page }) => {
@@ -158,7 +141,7 @@ test('a chat proposal opens a concrete review before any native action', async (
     await inspector(page)
         .getByRole('button', { name: /Review background mode/ })
         .click();
-    const review = page.getByRole('dialog', { name: 'Lower this process’s CPU priority?' });
+    const review = page.getByRole('dialog', { name: 'Lower CPU priority?' });
     await expect(review).toContainText('PID 9101');
     await expect(review).toContainText('does not free memory');
     await expect(page.locator('html')).not.toHaveAttribute('data-action-calls');
@@ -254,7 +237,7 @@ test('inspector and composer are keyboard reachable in a small desktop window', 
     page,
 }) => {
     await page.setViewportSize({ width: 760, height: 650 });
-    await page.goto('/');
+    await desktop(page);
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).focus();
     await page.keyboard.press('Enter');
     await expect(inspector(page)).toBeFocused();

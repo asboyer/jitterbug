@@ -16,19 +16,8 @@ export function processRole(process: ProcessRecord, app: string): string {
     if (/^rustc|clang|gcc/.test(name)) return 'Compiles source code into a program.';
     return process.name === app ? 'Main application process.' : `Runs as part of ${app}.`;
 }
-export function appFallback(workload: Workload, demo: boolean): string {
-    if (demo) {
-        return (
-            {
-                'demo-browser': 'Browses the web, with separate processes for tabs and extensions.',
-                'demo-editor': 'Edits code and runs extensions and terminal sessions.',
-                'demo-project': 'Runs the development server and build tools for this project.',
-                'demo-model': 'Runs a small language model on this computer.',
-            }[workload.id] ?? workload.description
-        );
-    }
-    if (workload.category === 'project')
-        return 'Development tools running from the same project folder.';
+export function appFallback(workload: Workload): string {
+    if (workload.category === 'project') return 'Development tools in this project folder.';
     if (workload.category === 'model') return 'Runs language models on this computer.';
-    return 'Identifying this app…';
+    return 'App description unavailable.';
 }

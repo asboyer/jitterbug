@@ -84,7 +84,7 @@
         width: min(420px, calc(100vw - 40px));
         max-height: calc(100vh - 40px);
         padding: 24px;
-        border: 1px solid var(--border);
+        border: 0;
         border-radius: 14px;
         box-shadow: 0 20px 70px #0005;
     }

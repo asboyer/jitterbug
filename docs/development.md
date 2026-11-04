@@ -3,7 +3,7 @@
 ## Setup
 
 Follow the [README](../README.md#run-locally) for prerequisites and startup. `npm run dev` runs a
-synthetic browser preview; `npm run tauri dev` runs the native collector and desktop app.
+browser shell without system telemetry; `npm run tauri dev` runs the native collector and desktop app.
 On macOS, install Xcode command-line tools. Windows needs MSVC build tools and WebView2.
 
 The Svelte/TypeScript UI lives in `src/`. Rust in `src-tauri/src/` owns telemetry, attribution,
@@ -34,8 +34,8 @@ small, and unload the model afterwards. A tiny model is still fallible, and reso
 guarantee every model's peak memory usage.
 
 Set the in-app cloud budget before using AI. The lower of it and `JITTERBUG_SPEND_LIMIT_USD` applies.
-The prototype defaults to $2, reserves at most $0.10 per request, and has a 200-request lifetime
-limit and $100 absolute ceiling. Reservations persist before transmission; failed requests or
+The default budget is $2, with at most $0.10 reserved per request, a 200-request rolling
+24-hour limit, and a $100 absolute ceiling. The request window renews without clearing spending. Reservations persist before transmission; failed requests or
 missing usage retain their reservation. This is an estimated app ledger, not provider billing,
 and excludes other clients using the same key.
 
@@ -93,8 +93,9 @@ npm run smoke
 ```
 
 The smoke check samples live telemetry without printing private measurements. UI tests use
-synthetic fixtures without model calls or process actions. **Demo & testing** offers the same
-kind of exploration in the desktop, including a delayed action-popup preview.
+isolated synthetic fixtures without model calls or process actions. The product itself has no
+demo mode, fake telemetry, canned chat replies, or simulated action results. Audit live behavior
+in the native app using real, disposable workloads.
 
 The optional `jitterbug-monitor-probe --live-provider` Cargo example validates researched identities
 (including retained vendor sources) and an explicit PID conversation with two real Meta requests

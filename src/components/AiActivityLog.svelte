@@ -1,6 +1,6 @@
 <script lang="ts">
     import { invoke } from '@tauri-apps/api/core';
-    import { activityLabel, activityOutcome, ago, demoActivity } from '../lib/ai-activity';
+    import { activityLabel, activityOutcome, ago } from '../lib/ai-activity';
     import { providerNames } from '../lib/ai-mode';
     import Icon from './Icon.svelte';
     import type { AiActivity, AutomationCase } from '../lib/types';
@@ -20,7 +20,7 @@
         async function load() {
             now = Date.now() / 1000;
             if (!reading) {
-                entries = demoActivity();
+                entries = [];
                 return;
             }
             try {

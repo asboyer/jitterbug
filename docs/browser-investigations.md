@@ -61,7 +61,7 @@ with possible loss of unsaved work.
 
 Blocked or failed model requests show **AI unavailable** and the reason directly.
 Local evidence is preserved; generic machine totals do not masquerade as a diagnosis.
-The budget ceiling and 200-request prototype limit have separate errors. A lower
+The budget ceiling and 200-request daily limit have separate errors. A lower
 environment ceiling is identified rather than directing users only to Settings.
 
 Each request reserves a conservative estimate before transmission. Complete

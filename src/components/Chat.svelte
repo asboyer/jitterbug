@@ -177,42 +177,19 @@
                 new TextEncoder().encode(JSON.stringify(messages)).length > 5500
             )
                 messages = messages.slice(1);
-            const reply: Reply =
-                !desktop || snapshot.source === 'demo'
-                    ? {
-                          text: 'The sample project is running a build. This is synthetic data; no model was called.',
-                          insight: {
-                              headline: 'A build is using the CPU',
-                              finding:
-                                  'This demo shows development work running alongside your apps.',
-                              next_step:
-                                  'Let the build finish, or manage this workload to schedule heavy checks.',
-                          },
-                          source: 'demo',
-                          provider: null,
-                          model: null,
-                          tier: 'demo',
-                          route: ['Synthetic demonstration only.'],
-                          estimated_cost_usd: 0,
-                          investigation: null,
-                          choices: [],
-                      }
-                    : await queueInference<Reply>(
-                          () =>
-                              invoke('ask', {
-                                  messages,
-                                  workloadId:
-                                      choice?.workload_id ??
-                                      focused?.workload_id ??
-                                      workload?.id ??
-                                      null,
-                                  tier,
-                                  pid: anchoredProcess?.pid ?? null,
-                                  startTime: anchoredProcess?.start_time ?? null,
-                              }),
-                          20,
-                          () => requestContext === previousContext
-                      );
+            const reply: Reply = await queueInference<Reply>(
+                () =>
+                    invoke('ask', {
+                        messages,
+                        workloadId:
+                            choice?.workload_id ?? focused?.workload_id ?? workload?.id ?? null,
+                        tier,
+                        pid: anchoredProcess?.pid ?? null,
+                        startTime: anchoredProcess?.start_time ?? null,
+                    }),
+                20,
+                () => requestContext === previousContext
+            );
             onusage();
             if (requestContext !== previousContext) return;
             focused = reply.investigation?.target ?? null;
@@ -242,13 +219,11 @@
     </div>
     <div class="context-line">
         <span class="status-dot"></span><span
-            >{snapshot.source === 'demo'
-                ? 'Demo · synthetic readings'
-                : questionProcess
-                  ? `Selected process · PID ${questionProcess.pid}`
-                  : workload
-                    ? 'Live app investigation'
-                    : 'Live readings'}</span
+            >{questionProcess
+                ? `Selected process · PID ${questionProcess.pid}`
+                : workload
+                  ? 'Live app investigation'
+                  : 'Live readings'}</span
         ><InfoTip label="Privacy and model settings"
             ><p>
                 Models receive the selected app’s name, process names, measurements, recent history,
@@ -408,7 +383,6 @@
         color: var(--muted);
         font-size: 10px;
         padding: 10px 0;
-        border-bottom: 1px solid var(--border);
     }
     .context-line > span:nth-child(2) {
         flex: 1;
@@ -495,7 +469,6 @@
     }
     .past-message {
         padding: 14px 0;
-        border-bottom: 1px solid var(--border);
     }
     .past-message p {
         white-space: pre-wrap;

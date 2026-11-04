@@ -12,6 +12,10 @@ pub struct Ledger {
     pub reported_estimate_usd: f64,
     pub requests: u64,
     #[serde(default)]
+    request_window_started: u64,
+    #[serde(default)]
+    window_requests: u64,
+    #[serde(default)]
     pending: BTreeMap<u64, f64>,
 }
 
@@ -74,6 +78,9 @@ impl Budget {
         Ok(ledger)
     }
     pub fn reserve(&self, amount: f64, configured_limit: f64) -> Result<u64, String> {
+        self.reserve_at(amount, configured_limit, crate::types::now())
+    }
+    fn reserve_at(&self, amount: f64, configured_limit: f64, now: u64) -> Result<u64, String> {
         let environment_limit =
             environment_ceiling(std::env::var("JITTERBUG_SPEND_LIMIT_USD").ok())?;
         let limit = configured_limit.min(environment_limit).min(100.0);
@@ -81,11 +88,12 @@ impl Budget {
             return Err("Invalid budget or request exceeds the $0.10 per-call ceiling.".into());
         }
         self.mutate(|l| {
-            if l.requests >= 200 {
-                return Err(
-                    "The 200-request prototype limit was reached. AI investigation is unavailable."
-                        .into(),
-                );
+            if l.request_window_started == 0 || now.saturating_sub(l.request_window_started) >= 86_400 {
+                l.request_window_started = now;
+                l.window_requests = 0;
+            }
+            if l.window_requests >= 200 || l.pending.len() >= 200 {
+                return Err("The 200-request daily limit was reached. Try again after the current 24-hour window.".into());
             }
             if l.reserved_usd + amount > limit {
                 let remedy = if environment_limit < configured_limit {
@@ -98,7 +106,8 @@ impl Budget {
                 ));
             }
             l.reserved_usd += amount;
-            l.requests += 1;
+            l.requests = l.requests.checked_add(1).ok_or("Spending ledger request counter exhausted.")?;
+            l.window_requests += 1;
             l.pending.insert(l.requests, amount);
             Ok(())
         })
@@ -137,6 +146,30 @@ fn environment_ceiling(value: Option<String>) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn request_limit_renews_without_resetting_spending() {
+        let path =
+            std::env::temp_dir().join(format!("jitterbug-budget-window-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let b = Budget::new(&path);
+        for _ in 0..200 {
+            let request = b.reserve_at(0.01, 5.0, 1_000).unwrap();
+            b.settle(request, 0.001).unwrap();
+        }
+        assert!(b
+            .reserve_at(0.01, 5.0, 1_001)
+            .unwrap_err()
+            .contains("daily limit"));
+        let before = b.status().unwrap().reserved_usd;
+        assert_eq!(b.reserve_at(0.01, 5.0, 87_400).unwrap(), 201);
+        assert!(b.status().unwrap().reserved_usd > before);
+        assert!(b
+            .reserve_at(0.01, 0.10, 174_000)
+            .unwrap_err()
+            .contains("budget"));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
     #[test]
     fn successful_requests_release_only_their_own_unused_reservation() {
         let path = std::env::temp_dir().join(format!(
