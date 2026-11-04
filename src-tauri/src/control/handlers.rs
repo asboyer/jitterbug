@@ -229,7 +229,185 @@ pub fn caller_agent(caller: u32) -> Option<&'static str> {
     None
 }
 
+/// Answer one request and add it to the agent activity log.
 pub fn handle(
+    runtime: &Arc<Runtime>,
+    caller: u32,
+    method: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let result = dispatch(runtime, caller, method, params);
+    let session = snapshot(runtime)
+        .ok()
+        .and_then(|s| own_session(&s, &lineage(caller)))
+        .map(|u| u.title.chars().take(60).collect());
+    let known = matches!(
+        method,
+        "overview"
+            | "inspect_app"
+            | "pause_session"
+            | "resume_session"
+            | "pause_tab"
+            | "resume_tab"
+            | "close_tab"
+            | "request_background"
+            | "request_status"
+            | "pressure_hint"
+    );
+    super::activity::record(super::activity::Call {
+        at: now(),
+        method: if known { method } else { "unknown" }.into(),
+        agent: caller_agent(caller).map(Into::into),
+        session,
+        ok: result.is_ok(),
+        error: result.as_ref().err().map(|e| e.chars().take(140).collect()),
+        request_id: result
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("request_id"))
+            .and_then(Value::as_u64),
+        hinted: (method == "pressure_hint").then(|| {
+            result
+                .as_ref()
+                .ok()
+                .and_then(|v| v.get("hint"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        }),
+    });
+    result
+}
+
+/// A session told about high pressure is told again only after this many quiet seconds.
+const HINT_QUIET_SECONDS: u64 = 180;
+static HINTS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+/// Whether to tell this session about `level` now, remembering the answer. Only sustained
+/// (`high`) pressure is worth interrupting an agent; `watch` stays quiet.
+fn hint_due(key: &str, level: &str, at: u64) -> bool {
+    if level != "high" {
+        return false;
+    }
+    let Ok(mut hints) = HINTS.lock() else {
+        return false;
+    };
+    hints.retain(|(_, last)| last + HINT_QUIET_SECONDS > at);
+    if hints.iter().any(|(k, _)| k == key) {
+        return false;
+    }
+    if hints.len() >= 64 {
+        hints.remove(0);
+    }
+    hints.push((key.into(), at));
+    true
+}
+
+/// Called by the `jitterbug-run pressure-hint` hook before an agent's heavy command. It never
+/// asks the person for access: with agent access off it answers that hints are off.
+fn pressure_hint(
+    runtime: &Arc<Runtime>,
+    caller: u32,
+    params: &Value,
+    enabled: bool,
+) -> Result<Value, String> {
+    if !enabled {
+        return Ok(json!({ "enabled": false, "hint": false }));
+    }
+    let snapshot = snapshot(runtime)?;
+    let lineage = lineage(caller);
+    let level = snapshot.pressure.level.clone();
+    // The harness session ID tells sessions apart even when one app launched them all.
+    let key = params
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        })
+        .map(String::from)
+        .or_else(|| own_session(&snapshot, &lineage).map(|u| session_id(&u)))
+        .unwrap_or_else(|| "unknown".into());
+    let hint = hint_due(&key, &level, snapshot.captured_at);
+    let strained = strain(&snapshot);
+    let mut answer = json!({
+        "enabled": true,
+        "hint": hint,
+        "level": level,
+        "strain": match strained {
+            (true, false) => "cpu",
+            (false, true) => "memory",
+            _ => "memory_and_cpu",
+        },
+        "reasons": snapshot.pressure.reasons,
+        "cpu_percent": round(snapshot.cpu_percent),
+        "memory_available_gib": gib(snapshot.memory_available_bytes),
+    });
+    if hint {
+        let view = overview(&snapshot, &lineage)?;
+        let others: Vec<Value> = view["apps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|app| app["sessions"].as_array().cloned().unwrap_or_default())
+            .filter(|s| s["is_your_session"] != json!(true) && s["paused_until"].is_null())
+            .collect();
+        let others = contributors(others, strained);
+        answer["sessions"] = json!(others
+            .iter()
+            .map(|s| json!({
+                "unit_id": s["unit_id"],
+                "title": s["title"],
+                "agent_status": s["agent_status"],
+                "memory_mib": s["memory_mib"],
+                "cpu_percent_of_machine": s["cpu_percent_of_machine"],
+            }))
+            .collect::<Vec<_>>());
+    }
+    Ok(answer)
+}
+
+/// Which resources are strained: CPU, memory, or (for thermal or swap alone) both.
+fn strain(snapshot: &Snapshot) -> (bool, bool) {
+    let cpu = snapshot.cpu_percent >= 85.0;
+    let memory = (snapshot.memory_total_bytes > 0
+        && (snapshot.memory_available_bytes as f64) < snapshot.memory_total_bytes as f64 * 0.12)
+        || matches!(
+            snapshot.platform.memory_pressure.as_deref(),
+            Some("warning" | "critical")
+        );
+    if cpu || memory {
+        (cpu, memory)
+    } else {
+        (true, true)
+    }
+}
+
+/// The sessions worth naming in a hint: those using a meaningful share of what is strained
+/// (5% of the CPU, or 512 MiB of memory), heaviest first, at most three.
+fn contributors(mut sessions: Vec<Value>, (cpu, memory): (bool, bool)) -> Vec<Value> {
+    let use_of = |s: &Value| {
+        let c = s["cpu_percent_of_machine"].as_f64().unwrap_or(0.0);
+        let m = s["memory_mib"].as_f64().unwrap_or(0.0);
+        (if cpu { c } else { 0.0 }, if memory { m } else { 0.0 })
+    };
+    sessions.retain(|s| {
+        let (c, m) = use_of(s);
+        c >= 5.0 || m >= 512.0
+    });
+    // Ten points per GiB puts a 1 GiB session level with one using 10% of the CPU.
+    let score = |s: &Value| {
+        let (c, m) = use_of(s);
+        c + m / 1024.0 * 10.0
+    };
+    sessions.sort_by(|a, b| score(b).total_cmp(&score(a)));
+    sessions.truncate(3);
+    sessions
+}
+
+fn dispatch(
     runtime: &Arc<Runtime>,
     caller: u32,
     method: &str,
@@ -241,6 +419,9 @@ pub fn handle(
         .map_err(|_| "Settings unavailable.")?
         .automation
         .clone();
+    if method == "pressure_hint" {
+        return pressure_hint(runtime, caller, params, policy.agent_control);
+    }
     if !policy.agent_control {
         return Err(ACCESS_OFF.into());
     }
@@ -511,6 +692,51 @@ fn inspect_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hints_name_the_sessions_using_what_is_strained() {
+        let s = |id: &str, cpu: f64, mib: u64| json!({"unit_id": id, "cpu_percent_of_machine": cpu, "memory_mib": mib});
+        let all = vec![
+            s("busy", 92.0, 631),
+            s("big-idle", 1.0, 998),
+            s("tiny", 0.0, 83),
+            s("medium", 12.0, 300),
+        ];
+        let ids = |v: Vec<Value>| -> Vec<String> {
+            v.iter()
+                .map(|s| s["unit_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // CPU strain: the CPU user comes first, idle memory holders are left out.
+        assert_eq!(
+            ids(contributors(all.clone(), (true, false))),
+            ["busy", "medium"]
+        );
+        // Memory strain: only sessions holding real memory.
+        assert_eq!(
+            ids(contributors(all.clone(), (false, true))),
+            ["big-idle", "busy"]
+        );
+        // Both: weighed together, at most three.
+        assert_eq!(
+            ids(contributors(all, (true, true))),
+            ["busy", "medium", "big-idle"]
+        );
+    }
+
+    #[test]
+    fn pressure_hints_come_only_when_high_and_repeat_after_a_quiet_window() {
+        let key = "hint-throttle-test";
+        // Only sustained pressure interrupts an agent.
+        assert!(!hint_due(key, "normal", 1_000));
+        assert!(!hint_due(key, "watch", 1_000));
+        assert!(hint_due(key, "high", 1_020));
+        assert!(!hint_due(key, "watch", 1_030));
+        assert!(!hint_due(key, "high", 1_100));
+        assert!(hint_due(key, "high", 1_020 + HINT_QUIET_SECONDS));
+        // Other sessions get their own note.
+        assert!(hint_due("hint-throttle-other", "high", 1_030));
+    }
 
     fn p(pid: u32, parent: Option<u32>, name: &str, exe: &str, mem: u64) -> ProcessRecord {
         ProcessRecord {

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import AgentConnect from './AgentConnect.svelte';
     import Icon from './Icon.svelte';
     import SettingSwitch from './SettingSwitch.svelte';
     import { errorMessage } from '../lib/format';
@@ -55,7 +56,7 @@
         {
             id: 'claude',
             label: 'Claude Code',
-            command: `claude mcp add jitterbug-control -- ${quote(launcher)} control-mcp`,
+            command: `claude mcp add --scope user jitterbug-control -- ${quote(launcher)} control-mcp`,
         },
         {
             id: 'codex',
@@ -76,9 +77,32 @@
             ),
         },
     ]);
+    // Same JSON as `jitterbug-run hint-settings`, for ~/.claude/settings.json.
+    const hintSettings = $derived(
+        JSON.stringify(
+            {
+                hooks: {
+                    PreToolUse: [
+                        {
+                            matcher: 'Bash',
+                            hooks: [
+                                {
+                                    type: 'command',
+                                    command: `${quote(launcher)} pressure-hint`,
+                                    timeout: 5,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+            null,
+            2
+        )
+    );
     const checkFirst =
         'Before running a build, full test suite, dependency install, or container, call the ' +
-        'jitterbug_overview tool once. If pressure is warning or critical, say so in one line, ' +
+        'jitterbug_overview tool once. If pressure is watch or high, say so in one line, ' +
         'then wait, run a narrower command, or ask Jitterbug to pause the least urgent idle session.';
     async function copy(id: string, text: string) {
         try {
@@ -90,6 +114,13 @@
         } catch {
             error = 'Copy failed. Select the text instead.';
         }
+    }
+    /** Connecting an agent turned agent access on in the app; mirror it without a save. */
+    async function agentConnected() {
+        policy.agent_control = true;
+        const saved = JSON.parse(savedPolicy);
+        savedPolicy = JSON.stringify({ ...saved, agent_control: true });
+        await onrefresh();
     }
     async function clearTally() {
         if (!desktop) return;
@@ -383,6 +414,7 @@
             <p class="group-note">
                 Let Claude Code, Codex and other agents see what uses this computer.
             </p>
+            <AgentConnect {desktop} onconnect={agentConnected} />
             <SettingSwitch
                 title="Allow agent access"
                 description="Let local agents inspect apps and request session pauses or tab closures."
@@ -402,8 +434,8 @@
                 Closing a tab always requires approval. Pausing stops CPU work; it keeps memory
                 allocated.
             </p>
-            <details class="inline-help" open={policy.agent_control}>
-                <summary>Connect an agent</summary>
+            <details class="inline-help">
+                <summary>Set up by hand</summary>
                 <p>
                     Run once in a terminal, with Jitterbug open. Works on macOS and Linux.
                     {#if desktop && !runner}<strong
@@ -431,10 +463,25 @@
                         >
                     </div>
                 {/each}
-                <h3 class="setup-subhead">Have agents check before heavy work</h3>
+                <h3 class="setup-subhead">Warn agents before heavy work</h3>
                 <p class="muted">
-                    Claude Code reads this from Jitterbug when it connects. For other agents, add it
-                    to the project’s <code>AGENTS.md</code> or <code>CLAUDE.md</code>.
+                    Connect adds this to <code>~/.claude/settings.json</code>. Before a build, test
+                    suite, install or container, Claude Code gets a one-line note when this computer
+                    is under strain, naming the sessions using the most. Quiet otherwise.
+                </p>
+                <div class="setup-command">
+                    <pre><code>{hintSettings}</code></pre>
+                    <button
+                        class="copy-button"
+                        aria-label="Copy pressure hint hook"
+                        onclick={() => copy('hint', hintSettings)}
+                        >{copied === 'hint' ? 'Copied' : 'Copy'}</button
+                    >
+                </div>
+                <p class="muted">
+                    Without hooks, add this to the project’s <code>AGENTS.md</code> or
+                    <code>CLAUDE.md</code>. Claude Code also reads it from Jitterbug when it
+                    connects.
                 </p>
                 <div class="setup-command">
                     <pre><code>{checkFirst}</code></pre>

@@ -47,7 +47,9 @@ Peaks are sampled, and summed resident memory can double-count shared pages. Suc
 does not prove a feature is complete. Registration attributes work; it does not schedule it.
 
 `--capture-context` adds session-only Claude Code hooks. It retains bounded request excerpts and
-activity counts locally, not code, tool output, or transcripts. Do not combine it with an existing
+activity counts locally, not code, tool output, or transcripts. It also adds the
+[pressure hint](mcp.md#warn-agents-before-heavy-work), so the wrapped session hears about strain
+before heavy shell commands. Do not combine it with an existing
 `--settings` argument without merging settings yourself. `jitterbug-run hook-settings` prints
 configuration for manual integration; generated local paths must stay out of Git. Codex-compatible
 hook parsing does not establish per-chat ownership in a shared desktop daemon.
@@ -59,13 +61,22 @@ separate MCP tools and approved command profiles for Claude Code, Codex, and Mus
 
 ## Let agents request resource actions
 
-The control MCP server is separate from the validation queue. Build the runner above, then connect:
+The control MCP server is separate from the validation queue. Press **Connect** next to Claude Code
+or Codex in **Settings › Integrations** (or on the last onboarding screen). Jitterbug then:
+
+- runs `claude mcp add --scope user jitterbug-control -- <jitterbug-run> control-mcp` and adds the
+  pressure hint hook to `~/.claude/settings.json`, keeping your other settings and hooks;
+- adds `[mcp_servers.jitterbug-control]` to `~/.codex/config.toml` (`$CODEX_HOME` is respected);
+- turns agent access on.
+
+Connect again after moving the app to point the agent at the new launcher. **Disconnect** removes
+only what Connect added. By hand, the same setup is:
 
 ```sh
-claude mcp add jitterbug-control -- /absolute/path/to/jitterbug-run control-mcp
+claude mcp add --scope user jitterbug-control -- /absolute/path/to/jitterbug-run control-mcp
 ```
 
-Enable agent access in **Settings** first. The desktop app must be running.
+Then enable agent access in **Settings**. The desktop app must be running.
 
 | Tool                       | Purpose                                      |
 | -------------------------- | -------------------------------------------- |
