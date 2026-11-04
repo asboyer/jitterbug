@@ -1442,6 +1442,40 @@ pub fn load_development_env() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.env");
         let _ = dotenvy::from_path(path);
     }
+    if let Some(path) = dirs::data_dir().map(|d| d.join("com.jitterbug.desktop/credentials.env")) {
+        load_credentials_file(&path);
+    }
+}
+
+/// Provider keys from a private file in the app's data folder, for machines where the OS
+/// credential store asks for a password on every launch of a locally signed build. Only the
+/// provider key names are read, never overriding the environment, and only from a file no one
+/// else can read.
+fn load_credentials_file(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let me = unsafe { libc::getuid() };
+        if !meta.is_file() || meta.uid() != me || meta.mode() & 0o077 != 0 {
+            return;
+        }
+    }
+    let Ok(entries) = dotenvy::from_path_iter(path) else {
+        return;
+    };
+    for (name, value) in entries.flatten() {
+        let allowed = matches!(
+            name.as_str(),
+            "META_API_KEY" | "ANTHROPIC_API_KEY" | "JEV_API_KEY"
+        );
+        if allowed && !value.trim().is_empty() && std::env::var_os(&name).is_none() {
+            std::env::set_var(name, value);
+        }
+    }
 }
 
 pub fn run() {
