@@ -8,11 +8,18 @@ Windows has live telemetry, with gaps in native diagnostics and actions.
 
 ## What it does
 
-- **Monitor your computer:** compact system stats and a stable, searchable list of apps and
-  individual processes, with CPU/memory sorting and readable subprocess roles.
-- **Understand the activity:** Meta researches unfamiliar app identities on the web and caches
-  concise descriptions with sources. Select an app for one summary and an explicit conversation
-  grounded in its live readings; select a process to ask about that exact instance.
+- **Read the whole computer at a glance:** Monitor opens on Meta's reading of what you are doing,
+  told as named activities ("Coding with Claude Code", "Browsing in Firefox and Safari") on a
+  memory map, with one finding and a next step. It re-reads only when the picture changes, and
+  keeps a short journal of earlier readings.
+- **Know what every process is:** apps are described from local evidence first (bundle metadata,
+  Electron package info, macOS man pages, a curated table), then researched by Meta with sources.
+- **See what started it:** work launched by a coding agent is grouped under that agent and
+  project ("Claude Code · my-project, started by Claude Code in iTerm") instead of the terminal.
+- **Search in your own words:** type "AI apps" or "what can I quit" and press Return; Meta picks
+  the matching running apps.
+- **Ask about anything:** opening an app gets Jitterbug's read of it automatically; follow-up
+  questions are suggested from each answer, and actions are only ever proposals you review.
 - **Catch a slowdown:** press **⌘⇧J** on Mac or **Ctrl+Shift+J** on Windows for a Jitter Snapshot.
 - **Act on the cause:** review an optimization, pause a command session, or inspect supported
   Chromium tabs. Pausing retains memory; it does not close the command.
