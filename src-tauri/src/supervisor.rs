@@ -311,7 +311,12 @@ impl Runtime {
             .lock()
             .map_err(|_| "Settings unavailable.")?
             .clone();
-        let profile = self.engine.app_profile(&settings, &snapshot, &app).await?;
+        let profile = providers::purpose(
+            "app_explanation",
+            None,
+            self.engine.app_profile(&settings, &snapshot, &app),
+        )
+        .await?;
         self.profiles
             .lock()
             .map_err(|_| "Profile cache unavailable.")?
@@ -766,9 +771,10 @@ impl Runtime {
             } else {
                 "Why is my computer struggling? Investigate this automatic resource alert and explain one useful next step. No action has been applied yet.".into()
             };
-            let reply = self
-                .engine
-                .chat_with_capture(
+            let reply = providers::purpose(
+                "investigation",
+                Some(id),
+                self.engine.chat_with_capture(
                     &settings,
                     &snapshot,
                     vec![providers::ChatMessage {
@@ -783,8 +789,9 @@ impl Runtime {
                     },
                     None,
                     case.jitter.as_ref().map(|j| j.model_context()),
-                )
-                .await?;
+                ),
+            )
+            .await?;
             self.update(id, |c| {
                 c.evidence = reply.investigation.clone().or(c.evidence.clone());
                 c.diagnosis = Some(reply);
@@ -899,9 +906,10 @@ impl Runtime {
             } else {
                 "rules"
             };
-            let mut reply = self
-                .engine
-                .chat_with_capture(
+            let mut reply = providers::purpose(
+                "snapshot",
+                Some(id),
+                self.engine.chat_with_capture(
                     &settings,
                     &snapshot,
                     vec![providers::ChatMessage {
@@ -912,8 +920,9 @@ impl Runtime {
                     tier,
                     process,
                     Some(report.model_context()),
-                )
-                .await?;
+                ),
+            )
+            .await?;
             if reply.source != "model" {
                 reply.text = report.text();
             }

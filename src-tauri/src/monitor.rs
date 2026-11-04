@@ -247,10 +247,12 @@ impl Runtime {
                 .filter(|(_, key, _)| seen.insert(key.clone()))
                 .collect();
             let apps: Vec<_> = unique.iter().map(|(_, _, app)| app.clone()).collect();
-            let profiles = self
-                .engine
-                .app_profiles(&settings, &snapshot, &apps)
-                .await?;
+            let profiles = crate::providers::purpose(
+                "app_explanation",
+                None,
+                self.engine.app_profiles(&settings, &snapshot, &apps),
+            )
+            .await?;
             let mut generated = HashMap::new();
             for ((_, key, _), profile) in unique.into_iter().zip(profiles) {
                 self.profiles

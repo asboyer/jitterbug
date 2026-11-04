@@ -7,7 +7,7 @@
 <script lang="ts">
     import { onDestroy, untrack, tick } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
-    import type { Snapshot, Workload, ProcessRecord, Reply } from '../lib/types';
+    import type { AutomationCase, Snapshot, Workload, ProcessRecord, Reply } from '../lib/types';
     import { overviewKey, demoOverview, queueInference, cancelled } from '../lib/monitor';
     import { errorMessage } from '../lib/format';
     import Dashboard from './Dashboard.svelte';
@@ -15,6 +15,7 @@
     import WorkloadDetails from './WorkloadDetails.svelte';
     import InsightCard from './InsightCard.svelte';
     import Icon from './Icon.svelte';
+    import AiActivityLog from './AiActivityLog.svelte';
     let {
         snapshot,
         selected,
@@ -22,6 +23,7 @@
         provider,
         actionBusy,
         assistantOpen = false,
+        cases = [],
         onselect,
         onclose,
         onask,
@@ -35,6 +37,8 @@
         provider: string;
         actionBusy: boolean;
         assistantOpen?: boolean;
+        /** Incidents, so an investigation in AI activity can show what happened next. */
+        cases?: AutomationCase[];
         onselect: (workload: Workload) => void;
         onclose: () => void;
         onask: () => void;
@@ -198,6 +202,7 @@
             {#if error}<p class="error" role="status">AI overview unavailable: {error}</p>{/if}
         </section>
     </div>
+    {#if !(selected && !assistantOpen)}<AiActivityLog live={!demo} {cases} />{/if}
     <div class="monitor-workspace" class:inspecting={!!selected && !assistantOpen}>
         <Workloads
             {snapshot}

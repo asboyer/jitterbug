@@ -76,6 +76,10 @@
             ),
         },
     ]);
+    const checkFirst =
+        'Before running a build, full test suite, dependency install, or container, call the ' +
+        'jitterbug_overview tool once. If pressure is warning or critical, say so in one line, ' +
+        'then wait, run a narrower command, or ask Jitterbug to pause the least urgent idle session.';
     async function copy(id: string, text: string) {
         try {
             await navigator.clipboard.writeText(text);
@@ -427,6 +431,20 @@
                         >
                     </div>
                 {/each}
+                <h3 class="setup-subhead">Have agents check before heavy work</h3>
+                <p class="muted">
+                    Claude Code reads this from Jitterbug when it connects. For other agents, add it
+                    to the project’s <code>AGENTS.md</code> or <code>CLAUDE.md</code>.
+                </p>
+                <div class="setup-command">
+                    <pre><code>{checkFirst}</code></pre>
+                    <button
+                        class="copy-button"
+                        aria-label="Copy agent instruction"
+                        onclick={() => copy('check-first', checkFirst)}
+                        >{copied === 'check-first' ? 'Copied' : 'Copy'}</button
+                    >
+                </div>
                 <p class="muted">
                     Validation queue tools are separate: set them up per check from a workload’s
                     Manage panel.

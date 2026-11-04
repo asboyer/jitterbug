@@ -866,6 +866,7 @@
                 {#if page === 'monitor'}
                     <Monitor
                         assistantOpen={chatOpen || automationOpen}
+                        cases={visibleCases}
                         {snapshot}
                         {selected}
                         {actionBusy}

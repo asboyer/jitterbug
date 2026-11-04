@@ -762,3 +762,17 @@ export interface InsideView {
     limits: string;
     labels: ProcessLabel[];
 }
+
+/** One model call this session. Metadata only: no prompt or reply. */
+export interface AiActivity {
+    at: number;
+    purpose: string;
+    case_id: number | null;
+    provider: Provider;
+    model: string;
+    routing: boolean;
+    duration_ms: number;
+    cost_usd: number;
+    ok: boolean;
+    error: string | null;
+}
