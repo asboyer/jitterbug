@@ -844,6 +844,39 @@ impl Engine {
         })
     }
 
+    /// One explanation of the Agents view: a headline plus a note per busy agent. Event-driven:
+    /// the view asks again only when its agents or heavy commands change.
+    pub async fn agents_brief(
+        &self,
+        settings: &Settings,
+        snapshot: &Snapshot,
+        view: &crate::agents::View,
+    ) -> Result<crate::agents::Brief, String> {
+        settings.validate()?;
+        let tier = &settings.intelligent;
+        if !settings.mode.permits(&tier.provider) {
+            return Err("The intelligent provider is excluded by your mode. Choose an allowed provider in Settings.".into());
+        }
+        if tier.provider.local() {
+            self.check_local(tier, snapshot).await?;
+        }
+        let (text, _) = self
+            .generate_with_instruction(
+                tier,
+                settings,
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: crate::agents::model_payload(view).to_string(),
+                }],
+                crate::agents::INSTRUCTION,
+            )
+            .await?;
+        let mut brief = crate::agents::Brief::parse(&text, view)?;
+        brief.provider = tier.provider.name().into();
+        brief.model = tier.model.clone();
+        Ok(brief)
+    }
+
     async fn generate_with_instruction(
         &self,
         tier: &Tier,

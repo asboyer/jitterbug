@@ -15,61 +15,9 @@ test('Monitor combines resource health and the full activity table', async ({ pa
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
     await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     await expect(page.getByRole('heading', { name: 'Example Browser', exact: true })).toBeVisible();
-    await page.getByRole('navigation').getByRole('button', { name: 'Validation queue' }).click();
-    await expect(page.getByRole('region', { name: 'Shared validation queue' })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Agent workflows' })).toHaveCount(0);
-});
-
-test('task dropdowns show visual measurements and stay open through refreshes', async ({
-    page,
-}) => {
-    await page.clock.install();
-    await page.goto('/');
-    await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
-    const active = page.getByRole('article', {
-        name: 'Add search and keyboard navigation',
-        exact: true,
-    });
-    const completed = page.getByRole('article', {
-        name: 'Check keyboard focus behavior',
-        exact: true,
-    });
-    await expect(active.locator('.row-readings')).toContainText('CPU');
-    await active.locator('.task-disclosure > summary').click();
-    await expect(active.getByRole('img', { name: /Task CPU history/ })).toBeVisible();
-    await expect(active).toContainText('Test runners are using most');
-    await expect(active.locator('.role-strip')).toContainText('Tests');
-    await expect(active.getByRole('button', { name: 'Preview managed checks' })).toBeVisible();
-    const logos = page.locator('.task-disclosure > summary .harness-badge img');
-    await expect(logos).toHaveCount(4);
-    for (const logo of await logos.all()) {
-        await expect(logo).toBeVisible();
-        await expect
-            .poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth))
-            .toBeGreaterThan(0);
-    }
-    await expect(completed.locator('.run-status.completed')).toHaveCSS(
-        'color',
-        'rgb(110, 213, 138)'
-    );
-    await expect(completed.getByRole('button', { name: /managed checks/ })).toHaveCount(0);
-    await completed.locator('.task-disclosure > summary').click();
-    await expect(active.getByRole('region', { name: 'Task detail' })).toHaveCount(0);
-    await expect(active).toBeVisible();
-    const detail = page.getByRole('region', { name: 'Task detail' });
-    await detail.getByText('Sessions & evidence', { exact: false }).click();
-    const session = detail.locator('details.agent').first();
-    await session.locator(':scope > summary').click();
-    await page.clock.fastForward(16_000);
-    await expect(detail).toBeVisible();
-    await expect(detail.locator('details.technical-detail')).toHaveAttribute('open');
-    await expect(session).toHaveAttribute('open');
-    await expect(detail.getByText('Meta · Muse Code', { exact: true }).first()).toBeAttached();
-    await completed.locator('.task-disclosure > summary').focus();
-    await page.keyboard.press('Enter');
-    await expect(completed.locator('.task-disclosure > summary')).toBeFocused();
-    await page.clock.fastForward(11_000);
-    await expect(detail).toHaveCount(0);
+    await page.getByRole('navigation').getByRole('button', { name: 'Agents', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Agents', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Shared validation queue' })).toHaveCount(0);
 });
 
 test('simulated pressure and inbox keep explanations concise and demo actions disabled', async ({
@@ -109,18 +57,36 @@ test('simulated pressure and inbox keep explanations concise and demo actions di
     expect(externalRequests).toEqual([]);
 });
 
+test('Agents shows what each conversation is doing and lets tests take turns', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Agents', exact: true }).click();
+    const agents = page.getByRole('region', { name: 'Agents', exact: true });
+    await expect(agents.getByRole('heading', { name: 'Agents', exact: true })).toBeVisible();
+    await expect(agents).not.toContainText(/\d+ agents/);
+    const claude = page.getByRole('region', { name: 'Claude Code: Agents tab redesign' });
+    await expect(claude).toContainText('Delegating: Validate the Rust change');
+    await expect(claude).toContainText('Make the agents tab show what each agent is doing');
+    await expect(claude).toContainText('Run the Python test suite');
+    await expect(page.getByRole('region', { name: 'Waiting for you' })).toContainText('API docs');
+    await agents.getByRole('button', { name: 'Let agents take turns' }).click();
+    const setup = page.getByRole('region', { name: 'Connect your agents' });
+    await expect(setup.getByRole('checkbox', { name: 'Connect Codex' })).toBeChecked();
+    await setup.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(setup).toContainText('heard from it');
+    await setup.getByRole('button', { name: 'Done', exact: true }).click();
+    const line = page.getByRole('region', { name: 'Tests and builds taking turns' });
+    await expect(line).toContainText('pytest');
+    await expect(claude).toContainText('Waiting to run cargo test');
+    await expect(line.locator('.turn.running')).toHaveCount(1);
+});
+
 test('minimum window width keeps navigation and primary actions reachable', async ({ page }) => {
     await page.setViewportSize({ width: 760, height: 560 });
     await page.goto('/');
-    await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
-    const workflow = page.getByRole('article', {
-        name: 'Add search and keyboard navigation',
-        exact: true,
-    });
-    await workflow.locator('.task-disclosure > summary').click();
-    const manage = workflow.getByRole('button', { name: 'Preview managed checks' });
-    await manage.scrollIntoViewIfNeeded();
-    await expect(manage).toBeInViewport();
+    await page.getByRole('navigation').getByRole('button', { name: 'Agents', exact: true }).click();
+    const start = page.getByRole('button', { name: 'Let agents take turns' });
+    await start.scrollIntoViewIfNeeded();
+    await expect(start).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
         760
     );

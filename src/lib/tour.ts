@@ -21,15 +21,9 @@ export const tourSteps = [
     },
     {
         page: 'agents',
-        target: 'agent-tasks',
-        title: 'See what your coding tools are doing',
-        body: 'Logos identify the harness. Open a task for its request, resource use, and suggestions. Green means the recorded session completed; it does not prove the work is correct.',
-    },
-    {
-        page: 'queue',
-        target: 'validation',
-        title: 'Let heavy checks take turns',
-        body: 'Manage a workload to approve a repeatable check. Connected tools can submit it here and wait for room. Only submitted checks are scheduled; other processes keep running.',
+        target: 'agents',
+        title: 'See what every agent is doing',
+        body: 'Each working Claude Code, Codex, or Muse Code conversation shows what it is doing now, your last request, and what it uses. Connected agents run tests and builds one at a time and keep working while they wait.',
     },
     {
         page: 'monitor',

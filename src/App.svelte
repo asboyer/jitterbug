@@ -12,7 +12,7 @@
     import WorkflowNotice from './components/WorkflowNotice.svelte';
     import { hubDemo, demoControl } from './lib/workflow-hub';
     import type { ValidationQueue as QueueState } from './lib/queue';
-    import AgentWorkflows from './components/AgentWorkflows.svelte';
+    import Agents from './components/Agents.svelte';
     import Sessions from './components/Sessions.svelte';
     import ValidationQueue from './components/ValidationQueue.svelte';
     import IncidentInbox from './components/IncidentInbox.svelte';
@@ -188,9 +188,8 @@
     }
     const pages = [
         { id: 'monitor', label: 'Monitor', icon: 'activity' },
-        { id: 'agents', label: 'Agent tasks', icon: 'code' },
+        { id: 'agents', label: 'Agents', icon: 'code' },
         { id: 'sessions', label: 'Sessions', icon: 'play' },
-        { id: 'queue', label: 'Validation queue', icon: 'queue' },
         { id: 'inbox', label: 'Inbox', icon: 'inbox' },
         { id: 'ai', label: 'AI', icon: 'model' },
         { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -926,25 +925,7 @@
                         />
                     {/key}
                 {:else if page === 'agents'}
-                    <div class="page-heading">
-                        <div>
-                            <h1>Agent tasks</h1>
-                            <p class="muted">
-                                What your coding tools are working on, and the resources they use.
-                            </p>
-                        </div>
-                    </div>
-                    <AgentWorkflows
-                        {snapshot}
-                        bind:selectedId={agentTaskId}
-                        onselect={select}
-                        onmanage={(selection) => {
-                            management = selection;
-                        }}
-                        onusage={() => {
-                            void refreshBootstrap().catch(() => {});
-                        }}
-                    />
+                    <Agents {demo} />
                 {:else if page === 'queue'}
                     <div class="page-heading">
                         <div>

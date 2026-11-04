@@ -1,5 +1,7 @@
 pub mod actions;
+pub mod activity;
 pub mod agent_sessions;
+pub mod agents;
 pub mod applications;
 pub mod attribution;
 pub mod automation;
@@ -39,6 +41,7 @@ pub mod settings_history;
 pub mod storage;
 pub mod supervisor;
 pub mod system_settings;
+pub mod turns;
 pub mod types;
 pub mod workflow_summary;
 pub mod workflows;
@@ -331,6 +334,149 @@ async fn get_agent_sessions(
     tauri::async_runtime::spawn_blocking(move || agent_sessions::overview(&snapshot))
         .await
         .map_err(|_| "Agent sessions unavailable.".into())
+}
+
+/// Installed agents rarely change; `--version` probes run at most every 30 seconds.
+fn harnesses(state: &turns::State, refresh: bool) -> Vec<turns::hooks::Harness> {
+    static CACHE: std::sync::Mutex<Option<(u64, Vec<turns::hooks::Harness>)>> =
+        std::sync::Mutex::new(None);
+    let runner = agent_sessions::runner().unwrap_or_else(|| "jitterbug-run".into());
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = cache
+        .as_ref()
+        .is_none_or(|(at, _)| refresh || at + 30 < types::now());
+    if stale {
+        *cache = Some((types::now(), turns::hooks::detect(&runner, state)));
+    }
+    let mut list = cache.as_ref().map(|(_, l)| l.clone()).unwrap_or_default();
+    for harness in &mut list {
+        harness.last_seen = state.contacts.get(&harness.key).copied();
+    }
+    list
+}
+
+fn agents_view(snapshot: &types::Snapshot, refresh: bool) -> Result<agents::View, String> {
+    let state = turns::inspect(&turns::directory()?)?;
+    Ok(agents::view(snapshot, &state, harnesses(&state, refresh)))
+}
+
+/// Coding agents on this computer, their subagents' heavy commands, and the turns line.
+#[tauri::command]
+async fn get_agents(state: State<'_, AppState>) -> Result<agents::View, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || agents_view(&snapshot, false))
+        .await
+        .map_err(|_| "Agents unavailable.")?
+}
+
+/// Add Jitterbug's hooks to the chosen agents (one approval in the UI covers all of them).
+#[tauri::command]
+async fn connect_agents(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+) -> Result<agents::View, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let runner = agent_sessions::runner()
+            .ok_or("Jitterbug's command-line helper is missing next to the app.")?;
+        turns::hooks::connect(&turns::directory()?, &runner, &keys)?;
+        agents_view(&snapshot, true)
+    })
+    .await
+    .map_err(|_| "Agents unavailable.")?
+}
+
+#[tauri::command]
+async fn disconnect_agents(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+) -> Result<agents::View, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        turns::hooks::disconnect(&turns::directory()?, &keys)?;
+        agents_view(&snapshot, true)
+    })
+    .await
+    .map_err(|_| "Agents unavailable.")?
+}
+
+/// Turn pacing on or off. Off, every command runs at once, as without Jitterbug.
+#[tauri::command]
+async fn set_turns_enabled(enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        turns::transaction(&turns::directory()?, |s| {
+            s.enabled = enabled;
+            if !enabled {
+                s.waiting.clear();
+            }
+        })
+    })
+    .await
+    .map_err(|_| "Turns unavailable.")?
+}
+
+/// Meta's (or the configured intelligent tier's) read of what the agents are doing. Cached
+/// until the agents or their heavy commands change.
+#[tauri::command]
+async fn explain_agents(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<agents::Brief, String> {
+    static LAST: std::sync::Mutex<Option<agents::Brief>> = std::sync::Mutex::new(None);
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    if snapshot.source != "live" {
+        return Err("Agent explanations need live telemetry.".into());
+    }
+    let view = {
+        let snapshot = snapshot.clone();
+        tauri::async_runtime::spawn_blocking(move || agents_view(&snapshot, false))
+            .await
+            .map_err(|_| "Agents unavailable.")??
+    };
+    if !force.unwrap_or(false) {
+        if let Some(brief) = LAST
+            .lock()
+            .map_err(|_| "Explanation cache unavailable.")?
+            .as_ref()
+            .filter(|b| b.signature == view.signature)
+        {
+            return Ok(brief.clone());
+        }
+    }
+    if view.sessions.is_empty() {
+        return Err("No coding agents are running.".into());
+    }
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let brief = state
+        .engine
+        .agents_brief(&settings, &snapshot, &view)
+        .await?;
+    *LAST.lock().map_err(|_| "Explanation cache unavailable.")? = Some(brief.clone());
+    Ok(brief)
 }
 
 /// Open a new terminal window running an allowlisted agent in a folder.
@@ -1158,6 +1304,10 @@ pub fn run() {
                                 }
                             }
                         }
+                        if let Ok(directory) = turns::directory() {
+                            // Attach live usage to heavy commands and release finished turns.
+                            let _ = turns::tick(&directory, &sample);
+                        }
                         // The one-second pulse watches the busiest PIDs of each full sample.
                         jitter.pulse.watch(&sample);
                         if let Ok(view) = runtime.govern(&sample) {
@@ -1229,6 +1379,11 @@ pub fn run() {
             get_workload_icon,
             get_inside_view,
             get_agent_sessions,
+            get_agents,
+            connect_agents,
+            disconnect_agents,
+            set_turns_enabled,
+            explain_agents,
             launch_agent_session,
             open_folder_in_vscode,
             tab_action,
