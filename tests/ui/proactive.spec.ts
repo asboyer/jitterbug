@@ -5,15 +5,15 @@ test('example demonstrates detecting, investigating, and reviewing without leavi
 }) => {
     const external: string[] = [];
     page.on('request', (request) => {
-        if (!request.url().startsWith('http://127.0.0.1:1420')) external.push(request.url());
+        if (!request.url().startsWith(test.info().project.use.baseURL!))
+            external.push(request.url());
     });
     await page.clock.install();
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await expect(page.getByRole('button', { name: 'See Jitterbug step in' })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: 'Agent tasks' }).click();
     await page
         .getByRole('article', { name: 'Check keyboard focus behavior', exact: true })
@@ -58,9 +58,10 @@ test('Later keeps an incident in Inbox and does not repeat on refresh', async ({
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await page.getByRole('button', { name: 'See Jitterbug step in' }).click();
+    await page.getByText('Demo & testing', { exact: true }).click();
+    await page.getByRole('button', { name: 'Simulate pressure' }).click();
     const prompt = page.getByRole('region', { name: 'Jitterbug noticed something' });
     await prompt.getByRole('button', { name: 'Later', exact: true }).click();
     await page.clock.fastForward(20_000);

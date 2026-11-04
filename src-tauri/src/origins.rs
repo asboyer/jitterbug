@@ -105,6 +105,15 @@ fn classify(exe: Option<&Path>, cwd: Option<&Path>, args: &[String]) -> Option<C
             known_role: Some(role.into()),
         });
     }
+    let module_role = match module {
+        Some("pytest" | "unittest") => Some("python_test_runner"),
+        Some("http.server") => Some("python_http_server"),
+        Some("uvicorn" | "flask") => Some("python_web_server"),
+        Some("pip") => Some("python_package_manager"),
+        Some("compileall") => Some("python_bytecode_compiler"),
+        Some("jupyter" | "notebook") => Some("python_notebook_server"),
+        _ => None,
+    };
     let (task, evidence) = if let Some(module) = module.filter(|m| {
         !m.is_empty()
             && m.len() <= 120
@@ -140,7 +149,7 @@ fn classify(exe: Option<&Path>, cwd: Option<&Path>, args: &[String]) -> Option<C
     };
     Some(Command {
         program: program.into(), summary: format!("{program} is running {task}. The entrypoint is identified; its current assignment is not recorded in the command."),
-        task, evidence: vec![evidence], known_role: None,
+        task, evidence: vec![evidence], known_role: module_role.map(str::to_owned),
     })
 }
 
@@ -412,6 +421,29 @@ mod tests {
         .unwrap()
         .known_role
         .is_none());
+    }
+    #[test]
+    fn identical_runtimes_have_distinct_recognized_jobs_without_private_arguments() {
+        let run = |module: &str| {
+            classify(
+                Some(Path::new("/synthetic/python3")),
+                None,
+                &[
+                    "python3".into(),
+                    "-m".into(),
+                    module.into(),
+                    "--secret".into(),
+                    "private-value".into(),
+                ],
+            )
+            .unwrap()
+        };
+        let tests = run("pytest");
+        let server = run("http.server");
+        assert_eq!(tests.known_role.as_deref(), Some("python_test_runner"));
+        assert_eq!(server.known_role.as_deref(), Some("python_http_server"));
+        assert!(!tests.evidence.join(" ").contains("private-value"));
+        assert!(run("private_module").known_role.is_none());
     }
     #[test]
     fn generic_entrypoints_are_local_and_stale_processes_are_not_inspected() {

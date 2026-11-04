@@ -1,6 +1,7 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
+    import { queueInference } from '../lib/monitor';
     import { errorMessage, memory, percent } from '../lib/format';
     import { demoDetails } from '../lib/demo';
     import type {
@@ -29,7 +30,13 @@
         onaction,
         onusage,
         onmanage,
+        embedded = false,
+        initialProcess = null,
+        settingsKey = '',
     }: {
+        embedded?: boolean;
+        initialProcess?: { pid: number; start_time: number } | null;
+        settingsKey?: string;
         snapshot: Snapshot;
         workload: Workload;
         actionBusy: boolean;
@@ -40,7 +47,9 @@
         onmanage: (selection: ManagementSelection) => void;
     } = $props();
     let detail: WorkloadDetails | null = $state(null);
-    let selected: { pid: number; start_time: number } | null = $state(null);
+    let selected: { pid: number; start_time: number } | null = $state(
+        untrack(() => initialProcess)
+    );
     let error = $state('');
     let profileError = $state('');
     let generating = $state(false);
@@ -50,6 +59,8 @@
     let sequence = 0;
     let revealOrigin = false;
     let originOpen = $state(false);
+    let insightPanel: HTMLDivElement | undefined = $state();
+    let insightSelected = false;
     let originPanel: HTMLElement | undefined = $state();
     const demo = $derived(snapshot.source === 'demo' || !isTauri());
     const current = $derived.by(() => detail?.workload ?? workload);
@@ -102,7 +113,7 @@
     const isSelected = (p: ProcessRecord) =>
         p.pid === process?.pid && p.start_time === process?.start_time;
     function pick(member: ProcessRecord) {
-        revealOrigin = true;
+        insightSelected = true;
         selected = { pid: member.pid, start_time: member.start_time };
     }
     const process = $derived.by(() => detail?.process ?? null);
@@ -138,6 +149,12 @@
                 next.profile = detail.profile;
             detail = next;
             error = '';
+            if (insightSelected) {
+                insightSelected = false;
+                await tick();
+                insightPanel?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                insightPanel?.focus({ preventScroll: true });
+            }
             if (revealOrigin) {
                 revealOrigin = false;
                 originOpen = true;
@@ -164,6 +181,7 @@
     $effect(() => {
         if (
             detail &&
+            !embedded &&
             !demo &&
             !error &&
             !generating &&
@@ -184,11 +202,15 @@
         profileError = '';
         profileErrorKey = key;
         try {
-            const profile = await invoke<AppProfile>('explain_application', {
-                workloadId: workload.id,
-                pid: detail.process.pid,
-                startTime: detail.process.start_time,
-            });
+            const profile = await queueInference(
+                () =>
+                    invoke<AppProfile>('explain_application', {
+                        workloadId: workload.id,
+                        pid: detail!.process.pid,
+                        startTime: detail!.process.start_time,
+                    }),
+                0
+            );
             // Telemetry may refresh or the selected process may change during inference.
             // A general explanation belongs to the executable identity, not a stale PID.
             if (detail?.profile_key === key) detail = { ...detail, profile };
@@ -207,8 +229,10 @@
     }
 </script>
 
-<div class="workload-detail">
-    <button class="text-button back" onclick={onback}>‹ Back to workloads</button>
+<div class="workload-detail" class:embedded>
+    <button class="text-button back" onclick={onback}
+        >{embedded ? 'Close inspector ×' : '‹ Back to Monitor'}</button
+    >
     <div class="detail-heading">
         <AppIcon workloadId={workload.id} category={workload.category} size={44} {demo} />
         <div class="heading-copy">
@@ -219,9 +243,10 @@
                     : (detail?.application?.installation ?? workload.category)}
             </p>
         </div>
-        <button disabled={demo} onclick={() => onmanage({ workload_id: workload.id })}
-            >Manage workload</button
-        >
+        {#if !embedded}<button
+                disabled={demo}
+                onclick={() => onmanage({ workload_id: workload.id })}>Manage workload</button
+            >{/if}
     </div>
     <div class="detail-stats" aria-label="Workload resource use">
         <div>
@@ -263,7 +288,7 @@
                 aria-busy={generating}
             >
                 <div class="section-title">
-                    <h2>{detail.launch ? 'Why it’s running' : 'What it does'}</h2>
+                    <h2>{detail.launch ? 'Recognized job' : 'About this application'}</h2>
                     <div class="explanation-source">
                         <span
                             >{detail.launch
@@ -357,18 +382,27 @@
                     >
                 </div>
             </section>
-            <ProcessInsight
-                {snapshot}
-                workload={current}
-                {demo}
-                disabled={!!error || generating || actionBusy}
-                {onusage}
-                onask={(reply) => onask(null, reply)}
-                {onaction}
-            />
+            <div class="process-insight-target" bind:this={insightPanel} tabindex="-1">
+                <ProcessInsight
+                    {snapshot}
+                    {settingsKey}
+                    workload={current}
+                    process={detail.process}
+                    evidenceKey={detail.profile_key ?? ''}
+                    history={detail.process_history ?? []}
+                    role={detail.launch?.summary ??
+                        label(detail.process)?.subtitle ??
+                        detail.process.description}
+                    {demo}
+                    disabled={!!error || (!embedded && generating) || actionBusy}
+                    {onusage}
+                    onask={(reply) => onask(detail!.process, reply)}
+                    {onaction}
+                />
+            </div>
         </div>
         <InsidePanel {snapshot} workload={current} {demo} {actionBusy} {onaction} onview={named} />
-        <details class="panel process-section">
+        <details class="panel process-section" open>
             <summary
                 ><span>Processes</span><span class="summary-count">{detail.member_count}</span
                 ></summary
@@ -532,16 +566,16 @@
                         </dl>
                         <div class="process-actions">
                             <button disabled={!!error} onclick={() => onask(process)}
-                                >Investigate process</button
-                            ><button
-                                disabled={demo || !!error}
-                                onclick={() =>
-                                    onmanage({
-                                        workload_id: workload.id,
-                                        pid: process.pid,
-                                        start_time: process.start_time,
-                                    })}>Manage command</button
-                            >{#if process.actionable && !demo}{#each process.actions as action}<button
+                                >Ask about this process</button
+                            >{#if !embedded}<button
+                                    disabled={demo || !!error}
+                                    onclick={() =>
+                                        onmanage({
+                                            workload_id: workload.id,
+                                            pid: process.pid,
+                                            start_time: process.start_time,
+                                        })}>Manage command</button
+                                >{/if}{#if process.actionable && !demo}{#each process.actions as action}<button
                                         disabled={actionBusy || !!error}
                                         class:danger-text={action === 'terminate'}
                                         onclick={() => onaction(process, action)}
@@ -571,6 +605,30 @@
     }
     .launch-evidence p {
         margin: 4px 0;
+    }
+    .embedded :global(.inside .unit) {
+        grid-template-columns: minmax(90px, 1fr) 55px 70px;
+    }
+    .embedded :global(.inside .unit-actions) {
+        grid-column: 1 / -1;
+        flex-wrap: wrap;
+    }
+    .embedded .process-overview {
+        display: flex;
+        flex-direction: column;
+    }
+    .embedded .process-insight-target {
+        order: -1;
+    }
+    .embedded .detail-stats {
+        grid-template-columns: repeat(3, 1fr);
+    }
+    .embedded .workload-history {
+        grid-column: 1 / -1;
+    }
+    .process-insight-target {
+        min-width: 0;
+        outline-offset: 4px;
     }
     .workload-detail {
         container-type: inline-size;

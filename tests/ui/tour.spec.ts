@@ -44,14 +44,15 @@ test('tour completes all steps without external calls and restores the previous 
 }) => {
     const external: string[] = [];
     page.on('request', (request) => {
-        if (!request.url().startsWith('http://127.0.0.1:1420')) external.push(request.url());
+        if (!request.url().startsWith(test.info().project.use.baseURL!))
+            external.push(request.url());
     });
     await page.goto('/');
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Workloads', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await page.getByRole('button', { name: /Example Browser/ }).click();
+    await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     await page.getByRole('button', { name: 'Take a tour', exact: true }).click();
     const tour = page.getByRole('dialog', { name: 'Jitterbug tour' });
     await expect(tour).toBeVisible();

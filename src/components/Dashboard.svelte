@@ -1,50 +1,15 @@
 <script lang="ts">
     import { memory, percent } from '../lib/format';
-    import type { Snapshot, Workload } from '../lib/types';
+    import type { Snapshot } from '../lib/types';
     import ActivityGraph from './ActivityGraph.svelte';
     import ResourceRing from './ResourceRing.svelte';
-    import AppIcon from './AppIcon.svelte';
     import Icon from './Icon.svelte';
 
-    let {
-        snapshot,
-        onselect,
-        onask,
-        onworkloads,
-    }: {
-        snapshot: Snapshot;
-        onselect: (workload: Workload) => void;
-        onask: () => void;
-        onworkloads: () => void;
-    } = $props();
+    let { snapshot }: { snapshot: Snapshot } = $props();
     const memoryTight = $derived(
         snapshot.memory_available_bytes / snapshot.memory_total_bytes < 0.15
     );
     const busy = $derived(snapshot.pressure.level !== 'normal');
-    const leaders = $derived(
-        [...snapshot.workloads]
-            .sort((a, b) =>
-                memoryTight
-                    ? b.memory_bytes - a.memory_bytes
-                    : b.cpu_percent - a.cpu_percent || b.memory_bytes - a.memory_bytes
-            )
-            .slice(0, 5)
-    );
-    const categories: Record<string, string> = {
-        app: 'Application',
-        browser: 'Browser processes',
-        project: 'Development work',
-        agent: 'Coding tool',
-        editor: 'Editor or coding tool',
-        build: 'Build tooling',
-        python: 'Python process',
-        javascript: 'JavaScript process',
-        jitterbug: 'Resource assistant',
-        test: 'Test process',
-        model: 'Local model',
-        system: 'System work',
-        other: 'App or system process',
-    };
     const usedPercent = $derived(
         100 * (1 - snapshot.memory_available_bytes / snapshot.memory_total_bytes)
     );
@@ -52,14 +17,6 @@
 </script>
 
 <div class="dashboard">
-    <div class="page-heading">
-        <div>
-            <h1>Activity</h1>
-        </div>
-        <button class="primary" onclick={onask}
-            >Find a slowdown <span aria-hidden="true">↗</span></button
-        >
-    </div>
     <section class="health-summary" class:busy aria-label="Computer health" data-tour="health">
         <span class="health-symbol"><Icon name="activity" size={24} /></span>
         <div>
@@ -120,7 +77,7 @@
                 </div>
             </article>
         </div>
-        <article class="timeline">
+        <div class="timeline">
             <div class="section-title">
                 <h2>CPU history</h2>
                 <span class="muted">0–100% · up to 10 min</span>
@@ -192,45 +149,6 @@
                         Available memory and swap usage above come from the shared system collector.
                     </p>{/if}
             </details>
-        </article>
-    </section>
-    <section class="panel contributors" aria-label="Top resource users">
-        <div class="section-title">
-            <div>
-                <h2>{memoryTight ? 'Using the most memory' : 'Using the most CPU'}</h2>
-                <p class="muted">Select an app to investigate.</p>
-            </div>
-            <button class="text-button" onclick={onworkloads}>All workloads ↗</button>
-        </div>
-        {#each leaders as workload (workload.id)}
-            <button class="contributor" onclick={() => onselect(workload)}>
-                <AppIcon
-                    workloadId={workload.id}
-                    category={workload.category}
-                    demo={snapshot.source === 'demo'}
-                />
-                <span class="contributor-copy"
-                    ><strong>{workload.label}</strong><small
-                        >{categories[workload.category] ?? 'Workload'} · {memoryTight
-                            ? `${workload.process_count} processes`
-                            : `${memory(workload.memory_bytes)} memory`}</small
-                    ></span
-                >
-                <span class="contributor-value"
-                    >{memoryTight
-                        ? memory(workload.memory_bytes)
-                        : snapshot.sample_ready
-                          ? percent(workload.cpu_percent)
-                          : '—'}<small>{memoryTight ? 'memory' : 'CPU'}</small></span
-                >
-                <span class="muted" aria-hidden="true">›</span>
-            </button>
-        {:else}<p class="empty">Waiting for workload samples.</p>{/each}
-        <div class="activity-footer">
-            <Icon name="bulb" size={16} /><span>Something feels slow?</span><button
-                class="text-button"
-                onclick={onask}>Help me find out why ↗</button
-            >
         </div>
     </section>
 </div>
@@ -351,84 +269,27 @@
         display: flex;
         align-items: center;
         gap: 14px;
-        padding: 0 0 22px;
+        padding: 0 0 14px;
     }
     .health-symbol {
         display: flex;
         color: var(--success);
         background: var(--success-soft);
-        padding: 12px;
-        border-radius: 14px;
+        padding: 7px;
+        border-radius: 8px;
     }
     .busy .health-symbol {
         color: var(--warning);
         background: var(--warning-soft);
     }
     .health-summary h2 {
-        font-size: 17px;
+        font-size: 13px;
         margin: 0 0 5px;
     }
     .health-summary p {
+        font-size: 11px;
         color: var(--muted);
         margin: 0;
         line-height: 1.5;
-    }
-    .contributors {
-        overflow: hidden;
-    }
-    .contributors .section-title {
-        padding: 16px 18px;
-        margin: 0;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-    .contributors .section-title p {
-        margin: 5px 0 0;
-        font-size: 11px;
-    }
-    .contributor {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        text-align: left;
-        width: 100%;
-        border: 0;
-        border-top: 1px solid var(--border);
-        border-radius: 0;
-        padding: 14px 18px;
-        background: transparent;
-    }
-    .contributor-copy {
-        flex: 1;
-        min-width: 0;
-        display: grid;
-        gap: 5px;
-    }
-    .contributor-copy small {
-        color: var(--muted);
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-        font-size: 11px;
-    }
-    .contributor-value {
-        display: grid;
-        gap: 4px;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-    }
-    .contributor-value small {
-        color: var(--muted);
-        font-size: 10px;
-    }
-    .activity-footer {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-        padding: 10px 18px;
-        border-top: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 11px;
     }
 </style>

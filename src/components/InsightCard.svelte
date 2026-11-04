@@ -9,7 +9,7 @@
     <div class="insight-label">
         <span
             >{reply.source === 'model'
-                ? 'Findings'
+                ? 'AI finding'
                 : reply.source === 'demo'
                   ? 'Demo insight'
                   : reply.unavailable

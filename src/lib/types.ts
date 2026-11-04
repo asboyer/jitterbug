@@ -200,6 +200,7 @@ export interface Workload {
 }
 
 export interface ProcessRecord {
+    unresponsive?: boolean | null;
     pid: number;
     start_time: number;
     parent_pid: number | null;
@@ -225,6 +226,7 @@ export interface AppProfile {
 }
 
 export interface WorkloadDetails {
+    process_history?: ResourcePoint[];
     captured_at: number;
     workload: Workload;
     process: ProcessRecord;

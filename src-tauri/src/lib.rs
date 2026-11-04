@@ -17,6 +17,7 @@ pub mod harness;
 pub mod inside;
 pub mod jitter;
 mod lab;
+pub mod monitor;
 pub mod origins;
 pub mod pause;
 pub mod platform;
@@ -335,6 +336,49 @@ async fn get_workload_icon(
             .await
             .map_err(|_| "Icon service unavailable.".into())
     }
+}
+
+#[tauri::command]
+fn get_monitor_inventory(
+    state: State<'_, AppState>,
+    query: monitor::Query,
+) -> Result<monitor::Inventory, String> {
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?;
+    monitor::inventory(&snapshot, &query)
+}
+
+#[tauri::command]
+async fn explain_monitor_profiles(
+    state: State<'_, AppState>,
+    identities: Vec<monitor::Identity>,
+    generate: bool,
+) -> Result<Vec<monitor::Explanation>, String> {
+    state.monitor_profiles(identities, generate).await
+}
+
+#[tauri::command]
+async fn summarize_monitor(state: State<'_, AppState>) -> Result<providers::Reply, String> {
+    let _guard = state
+        .inference
+        .try_lock()
+        .map_err(|_| "One model request is already active. Please wait.")?;
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .clone();
+    let snapshot = state
+        .snapshot
+        .read()
+        .map_err(|_| "Telemetry unavailable.")?
+        .clone();
+    if !snapshot.sample_ready || snapshot.captured_at + 20 < types::now() {
+        return Err("Wait for a fresh telemetry sample.".into());
+    }
+    state.engine.monitor_overview(&settings, &snapshot).await
 }
 
 #[tauri::command]
@@ -975,6 +1019,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_monitor_inventory,
+            explain_monitor_profiles,
+            summarize_monitor,
             discover_managed_workload,
             discard_managed_preview,
             preview_managed_workload,

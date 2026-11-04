@@ -8,12 +8,10 @@
     import ProactiveNotice from './components/ProactiveNotice.svelte';
     import { tourPreference, tourSteps } from './lib/tour';
     import Icon from './components/Icon.svelte';
-    import Dashboard from './components/Dashboard.svelte';
-    import WorkflowHub from './components/WorkflowHub.svelte';
+    import Monitor from './components/Monitor.svelte';
     import WorkflowNotice from './components/WorkflowNotice.svelte';
     import { hubDemo, demoControl } from './lib/workflow-hub';
     import type { ValidationQueue as QueueState } from './lib/queue';
-    import Workloads from './components/Workloads.svelte';
     import AgentWorkflows from './components/AgentWorkflows.svelte';
     import Sessions from './components/Sessions.svelte';
     import ValidationQueue from './components/ValidationQueue.svelte';
@@ -38,7 +36,7 @@
     } from './lib/types';
 
     const desktop = isTauri();
-    let page = $state('hub');
+    let page = $state('monitor');
     let demoMenuOpen = $state(false);
     let tourIndex = $state<number | null>(null);
     let tourSeen = $state(true);
@@ -119,9 +117,7 @@
         );
     }
     const pages = [
-        { id: 'hub', label: 'Workflows', icon: 'queue' },
-        { id: 'dashboard', label: 'Activity', icon: 'activity' },
-        { id: 'workloads', label: 'Workloads', icon: 'app' },
+        { id: 'monitor', label: 'Monitor', icon: 'activity' },
         { id: 'agents', label: 'Agent tasks', icon: 'code' },
         { id: 'sessions', label: 'Sessions', icon: 'play' },
         { id: 'queue', label: 'Validation queue', icon: 'queue' },
@@ -351,7 +347,6 @@
     );
 
     $effect(() => {
-        selectedId;
         page;
         mainElement?.scrollTo({ top: 0 });
     });
@@ -431,7 +426,7 @@
                     (event) => {
                         if (tourIndex !== null) finishTour();
                         navigate(event.payload.page);
-                        if (page === 'dashboard') {
+                        if (event.payload.page === 'dashboard') {
                             stopDemoSequence();
                             notice = null;
                             demoMenuOpen = false;
@@ -494,7 +489,7 @@
     });
 
     function navigate(next: string) {
-        page = next;
+        page = ['hub', 'dashboard', 'workloads'].includes(next) ? 'monitor' : next;
         agentTaskId = null;
         demoMenuOpen = false;
         selectedId = null;
@@ -600,10 +595,10 @@
     <nav class="sidebar" aria-label="Main navigation">
         <a
             class="brand"
-            href="#hub"
+            href="#monitor"
             onclick={(event) => {
                 event.preventDefault();
-                navigate('hub');
+                navigate('monitor');
             }}><Icon name="companion" size={22} /> Jitterbug</a
         >
         <div class="nav-links">
@@ -702,7 +697,7 @@
                 <button
                     onclick={() => {
                         chatOpen = true;
-                        page = 'dashboard';
+                        page = 'monitor';
                     }}>Investigate</button
                 ><button
                     class="text-button"
@@ -722,7 +717,7 @@
             </div>{/if}
         {#if actionReport && !chatOpen}<ActionResult report={actionReport} />{/if}
         <div class="page-content">
-            {#if !tourSeen && tourIndex === null && ['dashboard', 'hub'].includes(page) && !selectedId}
+            {#if !tourSeen && tourIndex === null && page === 'monitor' && !selectedId}
                 <div class="tour-invitation">
                     <span>New to Jitterbug?</span><button class="text-button" onclick={startTour}
                         >Take a quick tour</button
@@ -748,7 +743,44 @@
                 </div>
                 <IncidentInbox cases={visibleCases} onselect={showIncident} />
             {:else if snapshot && snapshot.memory_total_bytes > 0}
-                {#if selected}
+                {#if page === 'monitor'}
+                    <Monitor
+                        assistantOpen={chatOpen || automationOpen}
+                        {snapshot}
+                        {selected}
+                        {actionBusy}
+                        settingsKey={JSON.stringify([
+                            bootstrap.settings.mode,
+                            bootstrap.settings.intelligent,
+                            bootstrap.settings.budget_usd,
+                            bootstrap.credentials,
+                        ])}
+                        provider={bootstrap.settings.intelligent.provider === 'meta'
+                            ? 'Meta'
+                            : bootstrap.settings.intelligent.provider}
+                        onselect={select}
+                        onclose={() => {
+                            selectedId = null;
+                            selectedContext = null;
+                            chatOpen = false;
+                        }}
+                        onask={ask}
+                        onprocessask={(process, reply) => {
+                            questionProcess = process;
+                            questionInsight = reply ?? null;
+                            followUpContext = null;
+                            automationOpen = false;
+                            chatOpen = true;
+                        }}
+                        onaction={(process, action) => {
+                            error = '';
+                            pendingAction = { process, action };
+                        }}
+                        onusage={() => {
+                            void refreshBootstrap().catch(() => {});
+                        }}
+                    />
+                {:else if selected}
                     {#key `${snapshot.source}:${selected.id}`}
                         <WorkloadDetails
                             {snapshot}
@@ -777,23 +809,6 @@
                             }}
                         />
                     {/key}
-                {:else if page === 'hub'}
-                    <WorkflowHub
-                        {snapshot}
-                        queue={workflowQueue}
-                        busy={workflowBusy}
-                        error={workflowError}
-                        oncontrol={controlWorkflow}
-                        onmanage={(selection) => {
-                            management = selection;
-                        }}
-                        onselect={select}
-                        onusage={() => {
-                            void refreshBootstrap().catch(() => {});
-                        }}
-                    />
-                {:else if page === 'workloads'}
-                    <Workloads {snapshot} onselect={select} />
                 {:else if page === 'agents'}
                     <div class="page-heading">
                         <div>
@@ -829,27 +844,6 @@
                         onmanage={(selection) => {
                             management = selection;
                         }}
-                    />
-                {:else}
-                    {#if demo}<section class="demo-story" aria-label="Try Jitterbug in action">
-                            <span class="story-mark"><Icon name="companion" size={24} /></span>
-                            <div>
-                                <span class="eyebrow">TRY AN EXAMPLE</span>
-                                <h2>Two agents. Two test runs. One busy computer.</h2>
-                                <p>
-                                    See Jitterbug notice the overlap and help plan a better next
-                                    run.
-                                </p>
-                            </div>
-                            <button class="primary" onclick={simulatePressure}
-                                >See Jitterbug step in</button
-                            >
-                        </section>{/if}
-                    <Dashboard
-                        {snapshot}
-                        onselect={select}
-                        onask={ask}
-                        onworkloads={() => navigate('workloads')}
                     />
                 {/if}
             {:else}<div class="empty loading">

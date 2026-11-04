@@ -2,16 +2,16 @@ export const tourPreference = 'jitterbug.tour.v1.seen';
 
 export const tourSteps = [
     {
-        page: 'dashboard',
+        page: 'monitor',
         target: 'health',
         title: 'Start with how your computer is doing',
         body: 'CPU is work happening now; memory is room to work. High usage can be normal. Pressure tells you when the computer is struggling.',
     },
     {
-        page: 'workloads',
+        page: 'monitor',
         target: 'workloads',
         title: 'Find the app behind the activity',
-        body: 'Select an app to see its processes and where they came from. You can ask questions like “Why is Spotify using so much CPU?”',
+        body: 'Expand an app to see its processes. Select one for an automatic AI investigation of that specific instance, then ask a follow-up.',
     },
     {
         page: 'inbox',
@@ -32,7 +32,7 @@ export const tourSteps = [
         body: 'Manage a workload to approve a repeatable check. Connected tools can submit it here and wait for room. Only submitted checks are scheduled; other processes keep running.',
     },
     {
-        page: 'dashboard',
+        page: 'monitor',
         target: 'settings',
         title: 'You choose the boundaries',
         body: 'Settings controls local or cloud AI, spending limits, and automatic permissions. Jitterbug never automatically stops processes. You can replay this tour from the sidebar.',

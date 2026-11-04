@@ -8,7 +8,11 @@ Windows has live telemetry, with gaps in native diagnostics and actions.
 
 ## What it does
 
-- **Understand workloads:** app icons, process origins, resource history, and cached explanations.
+- **Monitor your computer:** one searchable activity table with apps, individual processes,
+  CPU/memory sorting, resource history, and an inspector beside the table.
+- **Understand the activity:** Meta powers the default AI overview, batched executable descriptions,
+  and automatic investigations of the selected process. Findings distinguish current observations
+  from inferred roles; follow-up questions keep the same process identity.
 - **Catch a slowdown:** press **⌘⇧J** on Mac or **Ctrl+Shift+J** on Windows for a Jitter Snapshot.
 - **Act on the cause:** review an optimization, pause a command session, or inspect supported
   Chromium tabs. Pausing retains memory; it does not close the command.

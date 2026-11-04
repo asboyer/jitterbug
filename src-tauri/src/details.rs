@@ -36,6 +36,7 @@ impl From<&ProcessRecord> for OriginNode {
 
 #[derive(Serialize)]
 pub struct Details {
+    pub process_history: Vec<ResourcePoint>,
     pub captured_at: u64,
     pub workload: Workload,
     pub process: ProcessRecord,
@@ -212,6 +213,7 @@ pub fn inspect(
         displayed.push(process.clone());
     }
     Ok(Details {
+        process_history: crate::monitor::observe(snapshot, process),
         captured_at: snapshot.captured_at,
         workload,
         process: process.clone(),

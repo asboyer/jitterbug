@@ -1,22 +1,21 @@
 import { expect, test } from '@playwright/test';
 
-test('activity answers the main question without queue or agent history', async ({ page }) => {
+test('Monitor combines resource health and the full activity table', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Room to work.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Monitor' })).toBeVisible();
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
-    await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Computer health' })).toContainText(
         'Your computer has room to work'
     );
-    await expect(page.getByRole('region', { name: 'Top resource users' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Activity monitor' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Shared validation queue' })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Agent workflows' })).toHaveCount(0);
-    await page.getByRole('button', { name: 'All workloads' }).click();
     await page.getByRole('textbox', { name: 'Filter workloads' }).fill('Browser');
-    await page.getByRole('button', { name: /Example Browser/ }).click();
+    await page.locator('.inspect').filter({ hasText: 'Example Browser' }).click();
     await expect(page.getByRole('heading', { name: 'Example Browser', exact: true })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: 'Validation queue' }).click();
     await expect(page.getByRole('region', { name: 'Shared validation queue' })).toBeVisible();
@@ -81,7 +80,7 @@ test('simulated pressure and inbox keep explanations concise and demo actions di
     // Synthetic exploration must not contact providers.
     const externalRequests: string[] = [];
     page.on('request', (request) => {
-        if (!request.url().startsWith('http://127.0.0.1:1420'))
+        if (!request.url().startsWith(test.info().project.use.baseURL!))
             externalRequests.push(request.url());
     });
     await page.goto('/');
@@ -89,7 +88,7 @@ test('simulated pressure and inbox keep explanations concise and demo actions di
     await page.getByRole('button', { name: 'Simulate pressure', exact: true }).click();
     await page
         .getByRole('navigation')
-        .getByRole('button', { name: 'Activity', exact: true })
+        .getByRole('button', { name: 'Monitor', exact: true })
         .click();
     await expect(page.getByRole('region', { name: 'Computer health' })).toContainText(
         'Your computer is working hard'
