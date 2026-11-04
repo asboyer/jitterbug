@@ -58,10 +58,10 @@ prompts, transcripts, or session names. Mode restrictions and the cloud budget a
 
 Unit tests cover classification, the line, payload parsing for each harness, subagent naming,
 and adding/removing hooks in all three formats. `scripts/turns-smoke.sh` drives the real
-`jitterbug-run` binary through gate and release with throwaway state. Headless Claude Code
-sessions using session-only `--settings` were verified to take turns: three `make test` runs from
-three sessions ran one at a time, the waiting session received the message and retried, and a
-subagent's run was labeled with its description. Muse Code's plugin format and deny handling
-were checked with `muse plugins validate` and `muse plugins hook test`. Live Codex and Muse Code
-sessions have not yet been run through the gate. Codex silently skips the hook until it is trusted
-with `/hooks`; Muse Code needs `muse login` or `META_API_KEY` before it can run.
+`jitterbug-run` binary through gate and release with throwaway state.
+Live sessions were run through the gate on macOS: Codex, Claude Code, and Muse Code started
+`make test` at the same time and ran it one after another (waits of 0, 29, and 83 seconds), each
+agent reading the wait message and retrying. A Claude Code subagent's run was labeled with its
+description. Muse Code moved a long command to the background, which reported it done early;
+the slot is now held until the command's processes go quiet. Codex skips the hook until it is
+trusted with `/hooks`; Muse Code needs `muse login` or `META_API_KEY`.

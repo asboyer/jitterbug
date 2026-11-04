@@ -29,6 +29,10 @@ const WAIT_TTL: u64 = 180;
 const QUIET_RELEASE: u64 = 20;
 /// Hard ceiling for one turn, in case neither the release hook nor process tracking ends it.
 const MAX_TURN: u64 = 45 * 60;
+/// A command reported done this soon after a busy sample may still be running in the background.
+const BUSY_RECENTLY: u64 = 6;
+/// Without desktop samples, a released turn holds its slot no longer than this.
+const RELEASED_GRACE: u64 = 120;
 const MAX_HISTORY: usize = 32;
 const MAX_WAITING: usize = 32;
 
@@ -55,6 +59,9 @@ pub struct Turn {
     pub peak_cpu_percent: f32,
     pub peak_memory_bytes: u64,
     pub last_active: u64,
+    /// The harness reported the command done while its processes were still busy (for
+    /// example, it moved the command to the background). The slot is held until they go quiet.
+    pub released_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -248,10 +255,10 @@ pub fn inspect(directory: &Path) -> Result<State, String> {
 impl State {
     fn forget_stale(&mut self, at: u64) {
         self.waiting.retain(|t| t.last_poll + WAIT_TTL >= at);
-        let (keep, done): (Vec<_>, Vec<_>) = self
-            .running
-            .drain(..)
-            .partition(|t| t.started_at.is_none_or(|s| s + MAX_TURN >= at));
+        let (keep, done): (Vec<_>, Vec<_>) = self.running.drain(..).partition(|t| {
+            t.started_at.is_none_or(|s| s + MAX_TURN >= at)
+                && t.released_at.is_none_or(|r| r + RELEASED_GRACE >= at)
+        });
         self.running = keep;
         for turn in done {
             self.finish(turn, at);
@@ -357,14 +364,18 @@ impl State {
         let position = command
             .map(|c| request.key(c))
             .and_then(|key| self.running.iter().position(|t| t.id == key));
-        match position {
-            Some(index) => {
-                let turn = self.running.remove(index);
-                self.finish(turn, at);
-                true
-            }
-            None => false,
+        let Some(index) = position else {
+            return false;
+        };
+        // Busy at the last sample: the command may have been moved to the background.
+        let turn = &mut self.running[index];
+        if turn.last_active + BUSY_RECENTLY >= at && turn.cpu_percent > 1.0 {
+            turn.released_at = Some(at);
+        } else {
+            let turn = self.running.remove(index);
+            self.finish(turn, at);
         }
+        true
     }
 }
 
@@ -404,7 +415,7 @@ pub fn wait_message(command: &str, position: usize, ahead: &[String], reason: &s
     if let Some(first) = ahead.first() {
         text.push_str(&format!(" Running now: {first}."));
     }
-    text.push_str(" Keep working on something that doesn't need this command, then run it again in about a minute; if there's nothing else to do, wait in the foreground (for example `sleep 60`) and retry. It keeps its place in line. Don't work around this by running the same command another way.");
+    text.push_str(" Keep working on something that doesn't need this command, then run it again in about a minute. It keeps its place in line. Don't work around this by running the same command another way.");
     text
 }
 
@@ -492,8 +503,13 @@ pub fn tick(directory: &Path, snapshot: &Snapshot) -> Result<(), String> {
             turn.memory_bytes = memory;
             turn.peak_cpu_percent = turn.peak_cpu_percent.max(cpu);
             turn.peak_memory_bytes = turn.peak_memory_bytes.max(memory);
-            if cpu > 1.0 || memory > 64 * 1024 * 1024 {
+            let busy = cpu > 1.0 || memory > 64 * 1024 * 1024;
+            if busy {
                 turn.last_active = at;
+            }
+            if turn.released_at.is_some() && cpu <= 1.0 {
+                done.push(index);
+                continue;
             }
             if turn.owner_pid != 0 && turn.last_active + QUIET_RELEASE < at && started + 10 < at {
                 done.push(index);
@@ -569,6 +585,25 @@ mod tests {
             Decision::Started
         );
         assert_eq!(state.history[0].command, "cargo test");
+    }
+
+    #[test]
+    fn a_command_moved_to_the_background_keeps_the_slot_until_quiet() {
+        let mut state = State::default();
+        let a = request("a", "make test");
+        state.ask(&a, "make", "", (1, 1), None, 100);
+        state.running[0].cpu_percent = 14.0;
+        state.running[0].last_active = 108;
+        assert!(state.release(&a, Some("make"), 110));
+        assert_eq!(state.running.len(), 1, "still busy, so the slot is held");
+        let b = request("b", "npm test");
+        assert!(matches!(
+            state.ask(&b, "npm test", "", (2, 1), None, 111),
+            Decision::Wait { .. }
+        ));
+        // Without desktop samples the hold ends on its own.
+        state.ask(&b, "npm test", "", (2, 1), None, 110 + RELEASED_GRACE + 1);
+        assert_eq!(state.running[0].command, "npm test");
     }
 
     #[test]
