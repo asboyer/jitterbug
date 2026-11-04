@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod activity;
 pub mod agent_sessions;
+pub mod agent_setup;
 pub mod agents;
 pub mod applications;
 pub mod attribution;
@@ -958,6 +959,67 @@ fn get_ai_activity(state: State<'_, AppState>) -> Vec<providers::Activity> {
     state.engine.activity()
 }
 
+/// What agents asked of Jitterbug this session, newest first: tool, agent, session and outcome.
+#[tauri::command]
+fn get_agent_activity() -> Vec<control::activity::Call> {
+    control::activity::list()
+}
+
+/// Which coding agents are installed and whether Jitterbug is registered with them.
+#[tauri::command]
+fn agent_clients() -> Result<Vec<agent_setup::Client>, String> {
+    let runner = agent_sessions::runner();
+    Ok(agent_setup::status(
+        &agent_setup::Places::detect()?,
+        runner.as_deref(),
+    ))
+}
+
+/// One click: register the MCP server (and Claude Code's pressure hint hook), then turn agent
+/// access on, since connecting an agent is the person asking for it.
+#[tauri::command]
+async fn connect_agent_client(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<agent_setup::Client>, String> {
+    let runner = agent_sessions::runner()
+        .ok_or("jitterbug-run was not found next to the app. Build or reinstall Jitterbug.")?;
+    let places = agent_setup::Places::detect()?;
+    let clients = tauri::async_runtime::spawn_blocking(move || {
+        agent_setup::connect(&places, &runner, &id)?;
+        Ok::<_, String>(agent_setup::status(&places, Some(&runner)))
+    })
+    .await
+    .map_err(|_| "Setup was interrupted.")??;
+    let mut policy = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .automation
+        .clone();
+    if !policy.agent_control {
+        policy.agent_control = true;
+        state.save_policy(policy)?;
+        popup::refresh(&app);
+    }
+    Ok(clients)
+}
+
+#[tauri::command]
+async fn disconnect_agent_client(id: String) -> Result<Vec<agent_setup::Client>, String> {
+    let places = agent_setup::Places::detect()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_setup::disconnect(&places, &id)?;
+        Ok(agent_setup::status(
+            &places,
+            agent_sessions::runner().as_deref(),
+        ))
+    })
+    .await
+    .map_err(|_| "Setup was interrupted.")?
+}
+
 /// Where `jitterbug-run` lives, so Settings can show copy-ready MCP setup commands.
 #[tauri::command]
 fn get_agent_runner() -> Option<String> {
@@ -1399,7 +1461,11 @@ pub fn run() {
             confirm_system_restore,
             save_credential,
             get_agent_runner,
+            agent_clients,
+            connect_agent_client,
+            disconnect_agent_client,
             get_ai_activity,
+            get_agent_activity,
             list_local_models,
             unload_model,
             ask,

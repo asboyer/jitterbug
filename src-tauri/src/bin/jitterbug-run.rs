@@ -48,6 +48,30 @@ fn run() -> Result<i32, String> {
     if args.peek().is_some_and(|arg| arg == "control-mcp") {
         return jitterbug_lib::control::mcp::serve();
     }
+    if args.peek().is_some_and(|arg| arg == "pressure-hint") {
+        // A hook must never block or fail the agent's command: any problem means silence.
+        let mut input = String::new();
+        use std::io::Read;
+        if std::io::stdin()
+            .take(harness::MAX_EVENT_BYTES)
+            .read_to_string(&mut input)
+            .is_ok()
+        {
+            if let Some(output) = jitterbug_lib::control::hint::hook(&input) {
+                println!("{output}");
+            }
+        }
+        return Ok(0);
+    }
+    if args.peek().is_some_and(|arg| arg == "hint-settings") {
+        println!(
+            "{}",
+            jitterbug_lib::control::hint::settings(
+                &std::env::current_exe().map_err(|_| "Cannot locate launcher.")?
+            )?
+        );
+        return Ok(0);
+    }
     if args.peek().is_some_and(|arg| arg == "hook-settings") {
         println!(
             "{}",
@@ -75,7 +99,7 @@ fn run() -> Result<i32, String> {
     let mut command: Vec<OsString> = Vec::new();
     while let Some(flag) = args.next() {
         if flag == "--help" || flag == "-h" {
-            println!("Usage: jitterbug-run --task-id ID --task-title TITLE --agent LABEL --worktree PATH [--harness claude|codex|other] [--role agent|test|build|typecheck|lint|other] [--task-description TEXT] [--capture-context] -- COMMAND [ARG ...]\n\nRuns COMMAND in PATH with inherited stdin/stdout/stderr. Registers private task metadata in Jitterbug's application-data directory; never stores command arguments or tool output. --task-description supplies a local task excerpt. --capture-context adds session-only Claude Code hooks that retain the first request and latest follow-up excerpts (600 characters each) and activity counts. No transcript is read. Use hook-settings to print compatible Claude/Codex hook JSON for manual setup. Events outside a verified wrapper are ignored. Keep Jitterbug open to measure resources. No inference, scheduling or process optimization is performed by this wrapper. JITTERBUG_AGENT_RUNS_DIR can override the private registry directory for isolated tests.");
+            println!("Usage: jitterbug-run --task-id ID --task-title TITLE --agent LABEL --worktree PATH [--harness claude|codex|other] [--role agent|test|build|typecheck|lint|other] [--task-description TEXT] [--capture-context] -- COMMAND [ARG ...]\n\nRuns COMMAND in PATH with inherited stdin/stdout/stderr. Registers private task metadata in Jitterbug's application-data directory; never stores command arguments or tool output. --task-description supplies a local task excerpt. --capture-context adds session-only Claude Code hooks that retain the first request and latest follow-up excerpts (600 characters each) and activity counts, and warn the session before heavy shell commands while the computer is under strain. No transcript is read. Use hook-settings to print compatible Claude/Codex hook JSON for manual setup. Events outside a verified wrapper are ignored. Keep Jitterbug open to measure resources. No inference, scheduling or process optimization is performed by this wrapper. JITTERBUG_AGENT_RUNS_DIR can override the private registry directory for isolated tests.");
             return Ok(0);
         }
         if flag == "--capture-context" {

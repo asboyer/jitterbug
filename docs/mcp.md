@@ -80,6 +80,43 @@ you made, and never act on an app in the Protected bucket.
 Pauses lift after 15 minutes. A paused tab also wakes if Jitterbug quits, because the freeze lasts
 only while Jitterbug holds the tab's DevTools session.
 
+## Warn agents before heavy work
+
+Agents call MCP tools only when they think to, and a slow build rarely makes them think of
+Jitterbug. The `pressure-hint` hook brings it up at the right moment instead. **Connect** in
+Settings › Integrations installs it in `~/.claude/settings.json`, and `jitterbug-run
+--capture-context` adds it to the sessions it wraps. To merge it by hand, print its settings:
+
+```sh
+src-tauri/target/debug/jitterbug-run hint-settings
+```
+
+Before each shell command, the hook checks whether the command is heavy (builds, test suites,
+installs, containers, local models). Quick commands return without contacting the app. For a
+heavy one it asks the app with `pressure_hint`. Only when pressure is `high` (sustained) does the
+agent get one note in its context, naming what is strained and the other sessions using most of
+it (sessions using under 5% CPU or 512 MiB are left out), for example:
+
+> Jitterbug: this machine is under memory strain (1.1 GB memory free, CPU 41%). TEST2 is idle at
+> 1.2 GB (unit_id session:42-7). Before more heavy commands, mention it in one line, then consider
+> asking Jitterbug to pause the least urgent idle session with jitterbug_pause_session
+> (jitterbug-control MCP), running narrower commands, or waiting. Never pause work the person is
+> waiting on.
+
+Claude Code shows this context to the model together with the command's result, so the note
+shapes the agent's next heavy step rather than the one that triggered it.
+
+The hook never blocks or changes a command. It stays silent when the app is closed, agent access
+is off (and doesn't ask for access), or the machine is fine. Each session gets a note at most once
+every three minutes. Codex shell events are read too, if your Codex hooks run the same command.
+
+## See what agents asked
+
+Monitor's **AI activity** strip lists model calls and, under **Agents**, every request agents sent
+this app session: the tool, the agent and session that asked, and the outcome. Pressure checks
+show as "Warned before heavy work" or "Checked before heavy work". Only metadata is kept, in memory
+(the last 100), with no arguments, reasons or answers.
+
 ## How it expands
 
 ```mermaid
@@ -113,11 +150,12 @@ A new capability is added in one place per layer: a tool in `control/mcp.rs`, it
 2. **Lab console.** Debug builds open the Jitterbug Lab. Its Agent (MCP) column sends real JSON-RPC
    through the same socket as an agent, shows each request and answer, and turns returned units
    into one-click pause or close requests whose approvals appear in the Live popup.
-3. **A real agent.** Register the server with Claude Code, then ask a session to use it:
+3. **A real agent.** Build the runner, press **Connect** next to Claude Code in Settings ›
+   Integrations (or run the command below), then ask a session to use it:
 
     ```sh
     cargo build --manifest-path src-tauri/Cargo.toml --bin jitterbug-run
-    claude mcp add jitterbug-control -- "$PWD/src-tauri/target/debug/jitterbug-run" control-mcp
+    claude mcp add --scope user jitterbug-control -- "$PWD/src-tauri/target/debug/jitterbug-run" control-mcp
     ```
 
     With two named sessions open, ask one: "Use jitterbug to list my sessions and pause the idle

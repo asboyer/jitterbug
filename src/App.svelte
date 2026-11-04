@@ -333,6 +333,7 @@
         }}
     />
 {/if}
+
 {#if pendingAction}<div class="modal-backdrop">
         <div
             class="modal panel"

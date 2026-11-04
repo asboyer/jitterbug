@@ -12,6 +12,10 @@ async function mockSettings(page: Page) {
         ({ bootstrap, snapshot }) => {
             let callback = 0;
             const calls: { command: string; args: Record<string, any> }[] = [];
+            const clients = [
+                { id: 'claude', label: 'Claude Code', installed: true, mcp: false, hint: false },
+                { id: 'codex', label: 'Codex', installed: false, mcp: false, hint: null },
+            ];
             Object.defineProperty(window, 'isTauri', { value: true });
             Object.defineProperty(window, '__TAURI_INTERNALS__', {
                 value: {
@@ -25,6 +29,7 @@ async function mockSettings(page: Page) {
                         if (command === 'get_ai_activity') return [];
                         if (command === 'get_agent_runner')
                             return '/Applications/Jitterbug/jitterbug-run';
+                        if (command === 'agent_clients') return structuredClone(clients);
                         if (command === 'get_session_permissions')
                             return {
                                 environment: { os: 'macos', version: '15.6', arch: 'arm64' },
@@ -36,6 +41,19 @@ async function mockSettings(page: Page) {
                         }
                         calls.push({ command, args });
                         document.documentElement.dataset.settingsCalls = JSON.stringify(calls);
+                        if (command === 'connect_agent_client') {
+                            const client = clients.find((c) => c.id === args.id)!;
+                            client.mcp = true;
+                            if (client.hint !== null) client.hint = true;
+                            bootstrap.settings.automation.agent_control = true;
+                            return structuredClone(clients);
+                        }
+                        if (command === 'disconnect_agent_client') {
+                            const client = clients.find((c) => c.id === args.id)!;
+                            client.mcp = false;
+                            if (client.hint !== null) client.hint = false;
+                            return structuredClone(clients);
+                        }
                         if (command === 'save_automation_policy') {
                             bootstrap.settings.automation = JSON.parse(JSON.stringify(args.policy));
                             return;
@@ -125,4 +143,42 @@ test('Meta setup and privacy controls remain reachable at the minimum window siz
     expect(await page.locator('main').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
         true
     );
+});
+test('integrations offer a pressure hook and an instruction for heavy work', async ({ page }) => {
+    await openSettings(page);
+    await page.getByRole('tab', { name: 'Integrations' }).click();
+    await page.getByText('Set up by hand', { exact: true }).click();
+    const agents = page.getByRole('region', { name: 'Agent access' });
+    await expect(agents).toContainText('Warn agents before heavy work');
+    await expect(agents).toContainText('pressure-hint');
+    await expect(agents.getByRole('button', { name: 'Copy pressure hint hook' })).toBeVisible();
+    await expect(agents).toContainText('call the jitterbug_overview tool once');
+    await expect(agents.getByRole('button', { name: 'Copy agent instruction' })).toBeVisible();
+});
+
+test('one click connects Claude Code and turns agent access on', async ({ page }) => {
+    await openSettings(page);
+    await page.getByRole('tab', { name: 'Integrations' }).click();
+    const agents = page.getByRole('list', { name: 'Coding agents' });
+    await expect(page.getByRole('checkbox', { name: 'Allow agent access' })).not.toBeChecked();
+    await expect(agents.getByRole('listitem').filter({ hasText: 'Codex' })).toContainText(
+        'Not found on this computer'
+    );
+    await expect(agents.getByRole('button', { name: 'Connect Codex' })).toBeDisabled();
+    await agents.getByRole('button', { name: 'Connect Claude Code' }).click();
+    const claude = agents.getByRole('listitem').filter({ hasText: 'Claude Code' });
+    await expect(claude).toContainText('Connected');
+    await expect(claude).toContainText('warns before heavy work');
+    await expect(page.getByRole('checkbox', { name: 'Allow agent access' })).toBeChecked();
+    // Access was saved by the connect itself, so the form has nothing pending.
+    await expect(page.getByText('Unsaved changes')).toHaveCount(0);
+    await agents.getByRole('button', { name: 'Disconnect Claude Code' }).click();
+    await expect(agents.getByRole('button', { name: 'Connect Claude Code' })).toBeEnabled();
+    const calls = await page
+        .locator('html')
+        .evaluate((element) => JSON.parse(element.dataset.settingsCalls ?? '[]'));
+    expect(calls.map((c: { command: string }) => c.command)).toEqual([
+        'connect_agent_client',
+        'disconnect_agent_client',
+    ]);
 });

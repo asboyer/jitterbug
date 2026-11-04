@@ -6,7 +6,9 @@
 //! The socket lives in the private app-data directory with owner-only permissions; every
 //! connection is checked against this user's ID, and the caller's PID comes from the kernel,
 //! so an agent can never pause the session it runs in.
+pub mod activity;
 pub mod handlers;
+pub mod hint;
 pub mod mcp;
 #[cfg(unix)]
 pub mod server;

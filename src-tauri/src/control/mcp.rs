@@ -8,7 +8,7 @@ use std::io::{BufRead, Read, Write};
 pub const INSTRUCTIONS: &str = "Jitterbug sees which app, browser tab, or command session (such as \
 another coding-agent session in a terminal) is using this computer's CPU and memory. Before you \
 start heavy work (a build, a full test suite, a dependency install, a container, or a local model), \
-call jitterbug_overview once. If pressure is warning or critical, say so in one line, then either \
+call jitterbug_overview once. If machine.pressure is watch or high, say so in one line, then either \
 wait, run a narrower command, or ask to pause the least urgent idle session or background tab that \
 uses the most. Do not call it before ordinary edits, reads, or quick commands. Call \
 jitterbug_inspect_app for one app's tabs or sessions. Pausing freezes a session or tab without \

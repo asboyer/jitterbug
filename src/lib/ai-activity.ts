@@ -1,4 +1,4 @@
-import type { AiActivity, AutomationCase, AutomationStage } from './types';
+import type { AgentCall, AiActivity, AutomationCase, AutomationStage } from './types';
 
 const purposes: Record<string, string> = {
     question: 'Answered your question',
@@ -72,5 +72,54 @@ export function demoActivity(now = Math.floor(Date.now() / 1000)): AiActivity[] 
             duration_ms: 3,
         }),
         entry(2400, 'task_summary', 'meta', 'muse-spark-1.3', 4100, 0.0034),
+    ];
+}
+
+const methods: Record<string, string> = {
+    overview: 'Checked the machine',
+    inspect_app: 'Looked inside an app',
+    pause_session: 'Asked to pause a session',
+    resume_session: 'Resumed a session',
+    pause_tab: 'Asked to pause a tab',
+    resume_tab: 'Resumed a tab',
+    close_tab: 'Asked to close a tab',
+    request_background: 'Asked to move an app to Background',
+    request_status: 'Checked a request',
+};
+
+export function agentCallLabel(call: AgentCall) {
+    if (call.method === 'pressure_hint')
+        return call.hinted ? 'Warned before heavy work' : 'Checked before heavy work';
+    return methods[call.method] ?? 'Unknown request';
+}
+
+/** Who asked: the session it runs in, led by the agent unless the title already names it. */
+export function agentCallSource(call: AgentCall) {
+    const agent = call.agent ?? 'An agent';
+    if (!call.session) return agent;
+    return call.agent && call.session.includes(call.agent)
+        ? call.session
+        : `${agent} · ${call.session}`;
+}
+
+/** Synthetic agent calls for the browser preview. */
+export function demoAgentCalls(now = Math.floor(Date.now() / 1000)): AgentCall[] {
+    const call = (seconds: number, method: string, extra: Partial<AgentCall> = {}): AgentCall => ({
+        at: now - seconds,
+        method,
+        agent: 'Claude Code',
+        session: 'TEST1',
+        ok: true,
+        error: null,
+        request_id: null,
+        hinted: null,
+        ...extra,
+    });
+    return [
+        call(20, 'request_status', { request_id: 4 }),
+        call(70, 'pause_session', { request_id: 4 }),
+        call(80, 'overview'),
+        call(90, 'pressure_hint', { hinted: true }),
+        call(1300, 'pressure_hint', { hinted: false, agent: 'Codex', session: 'TEST2' }),
     ];
 }
