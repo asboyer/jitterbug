@@ -85,8 +85,10 @@
                 section={section === 'integrations' ? 'connections' : 'assistance'}
                 visible={section === 'assistance' || section === 'integrations'}
             />
-            {#if section === 'ai'}<AiSettings {bootstrap} {desktop} {onrefresh} />
-                <AiActivityLog live={desktop} cases={bootstrap.automation_cases} />{/if}
+            {#if section === 'ai'}<AiActivityLog
+                    live={desktop}
+                    cases={bootstrap.automation_cases}
+                /><AiSettings {bootstrap} {desktop} {onrefresh} />{/if}
             <div hidden={section !== 'system'}>
                 <SettingsPermissions {desktop} />
                 <details class="preference-detail">
