@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-    import Icon from './Icon.svelte';
+    import Logo from './Logo.svelte';
     import { errorMessage } from '../lib/format';
     import {
         actionResult,
@@ -224,8 +224,8 @@
 {#if capture}
     <section class="action-popup" aria-label="Jitterbug is capturing a snapshot" aria-live="polite">
         <header>
-            <span class="bug-mark working"><Icon name="bug" size={16} /></span>
-            <span class="name">Jitterbug <small>LIVE</small></span>
+            <span class="bug-mark working"><Logo size={18} live /></span>
+            <span class="name">Jitterbug <small>Live</small></span>
         </header>
         <h2>Capturing snapshot…</h2>
         <p class="reason outcome">{capture.message}</p>
@@ -240,8 +240,8 @@
         onpointerleave={() => (hovering = false)}
     >
         <header>
-            <span class="bug-mark" class:working><Icon name="bug" size={16} /></span>
-            <span class="name">Jitterbug <small>LIVE</small></span>
+            <span class="bug-mark" class:working><Logo size={18} live={working} /></span>
+            <span class="name">Jitterbug <small>Live</small></span>
             {#if badge}<span class="more">{badge}</span>{/if}
             {#if shown.more > 0}<span class="more">+{shown.more} more</span>{/if}
             <button
@@ -389,8 +389,7 @@
     }
     .name small,
     .more {
-        font-size: 8px;
-        letter-spacing: 0.8px;
+        font-size: 11px;
         color: var(--muted);
     }
     .name small {

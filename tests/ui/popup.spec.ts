@@ -33,7 +33,7 @@ test('native popup actions call the native command and never manufacture complet
         });
     }, payload);
     await page.goto('/?view=popup');
-    await expect(page.getByText('LIVE', { exact: true })).toBeVisible();
+    await expect(page.getByText('Live', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Apply', exact: true }).click();
     await expect(page.locator('html')).toHaveAttribute('data-action', 'approve_optimization');
     await expect(page.getByText('Checking the result…')).toHaveCount(0);

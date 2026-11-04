@@ -16,6 +16,7 @@ pub const LAUNCHABLE: &[&str] = &["claude", "codex", "aider", "gemini"];
 pub(crate) const AGENTS: &[(&str, &str)] = &[
     ("claude", "Claude Code"),
     ("codex", "Codex"),
+    ("muse", "Muse Code"),
     ("aider", "Aider"),
     ("cursor-agent", "Cursor Agent"),
     ("gemini", "Gemini CLI"),
@@ -93,7 +94,12 @@ pub struct Overview {
 
 fn normalized(name: &str) -> String {
     let name = name.trim_start_matches('-').to_lowercase();
-    name.strip_suffix(".exe").unwrap_or(&name).to_string()
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    // Muse Code's launcher runs a versioned binary: `muse-bin-1.4.14-R7309.1`.
+    if name.starts_with("muse-bin") {
+        return "muse".into();
+    }
+    name.to_string()
 }
 
 /// The agent key a process is, by name or executable. Claude Code's native install runs from
@@ -919,5 +925,12 @@ mod tests {
         );
         assert_eq!(display_path(home, Some(home)), "~");
         assert_eq!(display_path(Path::new("/opt/x"), Some(home)), "/opt/x");
+    }
+
+    #[test]
+    fn muse_code_is_recognized_by_its_versioned_binary() {
+        assert_eq!(agent_key("muse-bin-1.4.14-R7309.1", None), Some("muse"));
+        assert_eq!(agent_display("muse"), "Muse Code");
+        assert_eq!(agent_key("museum", None), None);
     }
 }
