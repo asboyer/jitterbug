@@ -25,6 +25,7 @@ async function mockSettings(page: Page) {
                         if (command.startsWith('plugin:event|')) return 1;
                         if (command === 'get_bootstrap') return structuredClone(bootstrap);
                         if (command === 'get_snapshot') return snapshot;
+                        if (command === 'get_monitor_inventory') return [];
                         if (command === 'get_workload_icon') return null;
                         if (command === 'get_ai_activity') return [];
                         if (command === 'get_agent_runner')
