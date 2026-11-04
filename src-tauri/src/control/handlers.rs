@@ -353,15 +353,14 @@ fn pressure_hint(
     });
     if hint {
         let view = overview(&snapshot, &lineage)?;
-        let mut others: Vec<Value> = view["apps"]
+        let others: Vec<Value> = view["apps"]
             .as_array()
             .into_iter()
             .flatten()
             .flat_map(|app| app["sessions"].as_array().cloned().unwrap_or_default())
             .filter(|s| s["is_your_session"] != json!(true) && s["paused_until"].is_null())
             .collect();
-        others.sort_by_key(|s| std::cmp::Reverse(s["memory_mib"].as_u64().unwrap_or(0)));
-        others.truncate(3);
+        let others = contributors(others, strain(&snapshot));
         answer["sessions"] = json!(others
             .iter()
             .map(|s| json!({
@@ -374,6 +373,44 @@ fn pressure_hint(
             .collect::<Vec<_>>());
     }
     Ok(answer)
+}
+
+/// Which resources are strained: CPU, memory, or (for thermal or swap alone) both.
+fn strain(snapshot: &Snapshot) -> (bool, bool) {
+    let cpu = snapshot.cpu_percent >= 85.0;
+    let memory = (snapshot.memory_total_bytes > 0
+        && (snapshot.memory_available_bytes as f64) < snapshot.memory_total_bytes as f64 * 0.12)
+        || matches!(
+            snapshot.platform.memory_pressure.as_deref(),
+            Some("warning" | "critical")
+        );
+    if cpu || memory {
+        (cpu, memory)
+    } else {
+        (true, true)
+    }
+}
+
+/// The sessions worth naming in a hint: those using a meaningful share of what is strained
+/// (5% of the CPU, or 512 MiB of memory), heaviest first, at most three.
+fn contributors(mut sessions: Vec<Value>, (cpu, memory): (bool, bool)) -> Vec<Value> {
+    let use_of = |s: &Value| {
+        let c = s["cpu_percent_of_machine"].as_f64().unwrap_or(0.0);
+        let m = s["memory_mib"].as_f64().unwrap_or(0.0);
+        (if cpu { c } else { 0.0 }, if memory { m } else { 0.0 })
+    };
+    sessions.retain(|s| {
+        let (c, m) = use_of(s);
+        c >= 5.0 || m >= 512.0
+    });
+    // Ten points per GiB puts a 1 GiB session level with one using 10% of the CPU.
+    let score = |s: &Value| {
+        let (c, m) = use_of(s);
+        c + m / 1024.0 * 10.0
+    };
+    sessions.sort_by(|a, b| score(b).total_cmp(&score(a)));
+    sessions.truncate(3);
+    sessions
 }
 
 fn dispatch(
@@ -661,6 +698,37 @@ fn inspect_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hints_name_the_sessions_using_what_is_strained() {
+        let s = |id: &str, cpu: f64, mib: u64| json!({"unit_id": id, "cpu_percent_of_machine": cpu, "memory_mib": mib});
+        let all = vec![
+            s("busy", 92.0, 631),
+            s("big-idle", 1.0, 998),
+            s("tiny", 0.0, 83),
+            s("medium", 12.0, 300),
+        ];
+        let ids = |v: Vec<Value>| -> Vec<String> {
+            v.iter()
+                .map(|s| s["unit_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // CPU strain: the CPU user comes first, idle memory holders are left out.
+        assert_eq!(
+            ids(contributors(all.clone(), (true, false))),
+            ["busy", "medium"]
+        );
+        // Memory strain: only sessions holding real memory.
+        assert_eq!(
+            ids(contributors(all.clone(), (false, true))),
+            ["big-idle", "busy"]
+        );
+        // Both: weighed together, at most three.
+        assert_eq!(
+            ids(contributors(all, (true, true))),
+            ["busy", "medium", "big-idle"]
+        );
+    }
 
     #[test]
     fn pressure_hints_repeat_only_after_a_quiet_window_or_when_worse() {

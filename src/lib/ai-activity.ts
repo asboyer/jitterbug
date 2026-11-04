@@ -93,9 +93,14 @@ export function agentCallLabel(call: AgentCall) {
     return methods[call.method] ?? 'Unknown request';
 }
 
-/** Who asked: the agent and the session it runs in, when known. */
-export const agentCallSource = (call: AgentCall) =>
-    [call.agent ?? 'An agent', call.session].filter(Boolean).join(' · ');
+/** Who asked: the session it runs in, led by the agent unless the title already names it. */
+export function agentCallSource(call: AgentCall) {
+    const agent = call.agent ?? 'An agent';
+    if (!call.session) return agent;
+    return call.agent && call.session.includes(call.agent)
+        ? call.session
+        : `${agent} · ${call.session}`;
+}
 
 /** Synthetic agent calls for the browser preview. */
 export function demoAgentCalls(now = Math.floor(Date.now() / 1000)): AgentCall[] {

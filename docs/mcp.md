@@ -93,7 +93,8 @@ src-tauri/target/debug/jitterbug-run hint-settings
 Before each shell command, the hook checks whether the command is heavy (builds, test suites,
 installs, containers, local models). Quick commands return without contacting the app. For a
 heavy one it asks the app with `pressure_hint`. When the machine is at `watch` or `high`, the agent
-gets one note in its context, for example:
+gets one note in its context naming the other sessions using most of what is strained (CPU,
+memory, or both; sessions using under 5% CPU or 512 MiB are left out), for example:
 
 > Jitterbug: this computer is under sustained pressure (CPU 88%, 1.1 GB memory free). Other
 > sessions using the most: TEST2 (idle, 1.4 GB, 0% CPU, unit_id session:42-7). Before this
