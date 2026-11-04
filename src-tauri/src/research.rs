@@ -103,40 +103,6 @@ async fn verify_article(client: &reqwest::Client) -> bool {
         && html.contains("network settings")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn firefox_guidance_is_offline_safe_and_reuses_a_verified_cache() {
-        let directory = std::env::temp_dir().join(format!(
-            "jitterbug-firefox-guidance-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&directory);
-        let client = reqwest::Client::new();
-        let mut reference = firefox_memory(&client, &directory, false).await;
-        assert_eq!(reference.status, "offline_reference");
-        assert!(reference.checked_at.is_none());
-        reference.checked_at = Some(crate::types::now());
-        crate::storage::write(&directory.join("firefox-memory-guidance.json"), &reference).unwrap();
-        let cached = firefox_memory(&client, &directory, false).await;
-        assert_eq!(cached.status, "cached");
-        assert_eq!(cached.summary, reference.summary);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-    #[tokio::test]
-    async fn offline_reference_does_not_claim_a_fresh_lookup() {
-        let directory = std::env::temp_dir().join("jitterbug-offline-research-fixture");
-        let result = safari(&reqwest::Client::new(), &directory, false).await;
-        assert_eq!(result.status, "offline_reference");
-        assert!(result.checked_at.is_none());
-        assert_eq!(result.url, URL);
-        assert!(slowdown("why is Safari lagging"));
-        assert!(!slowdown("what is CPU"));
-        assert!(!slowdown("change the priority and flag the result"));
-    }
-}
-
 /// Public vendor guidance for a browser memory question; no telemetry enters this lookup.
 pub async fn firefox_memory(client: &reqwest::Client, directory: &Path, online: bool) -> Research {
     const URL: &str =
@@ -191,4 +157,38 @@ pub async fn firefox_memory(client: &reqwest::Client, directory: &Path, online: 
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn firefox_guidance_is_offline_safe_and_reuses_a_verified_cache() {
+        let directory = std::env::temp_dir().join(format!(
+            "jitterbug-firefox-guidance-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let client = reqwest::Client::new();
+        let mut reference = firefox_memory(&client, &directory, false).await;
+        assert_eq!(reference.status, "offline_reference");
+        assert!(reference.checked_at.is_none());
+        reference.checked_at = Some(crate::types::now());
+        crate::storage::write(&directory.join("firefox-memory-guidance.json"), &reference).unwrap();
+        let cached = firefox_memory(&client, &directory, false).await;
+        assert_eq!(cached.status, "cached");
+        assert_eq!(cached.summary, reference.summary);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[tokio::test]
+    async fn offline_reference_does_not_claim_a_fresh_lookup() {
+        let directory = std::env::temp_dir().join("jitterbug-offline-research-fixture");
+        let result = safari(&reqwest::Client::new(), &directory, false).await;
+        assert_eq!(result.status, "offline_reference");
+        assert!(result.checked_at.is_none());
+        assert_eq!(result.url, URL);
+        assert!(slowdown("why is Safari lagging"));
+        assert!(!slowdown("what is CPU"));
+        assert!(!slowdown("change the priority and flag the result"));
+    }
 }

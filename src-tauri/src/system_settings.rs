@@ -15,7 +15,7 @@ mod spotlight;
 #[cfg(target_os = "macos")]
 mod time_machine;
 pub use capabilities::{settings_url, Capability, CapabilityStatus};
-pub use preferences::{Preference, PreferenceValue};
+pub use preferences::{session_apply_boolean, session_boolean, Preference, PreferenceValue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{

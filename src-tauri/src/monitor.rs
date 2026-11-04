@@ -316,7 +316,11 @@ impl Runtime {
             let profiles = tokio::select! {
                 biased;
                 _ = self.monitor_cancel.notified() => return Err("Description deferred for your question.".into()),
-                result = self.engine.app_profiles(&settings, &snapshot, &apps) => result?,
+                result = crate::providers::purpose(
+                    "app_explanation",
+                    None,
+                    self.engine.app_profiles(&settings, &snapshot, &apps),
+                ) => result?,
             };
             let mut generated = HashMap::new();
             for ((_, key, _), profile) in unique.into_iter().zip(profiles) {

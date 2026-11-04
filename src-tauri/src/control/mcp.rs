@@ -3,7 +3,22 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 
-const INSTRUCTIONS: &str = "Jitterbug sees which app, browser tab, or command session (such as another coding-agent session in a terminal) is using this computer's CPU and memory, and can pause a session, pause a background tab, or close a tab. Call jitterbug_overview first; call jitterbug_inspect_app for one app's tabs or sessions. When the machine is under pressure, prefer pausing the session or tab using the most resources that is least urgent: pausing freezes it without losing work, and it resumes when asked or after 15 minutes. Prefer pausing a tab over closing it: closing ends what runs in it, and only closing frees a tab's memory. Never pause your own session (marked is_your_session). Every action is a request the person approves in Jitterbug unless they allowed agents to pause without asking; follow it with jitterbug_request_status, and resume the sessions and tabs you paused once the pressure clears. Results are measurements, not proof of what a session is doing. To let an app wait for others for longer, ask with jitterbug_request_background; apps the person marked Protected are off limits.";
+/// Clients such as Claude Code put this in the agent's context, so it says when to check
+/// Jitterbug, not only how.
+pub const INSTRUCTIONS: &str = "Jitterbug sees which app, browser tab, or command session (such as \
+another coding-agent session in a terminal) is using this computer's CPU and memory. Before you \
+start heavy work (a build, a full test suite, a dependency install, a container, or a local model), \
+call jitterbug_overview once. If pressure is warning or critical, say so in one line, then either \
+wait, run a narrower command, or ask to pause the least urgent idle session or background tab that \
+uses the most. Do not call it before ordinary edits, reads, or quick commands. Call \
+jitterbug_inspect_app for one app's tabs or sessions. Pausing freezes a session or tab without \
+losing work, and it resumes when asked or after 15 minutes. Prefer pausing a tab over closing it: \
+closing ends what runs in it, and only closing frees a tab's memory. Never pause your own session \
+(marked is_your_session). Every action is a request the person approves in Jitterbug unless they \
+allowed agents to pause without asking; follow it with jitterbug_request_status, and resume the \
+sessions and tabs you paused once the pressure clears. Results are measurements, not proof of what \
+a session is doing. To let an app wait for others for longer, ask with \
+jitterbug_request_background; apps the person marked Protected are off limits.";
 
 fn tool(
     name: &str,
@@ -24,7 +39,7 @@ pub fn tools() -> Value {
     let unit = json!({"type": "string", "description": "unit_id from jitterbug_overview or jitterbug_inspect_app"});
     let reason = json!({"type": "string", "description": "One sentence shown to the person, e.g. why this session should wait"});
     json!({"tools": [
-        tool("jitterbug_overview", "Machine pressure, the busiest apps, and the command sessions inside terminals, editors, and agent apps, with what each uses. Read-only.", json!({}), &[], true),
+        tool("jitterbug_overview", "Machine pressure, the busiest apps, and the command sessions inside terminals, editors, and agent apps, with what each uses. Call once before heavy work such as builds, full test suites, installs, or containers. Read-only.", json!({}), &[], true),
         tool("jitterbug_inspect_app", "Everything running inside one app: its command sessions, or for a browser its tabs measured over one second (the first call may ask the person to allow the browser connection). Read-only.", json!({"workload_id": {"type": "string"}}), &["workload_id"], true),
         tool("jitterbug_pause_session", "Ask to pause one command session and everything it started. Nothing is closed and no work is lost; it uses no CPU until resumed (automatically after 15 minutes). Usually waits for the person's approval.", json!({"unit_id": unit.clone(), "reason": reason.clone()}), &["unit_id", "reason"], false),
         tool("jitterbug_resume_session", "Resume a session that an agent's pause request paused. Sessions the person paused stay paused.", json!({"unit_id": unit.clone()}), &["unit_id"], false),

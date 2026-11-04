@@ -14,10 +14,13 @@ pub mod diagnostics;
 mod floating;
 pub mod governor;
 pub mod harness;
+#[cfg(target_os = "macos")]
+mod idle_sleep;
 pub mod inside;
 pub mod jitter;
 mod lab;
 pub mod monitor;
+pub mod optimized_sessions;
 pub mod origins;
 pub mod pause;
 pub mod platform;
@@ -30,6 +33,7 @@ pub mod providers;
 pub mod pulse;
 pub mod queue;
 pub mod research;
+pub mod session_permissions;
 pub mod settings;
 pub mod settings_history;
 pub mod storage;
@@ -44,6 +48,67 @@ use std::{sync::Arc, time::Duration};
 use tauri::{Emitter, Manager, State};
 
 pub type AppState = Arc<supervisor::Runtime>;
+
+#[tauri::command]
+fn list_sessions(state: State<'_, AppState>) -> Result<Vec<optimized_sessions::Session>, String> {
+    state.optimized_sessions()
+}
+
+#[tauri::command]
+fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.delete_optimized_session(&id)
+}
+
+#[tauri::command]
+async fn create_session(
+    state: State<'_, AppState>,
+    name: String,
+    goal: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.create_optimized_session(&name, &goal).await
+}
+
+#[tauri::command]
+async fn propose_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.repropose_optimized_session(&id).await
+}
+
+#[tauri::command]
+fn activate_session(
+    state: State<'_, AppState>,
+    id: String,
+    explicit_opt_in: bool,
+) -> Result<optimized_sessions::Session, String> {
+    state.start_optimized_session(&id, explicit_opt_in)
+}
+
+#[tauri::command]
+fn deactivate_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.pause_optimized_session(&id)
+}
+
+#[tauri::command]
+fn reapply_session(
+    state: State<'_, AppState>,
+    id: String,
+    explicit_opt_in: bool,
+) -> Result<optimized_sessions::Session, String> {
+    state.reapply_optimized_session(&id, explicit_opt_in)
+}
+
+#[tauri::command]
+fn restore_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<optimized_sessions::Session, String> {
+    state.restore_optimized_session(&id)
+}
 
 #[tauri::command]
 async fn discover_managed_workload(
@@ -178,10 +243,12 @@ async fn plan_workflow_queue(state: State<'_, AppState>) -> Result<queue::contro
     {
         return Err("No upcoming checks need a plan.".into());
     }
-    state
-        .engine
-        .workflow_plan(&settings, &snapshot, &queue)
-        .await
+    providers::purpose(
+        "queue_plan",
+        None,
+        state.engine.workflow_plan(&settings, &snapshot, &queue),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -405,17 +472,19 @@ async fn ask_monitor(
             }
         }
     }
-    state
-        .engine
-        .monitor_answer(
+    providers::purpose(
+        "question",
+        None,
+        state.engine.monitor_answer(
             &settings,
             &snapshot,
             messages,
             workload_id.as_deref(),
             pid.zip(start_time),
             profile.as_ref(),
-        )
-        .await
+        ),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -437,7 +506,12 @@ async fn summarize_monitor(state: State<'_, AppState>) -> Result<providers::Repl
     if !snapshot.sample_ready || snapshot.captured_at + 20 < types::now() {
         return Err("Wait for a fresh telemetry sample.".into());
     }
-    state.engine.monitor_overview(&settings, &snapshot).await
+    providers::purpose(
+        "monitor",
+        None,
+        state.engine.monitor_overview(&settings, &snapshot),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -515,10 +589,12 @@ async fn summarize_agent_task(
         .lock()
         .map_err(|_| "Settings unavailable.")?
         .clone();
-    let profile = state
-        .engine
-        .task_summary(&settings, &snapshot, workflow)
-        .await?;
+    let profile = providers::purpose(
+        "task_summary",
+        None,
+        state.engine.task_summary(&settings, &snapshot, workflow),
+    )
+    .await?;
     state
         .task_summaries
         .lock()
@@ -643,6 +719,21 @@ fn get_system_capabilities(state: State<'_, AppState>) -> Vec<system_settings::C
 }
 
 #[tauri::command]
+fn get_session_permissions(
+    state: State<'_, AppState>,
+) -> Result<session_permissions::View, String> {
+    session_permissions::view(&state.directory)
+}
+
+#[tauri::command]
+fn save_session_permissions(
+    state: State<'_, AppState>,
+    enabled: std::collections::BTreeMap<session_permissions::ActionId, bool>,
+) -> Result<session_permissions::View, String> {
+    session_permissions::save(&state.directory, enabled)
+}
+
+#[tauri::command]
 fn open_system_settings_pane(pane: String) -> Result<(), String> {
     let url = system_settings::settings_url(&pane)?;
     #[cfg(target_os = "macos")]
@@ -716,6 +807,12 @@ async fn confirm_system_restore(
     state.confirm_system_restore(&token).await
 }
 
+/// Model calls this session, newest first: what each was for, model, time and cost only.
+#[tauri::command]
+fn get_ai_activity(state: State<'_, AppState>) -> Vec<providers::Activity> {
+    state.engine.activity()
+}
+
 /// Where `jitterbug-run` lives, so Settings can show copy-ready MCP setup commands.
 #[tauri::command]
 fn get_agent_runner() -> Option<String> {
@@ -781,17 +878,19 @@ async fn ask(
             );
         }
     }
-    state
-        .engine
-        .chat(
+    providers::purpose(
+        "question",
+        None,
+        state.engine.chat(
             &settings,
             &snapshot,
             messages,
             workload_id.as_deref(),
             &tier,
             pid.zip(start_time),
-        )
-        .await
+        ),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1104,6 +1203,16 @@ pub fn run() {
             prioritize_monitor_chat,
             explain_monitor_profiles,
             summarize_monitor,
+            list_sessions,
+            delete_session,
+            create_session,
+            propose_session,
+            activate_session,
+            deactivate_session,
+            reapply_session,
+            restore_session,
+            get_session_permissions,
+            save_session_permissions,
             discover_managed_workload,
             discard_managed_preview,
             preview_managed_workload,
@@ -1147,6 +1256,7 @@ pub fn run() {
             confirm_system_restore,
             save_credential,
             get_agent_runner,
+            get_ai_activity,
             list_local_models,
             unload_model,
             ask,

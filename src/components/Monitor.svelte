@@ -1,16 +1,24 @@
 <script lang="ts">
     import { tick } from 'svelte';
-    import type { Snapshot, Workload, ProcessRecord, ActionReport } from '../lib/types';
+    import type {
+        Snapshot,
+        Workload,
+        ProcessRecord,
+        ActionReport,
+        AutomationCase,
+    } from '../lib/types';
     import MonitorStats from './MonitorStats.svelte';
     import Workloads from './Workloads.svelte';
     import MonitorInspector from './MonitorInspector.svelte';
     import Icon from './Icon.svelte';
+    import AiActivityLog from './AiActivityLog.svelte';
     let {
         snapshot,
         selected,
         settingsKey,
         actionBusy,
         actionReport,
+        cases = [],
         onselect,
         onclose,
         onaction,
@@ -21,6 +29,7 @@
         settingsKey: string;
         actionBusy: boolean;
         actionReport: ActionReport | null;
+        cases?: AutomationCase[];
         onselect: (workload: Workload) => void;
         onclose: () => void;
         onaction: (process: ProcessRecord, action: string) => void;
@@ -57,6 +66,9 @@
         >
     </header>
     <MonitorStats {snapshot} />
+    {#if !selected && !systemChat}<div class="monitor-activity">
+            <AiActivityLog live={snapshot.source === 'live'} {cases} />
+        </div>{/if}
     <div class="monitor-workspace" class:inspecting={!!selected || systemChat}>
         <Workloads
             {snapshot}
@@ -103,6 +115,14 @@
         min-height: 390px;
         max-width: 1600px;
         margin: 0 auto;
+    }
+    .monitor-activity {
+        flex: 0 0 auto;
+        max-height: min(260px, 30dvh);
+        overflow: auto;
+    }
+    .monitor-activity :global(.ai-activity) {
+        margin-bottom: 0;
     }
     .monitor-title {
         display: flex;

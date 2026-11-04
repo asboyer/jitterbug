@@ -47,6 +47,17 @@ impl Engine {
         settings: &Settings,
         apps: &[crate::applications::Application],
     ) -> Result<Vec<Profile>, String> {
+        let started = Instant::now();
+        let result = self.researched_profiles_once(settings, apps).await;
+        self.record_activity(&settings.intelligent, started, false, &result);
+        result.map(|(profiles, _)| profiles)
+    }
+
+    async fn researched_profiles_once(
+        &self,
+        settings: &Settings,
+        apps: &[crate::applications::Application],
+    ) -> Result<(Vec<Profile>, f64), String> {
         let tier = &settings.intelligent;
         let identities: Vec<_> = apps
             .iter()
@@ -96,13 +107,12 @@ impl Engine {
                     .map_or(1, |queries| queries.len().max(1))
             })
             .sum();
+        let mut cost = 0.10;
         if let (Some(input), Some(output)) = (input, output) {
             let (ir, or) = settings::price(tier)?;
-            self.budget.settle(
-                reservation,
-                (input as f64 * ir + output as f64 * or) / 1_000_000.0
-                    + search_count as f64 * 0.0025,
-            )?;
+            cost = (input as f64 * ir + output as f64 * or) / 1_000_000.0
+                + search_count as f64 * 0.0025;
+            self.budget.settle(reservation, cost)?;
         }
         let (text, sources) = researched_output(&value)?;
         let mut profiles = parse_profiles(&text, apps.len(), tier)?;
@@ -116,7 +126,7 @@ impl Engine {
                 .take(3)
                 .collect();
         }
-        Ok(profiles)
+        Ok((profiles, cost))
     }
 
     pub async fn monitor_answer(
@@ -468,6 +478,42 @@ fn public_url(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn app_research_keeps_the_activity_log_without_retaining_identity_data() {
+        let directory = std::env::temp_dir().join(format!(
+            "jitterbug-research-activity-test-{}",
+            std::process::id()
+        ));
+        let engine = Engine::new(&directory);
+        let settings = Settings {
+            intelligent: Tier {
+                provider: Provider::Meta,
+                model: "unpriced-model".into(),
+            },
+            ..Default::default()
+        };
+        let app = crate::applications::Application {
+            name: "Synthetic private app name".into(),
+            ..Default::default()
+        };
+        // Pricing fails before credentials, budget reservation, or a network call.
+        let result = super::super::purpose(
+            "app_explanation",
+            None,
+            engine.researched_profiles(&settings, &[app]),
+        )
+        .await;
+        assert!(result.is_err());
+        let log = engine.activity();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].purpose, "app_explanation");
+        assert!(!log[0].ok);
+        assert_eq!(log[0].cost_usd, 0.0);
+        assert!(!serde_json::to_string(&log)
+            .unwrap()
+            .contains("Synthetic private app name"));
+    }
+
     #[test]
     fn browser_context_omits_browsing_identity_and_limits_exact_process_scope() {
         let view = crate::inside::Inside {
@@ -538,12 +584,14 @@ mod tests {
                 r#"{{"text":"I can help.","action":{{"pid":{pid},"action":"{action}","reason":"Give other work room."}}}}"#
             )
         };
-        assert!(parse_answer(&reply(200, "lower_priority"), &[p.clone()])
-            .unwrap()
-            .1
-            .is_some());
+        assert!(
+            parse_answer(&reply(200, "lower_priority"), std::slice::from_ref(&p))
+                .unwrap()
+                .1
+                .is_some()
+        );
         for (pid, action) in [(201, "lower_priority"), (200, "terminate"), (200, "shell")] {
-            assert!(parse_answer(&reply(pid, action), &[p.clone()])
+            assert!(parse_answer(&reply(pid, action), std::slice::from_ref(&p))
                 .unwrap()
                 .1
                 .is_none());

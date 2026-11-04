@@ -1,4 +1,17 @@
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+
+static KEYRING: OnceLock<Mutex<HashMap<&'static str, Option<String>>>> = OnceLock::new();
+
+fn keyring_cache() -> &'static Mutex<HashMap<&'static str, Option<String>>> {
+    KEYRING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+static KEYRING_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,14 +146,40 @@ pub fn price(tier: &Tier) -> Result<(f64, f64), String> {
 }
 
 pub fn key(provider: &Provider) -> Result<String, String> {
+    if provider.local() {
+        return Err("Local providers do not use a cloud credential.".into());
+    }
     if let Ok(value) = std::env::var(provider.env()) {
         if !value.trim().is_empty() {
             return Ok(value);
         }
     }
-    keyring::Entry::new("com.jitterbug.desktop", provider.name())
-        .and_then(|entry| entry.get_password())
-        .map_err(|_| format!("No {} credential is configured.", provider.name()))
+    let name = provider.name();
+    let mut cache = keyring_cache()
+        .lock()
+        .map_err(|_| "Credential cache is unavailable.".to_string())?;
+    if let Some(cached) = cache.get(name) {
+        return cached
+            .clone()
+            .ok_or_else(|| format!("No {name} credential is configured."));
+    }
+    let value = keyring_password(provider);
+    cache.insert(name, value.as_ref().ok().cloned());
+    value
+}
+
+fn keyring_password(provider: &Provider) -> Result<String, String> {
+    #[cfg(test)]
+    {
+        KEYRING_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(format!("No {} credential is configured.", provider.name()))
+    }
+    #[cfg(not(test))]
+    {
+        keyring::Entry::new("com.jitterbug.desktop", provider.name())
+            .and_then(|entry| entry.get_password())
+            .map_err(|_| format!("No {} credential is configured.", provider.name()))
+    }
 }
 
 /// Startup only needs presence, never the secret itself. Reading password data can show an
@@ -178,7 +217,11 @@ pub fn save_key(provider: Provider, value: &str) -> Result<(), String> {
     }
     keyring::Entry::new("com.jitterbug.desktop", provider.name())
         .and_then(|entry| entry.set_password(value))
-        .map_err(|_| "The operating-system credential store rejected this key.".into())
+        .map_err(|_| "The operating-system credential store rejected this key.".to_string())?;
+    if let Ok(mut cache) = keyring_cache().lock() {
+        cache.insert(provider.name(), Some(value.into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -205,5 +248,18 @@ mod tests {
         s.budget_usd = 2.0;
         s.intelligent.model = "unpriced-model".into();
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn keyring_is_consulted_once_per_provider_per_process() {
+        if let Ok(mut cache) = keyring_cache().lock() {
+            cache.clear();
+        }
+        KEYRING_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert!(key(&Provider::Meta).is_err());
+        assert!(key(&Provider::Meta).is_err());
+        assert!(key(&Provider::Anthropic).is_err());
+        assert!(key(&Provider::Anthropic).is_err());
+        assert_eq!(KEYRING_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

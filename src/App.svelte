@@ -857,7 +857,7 @@
                     <ProviderSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
                 {/key}
             {:else if page === 'sessions'}
-                <Sessions />
+                <Sessions {desktop} />
             {:else if page === 'inbox'}
                 <div class="page-heading">
                     <div>
@@ -871,6 +871,7 @@
             {:else if snapshot && snapshot.memory_total_bytes > 0}
                 {#if page === 'monitor'}
                     <Monitor
+                        cases={visibleCases}
                         {snapshot}
                         {selected}
                         {actionBusy}

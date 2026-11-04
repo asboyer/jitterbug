@@ -21,8 +21,14 @@ async function mockSettings(page: Page) {
                         if (command === 'get_bootstrap') return structuredClone(bootstrap);
                         if (command === 'get_snapshot') return snapshot;
                         if (command === 'get_workload_icon') return null;
+                        if (command === 'get_ai_activity') return [];
                         if (command === 'get_agent_runner')
                             return '/Applications/Jitterbug/jitterbug-run';
+                        if (command === 'get_session_permissions')
+                            return {
+                                environment: { os: 'macos', version: '15.6', arch: 'arm64' },
+                                groups: [],
+                            };
                         if (command === 'get_jitter_tally') return { entries: [], sampling: true };
                         if (command === 'get_system_default_history') {
                             return { entries: [], next_cursor: null, interrupted_operations: 0 };
@@ -252,4 +258,38 @@ test('an agent asking while access is off gets a one-tap prompt', async ({ page 
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
     await page.getByRole('tab', { name: 'Integrations' }).click();
     await expect(page.getByRole('checkbox', { name: 'Allow agent access' })).toBeChecked();
+});
+
+test('Monitor lists recent model calls and links investigations to their outcome', async ({
+    page,
+}) => {
+    await page.goto('/');
+    const strip = page.locator('details.ai-activity');
+    await expect(strip.locator('summary')).toContainText('5 calls this session');
+    await expect(strip.locator('summary')).toContainText('1 failed');
+    await strip.locator('summary').click();
+    const activity = page.getByRole('region', { name: 'AI activity' });
+    const investigation = activity
+        .getByRole('listitem')
+        .filter({ hasText: 'Investigated a slowdown' });
+    await expect(investigation).toContainText('Waiting for you');
+    await expect(investigation).toContainText('Meta · muse-spark-1.3');
+    await expect(
+        activity.getByRole('listitem').filter({ hasText: 'Explained the Monitor overview' })
+    ).toContainText('No credential');
+    await page.getByRole('navigation').getByRole('button', { name: 'AI', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'AI activity' })).toHaveCount(0);
+});
+
+test('integrations offer an instruction that makes agents check before heavy work', async ({
+    page,
+}) => {
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('tab', { name: 'Integrations' }).click();
+    await page.getByText('Connect an agent', { exact: true }).click();
+    const agents = page.getByRole('region', { name: 'Agent access' });
+    await expect(agents).toContainText('Have agents check before heavy work');
+    await expect(agents).toContainText('call the jitterbug_overview tool once');
+    await expect(agents.getByRole('button', { name: 'Copy agent instruction' })).toBeVisible();
 });
