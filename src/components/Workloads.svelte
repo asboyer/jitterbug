@@ -7,6 +7,8 @@
         Snapshot,
         Workload,
         WorkloadDetails,
+        InsideView,
+        ProcessLabel,
     } from '../lib/types';
     import { memory, percent, errorMessage } from '../lib/format';
     import {
@@ -174,6 +176,26 @@
             .catch((cause) => {
                 if (active) memberError = errorMessage(cause);
             });
+        return () => {
+            active = false;
+        };
+    });
+    // A browser names its own helper processes (web content, graphics) without asking anyone.
+    let roles = $state<Record<string, ProcessLabel>>({});
+    $effect(() => {
+        const id = expanded;
+        roles = {};
+        const workload = id ? snapshot.workloads.find((w) => w.id === id) : null;
+        if (!id || workload?.category !== 'browser') return;
+        let active = true;
+        void invoke<InsideView>('get_inside_view', { workloadId: id, connect: false })
+            .then((view) => {
+                if (active)
+                    roles = Object.fromEntries(
+                        view.labels.map((l) => [`${l.pid}:${l.start_time}`, l])
+                    );
+            })
+            .catch(() => {});
         return () => {
             active = false;
         };
@@ -370,8 +392,12 @@
                                 selectedProcess.start_time === p.start_time}
                             onclick={() => onselect(row.workload, p)}
                             ><span
-                                ><strong>{p.name}</strong><small
-                                    >{processRole(p, row.workload.label)} · PID {p.pid}</small
+                                ><strong
+                                    >{roles[`${p.pid}:${p.start_time}`]?.title ?? p.name}</strong
+                                ><small
+                                    >{roles[`${p.pid}:${p.start_time}`]
+                                        ? p.name
+                                        : processRole(p, row.workload.label)} · PID {p.pid}</small
                                 ></span
                             ><span class="numeric">{percent(p.cpu_percent)}</span><span
                                 class="numeric">{memory(p.memory_bytes)}</span
