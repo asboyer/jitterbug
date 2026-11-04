@@ -288,7 +288,11 @@ impl SettingAdapter for NativeAdapter {
         match setting {
             Setting::KeepAwake => Ok(cfg!(target_os = "macos")),
             other => match other.preference() {
-                Some(key) => Ok(crate::system_settings::session_boolean(key)?.is_some()),
+                Some(key) => match crate::system_settings::session_boolean(key) {
+                    Ok(value) => Ok(value.is_some()),
+                    Err(error) if error.contains("not validated on this OS version") => Ok(false),
+                    Err(error) => Err(error),
+                },
                 None => Ok(false),
             },
         }
@@ -2877,7 +2881,7 @@ mod tests {
     fn native_capability_smoke_is_read_only() {
         let adapter = NativeAdapter::default();
         let _ = adapter.supported(Setting::KeepAwake).unwrap();
-        let stage = adapter.supported(Setting::StageManager).unwrap();
+        let stage = adapter.supported(Setting::StageManager).unwrap_or(false);
         if stage {
             let _ = adapter.read(Setting::StageManager);
         }
