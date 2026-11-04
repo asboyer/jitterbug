@@ -29,33 +29,23 @@ pub struct Profile {
     pub cached: bool,
 }
 
+/// Jitterbug's curated table (`reference`) or evidence read on this computer (`local`): bundle
+/// metadata, an Electron package, or a manual page. Without an executable identity, the
+/// workload's generic category text (`inference`). Bundle identity is OS evidence, not
+/// publisher/signature verification.
 pub fn reference(app: Option<&Application>, workload: &Workload) -> Profile {
-    // Bundle identity is OS evidence, not publisher/signature verification.
-    let known = app.and_then(|app| match app.identifier.as_deref()? {
-        "com.jitterbug.desktop" => Some("Jitterbug explains what is running on your computer and helps you manage its resource use."),
-        "com.spotify.client" => Some("Spotify streams music, podcasts and audiobooks."),
-        "com.apple.Safari" | "com.google.Chrome" | "org.mozilla.firefox" | "com.microsoft.edgemac" | "company.thebrowser.Browser" => Some("This web browser loads websites and runs tabs, extensions and graphics in separate processes."),
-        "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92" => Some("This code editor provides tools for writing, checking and running software."),
-        "com.apple.Terminal" | "com.googlecode.iterm2" | "com.mitchellh.ghostty" => Some("This terminal runs command-line sessions, including servers, builds and development tools."),
-        "com.apple.finder" => Some("Finder lets you browse, organize and move files on your Mac."),
-        "com.apple.WindowManager" | "com.apple.dock" => Some("This macOS component manages windows or the Dock."),
-        "com.tinyspeck.slackmacgap" | "com.hnc.Discord" => Some("This messaging app provides conversations, calls and shared media."),
-        "ai.ollama.ollama" => Some("Ollama runs AI language models directly on your computer."),
-        _ => None,
-    });
+    let (text, source) = match app {
+        Some(app) => crate::identity::describe(app),
+        None => (workload.description.clone(), "inference"),
+    };
     Profile {
         sources: vec![],
-        text: known.unwrap_or(&workload.description).into(),
-        source: if known.is_some() {
-            "reference"
-        } else {
-            "inference"
-        }
-        .into(),
+        text,
+        source: source.into(),
         provider: None,
         model: None,
         generated_at: None,
-        cached: known.is_some(),
+        cached: source == "reference",
     }
 }
 
@@ -64,7 +54,7 @@ pub fn key(app: &Application) -> String {
     // Schema, install identity, and version prevent cross-app/stale-version reuse.
     let modified = std::fs::metadata(&app.path).and_then(|m| m.modified()).ok();
     (
-        5u32,
+        6u32,
         &app.path,
         &app.executable_name,
         &app.identifier,
@@ -79,8 +69,20 @@ pub fn key(app: &Application) -> String {
 /// working directories, parent chains, and live diagnoses are never cached here.
 pub fn model_payload(app: &Application) -> serde_json::Value {
     let purpose = reference(Some(app), &Workload::default());
+    let evidence = crate::identity::evidence(app);
     serde_json::json!({
         "known_purpose": (purpose.source == "reference").then_some(purpose.text),
+        // Read from the bundle on this computer. Untrusted, but it names the real product when
+        // an app reuses another vendor's bundle identifier prefix.
+        "local_evidence": {
+            "package_product_name": evidence.package_name,
+            "package_description": evidence.package_description,
+            "package_author": evidence.package_author,
+            "app_category": evidence.app_category,
+            "copyright_holder": evidence.vendor,
+            "manual_summary": evidence.manual_summary,
+            "built_on_electron": evidence.electron,
+        },
         "name": app.name,
         "executable": app.executable_name,
         "component": app.component,
@@ -199,10 +201,11 @@ mod tests {
         app.version = Some("2".into());
         assert_ne!(key(&app), old);
         app.identifier = None;
-        assert_eq!(
-            reference(Some(&app), &Workload::default()).source,
-            "inference"
-        );
+        let local = reference(Some(&app), &Workload::default());
+        assert_eq!(local.source, "local");
+        assert!(!local.text.contains("Spotify streams"));
+        assert!(!local.text.contains("unavailable"));
+        assert_eq!(reference(None, &Workload::default()).source, "inference");
     }
     #[test]
     fn cache_is_bounded_and_expired_descriptions_are_discarded() {

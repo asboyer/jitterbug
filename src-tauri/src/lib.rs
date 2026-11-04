@@ -17,6 +17,7 @@ pub mod diagnostics;
 mod floating;
 pub mod governor;
 pub mod harness;
+pub mod identity;
 #[cfg(target_os = "macos")]
 mod idle_sleep;
 pub mod inside;
