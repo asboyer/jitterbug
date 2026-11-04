@@ -1,5 +1,6 @@
-//! One-click agent setup: registers `jitterbug-run control-mcp` with Claude Code and Codex,
-//! and adds the `pressure-hint` hook to Claude Code, so a person never has to paste commands.
+//! One-click agent setup: registers `jitterbug-run control-mcp` with Claude Code, Codex and
+//! Muse Code, and adds the `pressure-hint` hook to Claude Code, so a person never has to paste
+//! commands. Muse Code takes the server as a small local plugin installed through its own CLI.
 //!
 //! Claude Code's MCP list lives in `~/.claude.json`, which running sessions rewrite, so it is
 //! changed only through `claude mcp add|remove --scope user`. The hook goes into
@@ -39,6 +40,11 @@ pub struct Places {
     pub codex_dir: PathBuf,
     pub claude_cli: Option<PathBuf>,
     pub codex_cli: Option<PathBuf>,
+    pub muse_cli: Option<PathBuf>,
+    /// Muse Code's data folder, where it records installed plugins.
+    pub muse_data: PathBuf,
+    /// Where Jitterbug writes the plugin bundle Muse Code installs from.
+    pub muse_bundle: PathBuf,
 }
 
 impl Places {
@@ -60,6 +66,13 @@ impl Places {
             codex_dir: env_dir("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             claude_cli: find_cli(&home, "claude"),
             codex_cli: find_cli(&home, "codex"),
+            muse_cli: find_cli(&home, "muse"),
+            muse_data: env_dir("XDG_DATA_HOME")
+                .unwrap_or_else(|| home.join(".local/share"))
+                .join("muse"),
+            muse_bundle: dirs::data_dir()
+                .ok_or("Cannot locate the application data folder.")?
+                .join("com.jitterbug.desktop/muse-control-plugin"),
         })
     }
 }
@@ -299,6 +312,84 @@ fn set_codex(places: &Places, runner: Option<&Path>) -> Result<(), String> {
     write_atomic(&codex_config(places), &doc.to_string())
 }
 
+/// The plugin manifest that gives Muse Code the control server, and nothing else.
+fn muse_manifest(runner: &Path) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "name": SERVER,
+        "version": "0.1.0",
+        "description": "Lets agents ask Jitterbug how busy this computer is before heavy work.",
+        "compat": {"source": "native", "manifestDir": ".muse-plugin"},
+        "capabilities": {
+            "skills": [], "commands": [], "reminders": [], "hooks": [],
+            "mcpServers": [{"id": SERVER, "command": [runner.display().to_string(), "control-mcp"]}]
+        }
+    })
+}
+
+/// Muse Code's record of the installed plugin, when there is one.
+fn muse_installed(places: &Places) -> Option<Value> {
+    let record = read_json(&places.muse_data.join("plugins/installed.json")).ok()?;
+    let plugin = &record["plugins"][SERVER];
+    (!plugin.is_null()).then(|| plugin.clone())
+}
+
+/// Installed, enabled, and its cached copy starts this app's launcher.
+fn muse_registered(places: &Places, runner: &Path) -> bool {
+    let Some(plugin) = muse_installed(places).filter(|p| p["enabled"] != false) else {
+        return false;
+    };
+    let Some(cache) = plugin["cache_path"].as_str().filter(|c| !c.contains("..")) else {
+        return false;
+    };
+    read_json(
+        &places
+            .muse_data
+            .join(cache)
+            .join(".muse-plugin/plugin.json"),
+    )
+    .is_ok_and(|manifest| manifest == muse_manifest(runner))
+}
+
+fn set_muse(places: &Places, runner: Option<&Path>) -> Result<(), String> {
+    let installed = muse_installed(places).is_some();
+    let Some(runner) = runner else {
+        if installed {
+            let cli = places
+                .muse_cli
+                .as_deref()
+                .ok_or("Muse Code's `muse` command was not found.")?;
+            run_cli(cli, &["plugins", "remove", SERVER, "--json"])?;
+        }
+        return Ok(());
+    };
+    let cli = places
+        .muse_cli
+        .as_deref()
+        .ok_or("Muse Code's `muse` command was not found. Install Muse Code, or set up by hand.")?;
+    let manifest =
+        serde_json::to_string_pretty(&muse_manifest(runner)).map_err(|e| e.to_string())?;
+    write_atomic(
+        &places.muse_bundle.join(".muse-plugin/plugin.json"),
+        &(manifest + "\n"),
+    )?;
+    let bundle = places
+        .muse_bundle
+        .to_str()
+        .ok_or("The plugin path must be UTF-8.")?;
+    if installed {
+        run_cli(cli, &["plugins", "update", SERVER, "--json"])?;
+    } else {
+        run_cli(
+            cli,
+            &["plugins", "install", bundle, "--scope", "user", "--json"],
+        )?;
+    }
+    // Trust the server so Muse Code does not ask again before its first use.
+    run_cli(cli, &["plugins", "approve", SERVER, "--json"]).ok();
+    Ok(())
+}
+
 fn run_cli(cli: &Path, args: &[&str]) -> Result<(), String> {
     // npm installs are `#!/usr/bin/env node` scripts; give them the folder they came from.
     let mut path = cli
@@ -365,6 +456,13 @@ pub fn status(places: &Places, runner: Option<&Path>) -> Vec<Client> {
             mcp: runner.is_some_and(|r| codex_registered(places, r)),
             hint: None,
         },
+        Client {
+            id: "muse",
+            label: "Muse Code",
+            installed: places.muse_cli.is_some(),
+            mcp: runner.is_some_and(|r| muse_registered(places, r)),
+            hint: None,
+        },
     ]
 }
 
@@ -412,6 +510,7 @@ pub fn connect(places: &Places, runner: &Path, id: &str) -> Result<(), String> {
             set_hint(places, Some(runner))
         }
         "codex" => set_codex(places, Some(runner)),
+        "muse" => set_muse(places, Some(runner)),
         _ => Err("Unknown agent.".into()),
     }
 }
@@ -431,6 +530,7 @@ pub fn disconnect(places: &Places, id: &str) -> Result<(), String> {
             Ok(())
         }
         "codex" => set_codex(places, None),
+        "muse" => set_muse(places, None),
         _ => Err("Unknown agent.".into()),
     }
 }
@@ -446,7 +546,39 @@ mod tests {
             codex_dir: root.join(".codex"),
             claude_cli: None,
             codex_cli: None,
+            muse_cli: None,
+            muse_data: root.join("muse"),
+            muse_bundle: root.join("bundle"),
         }
+    }
+
+    #[test]
+    fn muse_counts_as_connected_only_when_its_cached_plugin_starts_this_launcher() {
+        let root = temp("muse");
+        let p = places(&root);
+        let runner = Path::new("/Applications/Jitterbug.app/Contents/MacOS/jitterbug-run");
+        assert!(!muse_registered(&p, runner));
+        let cache = "plugins/cache/local/jitterbug-control/abc/package";
+        std::fs::create_dir_all(p.muse_data.join(cache).join(".muse-plugin")).unwrap();
+        std::fs::write(
+            p.muse_data.join("plugins/installed.json"),
+            json!({"plugins":{SERVER:{"enabled":true,"cache_path":cache}}}).to_string(),
+        )
+        .unwrap();
+        let manifest = p.muse_data.join(cache).join(".muse-plugin/plugin.json");
+        std::fs::write(&manifest, muse_manifest(runner).to_string()).unwrap();
+        assert!(muse_registered(&p, runner));
+        assert!(!muse_registered(&p, Path::new("/elsewhere/jitterbug-run")));
+        let client = status(&p, Some(runner))
+            .into_iter()
+            .find(|c| c.id == "muse")
+            .unwrap();
+        assert!(client.mcp && !client.installed && client.connected());
+        // Without the CLI there is nothing to run, but setup says so instead of guessing.
+        assert!(connect(&p, runner, "muse")
+            .unwrap_err()
+            .contains("not found"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn temp(name: &str) -> PathBuf {
