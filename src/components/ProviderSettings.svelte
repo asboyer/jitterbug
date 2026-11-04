@@ -2,6 +2,7 @@
     import '../settings.css';
     import Icon from './Icon.svelte';
     import AiSettings from './AiSettings.svelte';
+    import AiActivityLog from './AiActivityLog.svelte';
     import notices from '../../THIRD_PARTY_NOTICES.md?raw';
     import AutomationSettings from './AutomationSettings.svelte';
     import SettingsPermissions from './SettingsPermissions.svelte';
@@ -84,7 +85,8 @@
                 section={section === 'integrations' ? 'connections' : 'assistance'}
                 visible={section === 'assistance' || section === 'integrations'}
             />
-            {#if section === 'ai'}<AiSettings {bootstrap} {desktop} {onrefresh} />{/if}
+            {#if section === 'ai'}<AiSettings {bootstrap} {desktop} {onrefresh} />
+                <AiActivityLog live={desktop} cases={bootstrap.automation_cases} />{/if}
             <div hidden={section !== 'system'}>
                 <SettingsPermissions {desktop} />
                 <details class="preference-detail">

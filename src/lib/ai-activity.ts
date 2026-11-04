@@ -2,6 +2,8 @@ import type { AgentCall, AiActivity, AutomationCase, AutomationStage } from './t
 
 const purposes: Record<string, string> = {
     question: 'Answered your question',
+    scene: 'Read what your Mac is doing',
+    search: 'Searched running apps in your words',
     monitor: 'Explained the Monitor overview',
     app_explanation: 'Explained an app',
     investigation: 'Investigated a slowdown',
