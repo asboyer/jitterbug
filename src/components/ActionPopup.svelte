@@ -1,9 +1,8 @@
 <script lang="ts">
-    import { onMount, untrack } from 'svelte';
+    import { onMount } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import Icon from './Icon.svelte';
-    import { demoActionPopup } from '../lib/demo';
     import { errorMessage } from '../lib/format';
     import {
         actionResult,
@@ -19,26 +18,15 @@
         stopLabel,
         stopWarning,
     } from '../lib/incidents';
-    import type {
-        ActionPopupCase,
-        ActionPopupOption,
-        ActionPopupPayload,
-        AutomationStage,
-    } from '../lib/types';
+    import type { ActionPopupPayload, AutomationStage } from '../lib/types';
 
-    // A preset renders one fixed example (the Lab's gallery): played locally, never applied.
+    // Accept only native live events. Browser previews never manufacture action results.
     let { preset = null }: { preset?: ActionPopupPayload | null } = $props();
-    const fixed = untrack(() => preset);
-    const desktop = isTauri() && !fixed;
+    const desktop = isTauri();
     const finished: AutomationStage[] = ['completed', 'resolved', 'blocked'];
-    let payload = $state<ActionPopupPayload | null>(
-        fixed ??
-            (desktop ? null : demoActionPopup(new URLSearchParams(location.search).get('example')))
-    );
+    let payload = $state<ActionPopupPayload | null>(null);
     const capture = $derived(payload?.kind === 'capturing' ? payload : null);
     const popup = $derived(payload?.kind === 'case' ? payload : null);
-    // Synthetic cases never reach an action command; their progress is played locally.
-    let example = $state<ActionPopupCase | null>(null);
     let busy = $state(false);
     let error = $state('');
     let hovering = $state(false);
@@ -49,7 +37,7 @@
     // Undo moved the app this result put in Background back to Normal.
     let restored = $state(false);
     let timers: ReturnType<typeof setTimeout>[] = [];
-    const shown = $derived(example && example.id === popup?.id ? example : popup);
+    const shown = $derived(popup);
     const asking = $derived(shown?.stage === 'awaiting_approval');
     const analyzing = $derived(shown?.stage === 'detected' || shown?.stage === 'investigating');
     const working = $derived(
@@ -123,9 +111,9 @@
         };
     });
     function receive(next: ActionPopupPayload | null) {
+        if (next?.kind === 'case' && next.source !== 'live') return;
         if (next?.id !== payload?.id) {
             error = '';
-            example = null;
             confirming = confirmingFallback = false;
             restored = false;
             stopTimers();
@@ -144,7 +132,6 @@
     async function close(id = shown?.id) {
         if (id === undefined) return;
         stopTimers();
-        example = null;
         if (!desktop) {
             payload = null;
             return;
@@ -166,10 +153,7 @@
     async function apply() {
         if (!shown || !asking || busy) return;
         error = '';
-        if (shown.source !== 'live') {
-            playExample(shown);
-            return;
-        }
+        if (shown.source !== 'live') return;
         busy = true;
         try {
             // The stored proposal is rechecked against fresh process identity before acting;
@@ -184,10 +168,7 @@
     async function restore() {
         if (!undo || !shown || busy) return;
         error = '';
-        if (shown?.source !== 'live') {
-            restored = true;
-            return;
-        }
+        if (shown.source !== 'live') return;
         busy = true;
         try {
             // Moves the app back to Normal; each process is rechecked before it changes.
@@ -222,10 +203,7 @@
         }
         confirming = confirmingFallback = false;
         error = '';
-        if (shown.source !== 'live') {
-            playStopExample(shown, option);
-            return;
-        }
+        if (shown.source !== 'live') return;
         busy = true;
         try {
             // Only the offered process is stopped, after fresh identity and policy rechecks.
@@ -235,69 +213,6 @@
         } finally {
             busy = false;
         }
-    }
-    function playStopExample(base: ActionPopupCase, option: ActionPopupOption) {
-        stopTimers();
-        example = { ...base, proposal: option, stage: 'applying' };
-        timers.push(
-            setTimeout(() => {
-                example = {
-                    ...base,
-                    proposal: option,
-                    stage: 'completed',
-                    report: {
-                        fresh: true,
-                        after: null,
-                        action: option.action,
-                        process: option.unit?.title ?? option.process.name,
-                        cpu_before: option.process.cpu_percent,
-                        cpu_after: null,
-                        memory_before: option.process.memory_bytes,
-                        memory_after: null,
-                    },
-                    verification: {
-                        priority_verified: false,
-                        system_cpu_before: 62,
-                        system_cpu_after: 18,
-                        available_memory_before: 4.1 * 1024 ** 3,
-                        available_memory_after: 7.3 * 1024 ** 3,
-                    },
-                };
-            }, 1500)
-        );
-    }
-    function playExample(base: ActionPopupCase) {
-        stopTimers();
-        example = { ...base, stage: 'applying' };
-        timers.push(
-            setTimeout(() => {
-                example = { ...base, stage: 'verifying' };
-            }, 1000),
-            setTimeout(() => {
-                example = {
-                    ...base,
-                    stage: 'completed',
-                    report: {
-                        fresh: true,
-                        after: true,
-                        action: 'lower_priority',
-                        process: base.proposal?.process.name ?? 'the process',
-                        cpu_before: 12.5,
-                        cpu_after: 12.4,
-                        memory_before: base.proposal?.process.memory_bytes ?? 0,
-                        memory_after: base.proposal?.process.memory_bytes ?? 0,
-                        undo: true,
-                    },
-                    verification: {
-                        priority_verified: true,
-                        system_cpu_before: 24,
-                        system_cpu_after: 23,
-                        available_memory_before: 8 * 1024 ** 3,
-                        available_memory_after: 8 * 1024 ** 3,
-                    },
-                };
-            }, 2500)
-        );
     }
 </script>
 
@@ -326,9 +241,7 @@
     >
         <header>
             <span class="bug-mark" class:working><Icon name="bug" size={16} /></span>
-            <span class="name"
-                >Jitterbug <small>{shown.source === 'live' ? 'LIVE' : 'EXAMPLE'}</small></span
-            >
+            <span class="name">Jitterbug <small>LIVE</small></span>
             {#if badge}<span class="more">{badge}</span>{/if}
             {#if shown.more > 0}<span class="more">+{shown.more} more</span>{/if}
             <button
@@ -421,8 +334,6 @@
         {/if}
         {#if error}<p class="error" role="alert" title={error}>
                 {error}
-            </p>{:else if asking && shown.source !== 'live'}<p class="note">
-                Example only. Nothing will be applied.
             </p>{/if}
         <div class="actions">
             <span class="links">
@@ -445,7 +356,7 @@
         display: flex;
         flex-direction: column;
         padding: 12px 14px;
-        border: 1px solid var(--border);
+        border: 0;
         border-radius: 12px;
         background: color-mix(in srgb, var(--panel) 87%, transparent);
         overflow: hidden;
@@ -486,7 +397,7 @@
         margin-left: 6px;
     }
     .more {
-        font-size: 10px;
+        font-size: 11px;
         letter-spacing: 0;
         padding: 1px 7px;
         border-radius: 9px;
@@ -639,7 +550,7 @@
     .note,
     .error {
         margin-top: 4px;
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
     }
     .error {

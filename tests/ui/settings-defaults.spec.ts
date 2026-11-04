@@ -190,7 +190,8 @@ test('persistent-only scope distinguishes hardware observations from restorable 
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     await defaults.getByText('What to save', { exact: true }).click();
     await expect(
@@ -209,7 +210,8 @@ test('automatic hardware executors are selectable and disclose interruption and 
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     await defaults.getByText('What to save', { exact: true }).click();
     for (const group of ['Audio hardware', 'Displays', 'Power profiles']) {
@@ -235,7 +237,8 @@ test('baseline actions stay on set default and rollback', async ({ page }) => {
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     await expect(defaults.getByRole('button', { name: /grant|authorize/i })).toHaveCount(0);
     await expect(defaults.getByRole('button', { name: 'Set Default' })).toBeVisible();
@@ -248,7 +251,8 @@ test('capture selection is explicit and saved preference previews disclose verif
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     await defaults.getByText('What to save', { exact: true }).click();
     for (const group of [
@@ -285,7 +289,8 @@ test('system baseline has explicit native scope and exact confirmed rollback', a
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     await expect(defaults).toContainText('Save how this PC is set up');
     await expect(defaults).not.toContainText('Included');
@@ -328,7 +333,8 @@ test('history pagination and repeated captures keep modal DOM bounded', async ({
     await page.setViewportSize({ width: 760, height: 560 });
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     for (let index = 0; index < 25; index += 1) {
         await defaults.getByRole('button', { name: 'Set Default' }).click();
@@ -361,7 +367,8 @@ test('partial native readback failure is explicit and never presented as success
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     await page.getByRole('button', { name: 'View past defaults' }).click();
     const history = page.getByRole('dialog');
     await history.getByRole('button', { name: 'Load older defaults' }).click();
@@ -375,21 +382,12 @@ test('partial native readback failure is explicit and never presented as success
     await expect(history).toContainText('readback mismatch');
 });
 
-test('browser preview is nonpersistent and modal closes accessibly', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
-    const defaults = page.getByRole('region', { name: 'System settings baseline' });
-    await expect(defaults).toContainText('Preview only');
-    await expect(defaults).toContainText('nothing is stored or restored');
-    await expect(defaults.getByRole('button', { name: 'Set Default' })).toBeDisabled();
-});
-
 test('history opens without inline growth and Escape restores trigger focus', async ({ page }) => {
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     const defaults = page.getByRole('region', { name: 'System settings baseline' });
     await defaults.scrollIntoViewIfNeeded();
     const before = await defaults.boundingBox();
@@ -410,7 +408,8 @@ test('current baseline rollback opens the confirmation before accessing its dial
     await mockDesktop(page);
     await page.goto('/');
     await page.getByRole('navigation').getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'System', exact: true }).click();
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    await page.getByText('Saved system settings', { exact: true }).click();
     await page
         .getByRole('region', { name: 'System settings baseline' })
         .getByRole('button', { name: /Rollback current system baseline/ })

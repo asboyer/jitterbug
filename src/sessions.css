@@ -92,7 +92,6 @@
 }
 .sessions-library-header {
     padding: 16px 16px 13px;
-    border-bottom: 1px solid var(--border);
 }
 .sessions-library-header h2,
 .sessions-library-header p,
@@ -103,7 +102,7 @@
 .sessions-library-header p {
     margin-top: 4px;
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
 }
 .session-list {
     display: grid;
@@ -164,9 +163,9 @@
     align-items: flex-start;
     gap: 9px;
     padding: 13px 15px;
-    border-top: 1px solid var(--border);
+
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.5;
 }
 .session-workspace {
@@ -179,11 +178,7 @@
     align-items: center;
     gap: 20px;
     padding: 19px;
-    background: linear-gradient(
-        145deg,
-        var(--panel),
-        color-mix(in srgb, var(--panel) 92%, var(--accent-soft))
-    );
+    background: var(--control);
 }
 .session-hero-main {
     min-width: 0;
@@ -217,7 +212,7 @@
     border-radius: 999px;
     color: var(--muted);
     background: var(--hover);
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 650;
 }
 .session-state.active {
@@ -280,7 +275,7 @@
     gap: 7px;
     margin-bottom: 9px;
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
 }
 .session-pressure-line > span {
     width: 7px;
@@ -309,7 +304,7 @@
 }
 .session-card-heading > span {
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
 }
 .session-chart {
@@ -319,17 +314,13 @@
     gap: 6px;
     padding: 16px 12px 4px;
     border-radius: 10px;
-    background: linear-gradient(to bottom, var(--accent-subtle), transparent);
+    background: var(--control);
 }
 .session-chart i {
     flex: 1;
     min-width: 4px;
     border-radius: 4px 4px 2px 2px;
-    background: linear-gradient(
-        to top,
-        var(--accent),
-        color-mix(in srgb, var(--accent) 52%, white)
-    );
+    background: var(--control);
     opacity: 0.82;
 }
 .session-chart-legend {
@@ -337,7 +328,7 @@
     justify-content: space-between;
     margin-top: 10px;
     color: var(--muted);
-    font-size: 9px;
+    font-size: 11px;
 }
 .session-chart-legend span:first-child {
     display: inline-flex;
@@ -358,7 +349,6 @@
     align-items: center;
     gap: 10px;
     min-height: 48px;
-    border-top: 1px solid var(--border);
 }
 .focus-list > div:first-child {
     border-top: 0;
@@ -372,7 +362,7 @@
     border-radius: 8px;
     color: var(--accent);
     background: var(--accent-soft);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
 }
 .focus-list > div > div {
@@ -388,7 +378,6 @@
     align-items: center;
     gap: 10px;
     padding-top: 12px;
-    border-top: 1px solid var(--border);
 }
 .session-history-row > div,
 .history-result {
@@ -440,7 +429,7 @@
 }
 .session-template > em {
     color: var(--accent);
-    font-size: 10px;
+    font-size: 11px;
     font-style: normal;
     font-weight: 650;
 }
@@ -469,7 +458,7 @@
 }
 .sessions-composer label > span {
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 450;
 }
 .sessions-composer textarea {
@@ -484,7 +473,7 @@
     border-radius: 9px;
     color: var(--accent);
     background: var(--accent-subtle);
-    font-size: 10px;
+    font-size: 11px;
 }
 @media (hover: hover) {
     .session-template:hover,
@@ -574,7 +563,6 @@
     justify-content: space-between;
     gap: 18px;
     padding-bottom: 20px;
-    border-bottom: 1px solid var(--border);
 }
 .session-profile-head h2 {
     margin: 8px 0 5px;
@@ -629,7 +617,7 @@
 .session-config-card p,
 .session-config-card small {
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.5;
 }
 .session-config-list {
@@ -645,7 +633,7 @@
     border-radius: 8px;
     color: var(--success);
     background: var(--success-soft);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 650;
 }
 .session-settings-list {
@@ -658,7 +646,6 @@
     grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr);
     gap: 12px;
     padding: 9px 0;
-    border-bottom: 1px solid var(--border);
 }
 .session-settings-list dt {
     margin: 0;
@@ -684,7 +671,6 @@
     display: grid;
     gap: 4px;
     padding: 11px 0;
-    border-bottom: 1px solid var(--border);
 }
 .session-evidence strong,
 .session-run strong {
@@ -694,15 +680,15 @@
 .session-evidence span,
 .session-run span {
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.5;
 }
 .session-log {
     margin-top: 22px;
     padding-top: 14px;
-    border-top: 1px solid var(--border);
+
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
 }
 .session-log summary {
     cursor: pointer;
@@ -715,7 +701,7 @@
     align-items: flex-start;
     gap: 10px !important;
     padding: 12px;
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 10px;
 }
 .session-action-option input {
@@ -748,4 +734,48 @@
         width: 100%;
         justify-content: center;
     }
+}
+
+.session-first-use {
+    padding: 32px;
+    background: var(--panel);
+    border-radius: 8px;
+    max-width: 680px;
+}
+.session-first-use svg {
+    color: var(--muted);
+}
+.session-first-use h2 {
+    margin: 18px 0 8px;
+    font-size: 18px;
+}
+.session-first-use p {
+    color: var(--muted);
+    max-width: 56ch;
+    margin: 0;
+    font-size: 13px;
+}
+.sessions-composer .composer-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 24px;
+}
+.sessions-composer .composer-intro {
+    font-size: 13px;
+    margin: 16px 0 24px;
+    line-height: 1.6;
+    color: var(--muted);
+}
+.sessions-composer label {
+    display: grid;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 400;
+    margin: 16px 0;
+}
+.sessions-composer input,
+.sessions-composer textarea {
+    font-weight: 400;
+    font-size: 13px;
 }

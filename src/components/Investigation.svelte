@@ -72,7 +72,7 @@
         margin-top: 18px;
         padding: 12px 0 0;
         border: 0;
-        border-top: 1px solid var(--border);
+
         background: transparent;
         border-radius: 0;
         font-size: 11px;
@@ -97,7 +97,7 @@
         gap: 6px;
     }
     small {
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
     }
     .evidence-readings strong {
@@ -115,7 +115,7 @@
     }
     .process-reading span {
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
     }
     .process-actions {
         display: flex;

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { listen } from '@tauri-apps/api/event';
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import type { OptimizedSession, OptimizedSettingState } from '../lib/types';
     import { sessionClient } from '../lib/sessions';
     import Icon from './Icon.svelte';
@@ -10,6 +10,10 @@
     let sessions = $state<OptimizedSession[]>([]);
     let selectedId = $state('');
     let composerOpen = $state(false);
+    let nameInput: HTMLInputElement | undefined = $state();
+    $effect(() => {
+        if (composerOpen) void tick().then(() => nameInput?.focus());
+    });
     let name = $state('');
     let goal = $state('');
     let busy = $state(false);
@@ -186,16 +190,17 @@
     }
 </script>
 
+<svelte:window
+    onkeydown={(event) => {
+        if (event.key === 'Escape' && !busy) composerOpen = false;
+    }}
+/>
+
 <div class="sessions-page sessions-simple">
     <header class="sessions-heading">
         <div>
-            <p class="eyebrow">REUSABLE OPTIMIZATION PROFILES</p>
             <h1>Sessions</h1>
-            <p class="muted">
-                Learn and cache a safe configuration for work you repeat, then restore it with one
-                confirmation. Enable rights in Settings → System first; without them, Sessions stay
-                monitor-only.
-            </p>
+            <p class="muted">Save a resource configuration for the work you repeat.</p>
         </div>
         <button
             class="primary sessions-new"
@@ -204,15 +209,6 @@
         >
     </header>
 
-    <div class="sessions-preview-note" role="status">
-        <Icon name="info" size={16} />
-        <div>
-            <strong>Safe by design</strong><span
-                >Jitterbug tests only fixed, reversible settings with native readback. Freeform
-                descriptions are never executed. Unsupported goals remain monitor-only.</span
-            >
-        </div>
-    </div>
     {#if notice}<div class="sessions-notice" role="status">
             <span>{notice}</span><button
                 class="icon-button"
@@ -229,6 +225,15 @@
         </div>{/if}
 
     {#if loading}<div class="panel sessions-empty">Loading optimization profiles…</div>
+    {:else if !sessions.length}
+        <section class="session-first-use">
+            <Icon name="activity" size={24} />
+            <h2>No saved sessions</h2>
+            <p>
+                Create a profile for work you repeat, such as a long coding session. Review the
+                proposed settings before applying them.
+            </p>
+        </section>
     {:else}
         <div class="session-profile-layout">
             <aside class="panel session-profile-library">
@@ -484,7 +489,6 @@
         >
             <div class="session-card-heading">
                 <div>
-                    <p class="eyebrow">NEW OPTIMIZATION PROFILE</p>
                     <h2 id="session-composer-title">What task do you repeat?</h2>
                 </div>
                 <button
@@ -494,22 +498,22 @@
                 >
             </div>
             <p class="composer-intro">
-                Name the real activity and describe what matters. Your configured intelligent AI
-                provider proposes one supported profile; Jitterbug never turns your text into
-                commands.
+                Describe the work and what you want to improve. Jitterbug suggests settings you can
+                review.
             </p>
             <label
                 >Profile name<input
+                    bind:this={nameInput}
                     bind:value={name}
                     maxlength="80"
-                    placeholder="Nightly video export"
+                    placeholder="Parallel coding session"
                 /></label
             ><label
-                >Optimization goal<textarea
+                >What should improve?<textarea
                     bind:value={goal}
                     maxlength="480"
                     rows="5"
-                    placeholder="Keep the export reliable while I continue light work."
+                    placeholder="Keep the computer responsive while my coding agents run tests."
                 ></textarea></label
             >
             <div class="composer-actions">
@@ -518,7 +522,7 @@
                     class="primary"
                     onclick={create}
                     disabled={busy || !name.trim() || !goal.trim()}
-                    >{busy ? 'Asking AI…' : 'Create AI profile'}</button
+                    >{busy ? 'Asking AI…' : 'Create profile'}</button
                 >
             </div>
         </div>

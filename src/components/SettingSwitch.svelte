@@ -36,9 +36,6 @@
         padding: 12px 0;
         cursor: pointer;
     }
-    :global(.setting-switch) + .setting-switch {
-        border-top: 1px solid var(--border);
-    }
     .switch-copy {
         display: grid;
         gap: 5px;

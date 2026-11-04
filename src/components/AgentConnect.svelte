@@ -14,11 +14,6 @@
         onconnect?: () => void | Promise<void>;
     } = $props();
 
-    // Preview data for the browser build.
-    const preview: AgentClient[] = [
-        { id: 'claude', label: 'Claude Code', installed: true, mcp: false, hint: false },
-        { id: 'codex', label: 'Codex', installed: true, mcp: false, hint: null },
-    ];
     let clients = $state<AgentClient[] | null>(null);
     let busy = $state('');
     let error = $state('');
@@ -27,7 +22,7 @@
 
     onMount(() => {
         if (!desktop) {
-            clients = structuredClone(preview);
+            clients = [];
             return;
         }
         void invoke<AgentClient[]>('agent_clients')
@@ -36,21 +31,14 @@
     });
 
     async function change(client: AgentClient, connect: boolean) {
+        if (!desktop) return;
         busy = client.id;
         error = '';
         try {
-            if (desktop) {
-                clients = await invoke<AgentClient[]>(
-                    connect ? 'connect_agent_client' : 'disconnect_agent_client',
-                    { id: client.id }
-                );
-            } else {
-                clients = (clients ?? []).map((c) =>
-                    c.id === client.id
-                        ? { ...c, mcp: connect, hint: c.hint === null ? null : connect }
-                        : c
-                );
-            }
+            clients = await invoke<AgentClient[]>(
+                connect ? 'connect_agent_client' : 'disconnect_agent_client',
+                { id: client.id }
+            );
             if (connect) await onconnect?.();
         } catch (cause) {
             error = errorMessage(cause);

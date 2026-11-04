@@ -2,7 +2,6 @@
     import { onMount } from 'svelte';
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-    import { demoSnapshot } from '../lib/demo';
     import { errorMessage, memory, percent } from '../lib/format';
     import type { Snapshot } from '../lib/types';
     import Icon from './Icon.svelte';
@@ -11,7 +10,7 @@
     import HeldAgents from './HeldAgents.svelte';
 
     const desktop = isTauri();
-    let snapshot: Snapshot | null = $state(desktop ? null : demoSnapshot());
+    let snapshot: Snapshot | null = $state(null);
     let error = $state('');
     let capture = $state('');
     const shortcut = navigator.userAgent.includes('Mac') ? '⌘⇧J' : 'Ctrl+Shift+J';
@@ -159,6 +158,6 @@
     {:else}<p class="empty">Collecting a fresh sample…</p>{/if}
     <footer>
         <button onclick={() => open('hub')}>Open Jitterbug <span aria-hidden="true">↗</span></button
-        ><small>{desktop ? 'Click a workload to investigate' : 'Synthetic preview'}</small>
+        ><small>Click a workload to investigate</small>
     </footer>
 </div>

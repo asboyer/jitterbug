@@ -21,7 +21,6 @@ pub mod harness;
 mod idle_sleep;
 pub mod inside;
 pub mod jitter;
-mod lab;
 pub mod monitor;
 pub mod optimized_sessions;
 pub mod origins;
@@ -1232,15 +1231,6 @@ async fn undo_background(
     result
 }
 
-#[tauri::command]
-fn simulate_pressure(app: tauri::AppHandle) -> Result<(), String> {
-    publish_automation_case(
-        &app,
-        "demo-pressure-case",
-        &automation::simulated_case(types::now())?,
-    )
-}
-
 fn publish_automation_case(
     app: &tauri::AppHandle,
     event: &str,
@@ -1385,8 +1375,6 @@ pub fn run() {
                     }
                 })?;
             desktop::install(app)?;
-            #[cfg(debug_assertions)]
-            lab::open(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1482,7 +1470,6 @@ pub fn run() {
             unload_model,
             ask,
             process_action,
-            simulate_pressure,
             save_automation_policy,
             snooze_automation,
             dismiss_automation_case,
@@ -1499,8 +1486,6 @@ pub fn run() {
             popup::get_action_popup,
             popup::close_action_popup,
             popup::open_action_case,
-            popup::preview_action_popup,
-            lab::lab_mcp
         ])
         .build(tauri::generate_context!())
         .expect("Unable to start Jitterbug")

@@ -14,7 +14,7 @@
 </script>
 
 <script lang="ts">
-    import { invoke, isTauri } from '@tauri-apps/api/core';
+    import { invoke } from '@tauri-apps/api/core';
     import { onDestroy, tick, untrack } from 'svelte';
     import type {
         Snapshot,
@@ -26,7 +26,6 @@
         InsideView,
         ProcessLabel,
     } from '../lib/types';
-    import { demoDetails } from '../lib/demo';
     import { queueInference, cancelled, identityKey, type Explanation } from '../lib/monitor';
     import { appFallback, processRole } from '../lib/monitor-copy';
     import { memory, percent, errorMessage } from '../lib/format';
@@ -84,7 +83,6 @@
     let disposed = false;
     let lastProfile = '';
     let previousContext = '';
-    const demo = $derived(snapshot.source !== 'live' || !isTauri());
     const context = $derived(
         `${snapshot.source}:${settingsKey}:${workload?.id ?? 'system'}:${selected?.pid ?? 'app'}:${selected?.start_time ?? ''}`
     );
@@ -115,7 +113,7 @@
                 : profile?.source === 'reference'
                   ? profile.text
                   : workload
-                    ? appFallback(workload, demo)
+                    ? appFallback(workload)
                     : 'Ask about resource use, slowdowns, or which apps need attention.'
     );
     const result = $derived(
@@ -156,15 +154,11 @@
         const id = workload?.id;
         if (!id) return;
         const request = ++sequence;
-        void (
-            demo
-                ? Promise.resolve(demoDetails(sample, id, target))
-                : invoke<WorkloadDetails>('get_workload_details', {
-                      workloadId: id,
-                      pid: target?.pid ?? null,
-                      startTime: target?.start_time ?? null,
-                  })
-        )
+        void invoke<WorkloadDetails>('get_workload_details', {
+            workloadId: id,
+            pid: target?.pid ?? null,
+            startTime: target?.start_time ?? null,
+        })
             .then((next) => {
                 if (disposed || request !== sequence) return;
                 detail = next;
@@ -181,11 +175,11 @@
                 if (!disposed && request === sequence) error = errorMessage(cause);
             });
     });
-    async function describe(next: WorkloadDetails, key: string) {
-        if (demo || next.profile.source === 'model') return;
+    async function describe(next: WorkloadDetails, key: string, requested = false) {
+        if (next.profile.source === 'model') return;
         describing = true;
         const current = () => !disposed && key === lastProfile;
-        const valid = () => current() && !busy && !conversation.length;
+        const valid = () => current() && !busy && (requested || !conversation.length);
         try {
             const values = await queueInference(
                 () =>
@@ -246,29 +240,18 @@
         )
             messages = messages.slice(1);
         try {
-            if (!demo) await invoke('prioritize_monitor_chat');
-            const answer: Answer = demo
-                ? {
-                      text: process
-                          ? `${process.name} is one of ${workload?.label}’s processes. ${processRole(process, workload?.label ?? 'the app')} In this example it uses ${memory(process.memory_bytes)} and ${percent(process.cpu_percent)} CPU. There’s no sign of sustained pressure.`
-                          : `${summary} In this example, ${workload?.label ?? 'your computer'} has room to keep working. You can look at its individual processes to see which part is using memory.`,
-                      sources: [],
-                      action: null,
-                      provider: 'demo',
-                      model: 'demo',
-                      captured_at: snapshot.captured_at,
-                  }
-                : await queueInference(
-                      () =>
-                          invoke<Answer>('ask_monitor', {
-                              messages,
-                              workloadId: id,
-                              pid: target?.pid ?? null,
-                              startTime: target?.start_time ?? null,
-                          }),
-                      20,
-                      () => !disposed && key === context
-                  );
+            await invoke('prioritize_monitor_chat');
+            const answer: Answer = await queueInference(
+                () =>
+                    invoke<Answer>('ask_monitor', {
+                        messages,
+                        workloadId: id,
+                        pid: target?.pid ?? null,
+                        startTime: target?.start_time ?? null,
+                    }),
+                20,
+                () => !disposed && key === context
+            );
             if (!disposed && key === context) {
                 if (answer.inside) named(answer.inside);
                 conversation = [
@@ -278,7 +261,7 @@
                 remember();
                 void reveal();
             }
-            if (!demo) onusage();
+            onusage();
         } catch (cause) {
             if (!disposed && key === context && cause !== cancelled)
                 chatError = errorMessage(cause);
@@ -289,7 +272,7 @@
     }
     function currentAction(answer: Answer) {
         const action = answer.action;
-        if (!action || demo || error || actionBusy) return null;
+        if (!action || error || actionBusy) return null;
         return (
             detail?.members.find(
                 (p) =>
@@ -316,7 +299,6 @@
                     workloadId={workload.id}
                     category={workload.category}
                     size={34}
-                    {demo}
                 />{:else}<Icon name="companion" size={28} />{/if}
             <div>
                 <h2 {title}>{title}</h2>
@@ -333,7 +315,15 @@
     </header>
     <section class="identity-summary" aria-label="App summary">
         <p>
-            {summary}{#if profile?.source === 'model'}
+            {#if workload && (!profile || profile.source === 'inference') && !selected && !detail?.launch}
+                <button
+                    class="identify-app"
+                    disabled={describing || busy || !detail}
+                    onclick={() => {
+                        if (detail) void describe(detail, lastProfile, true);
+                    }}>{describing ? 'Identifying this app…' : 'Identify this app'}</button
+                >
+            {:else}{summary}{/if}{#if profile?.source === 'model'}
                 <button
                     class="summary-credit"
                     title="AI summary · view details and sources"
@@ -377,6 +367,27 @@
             bind:this={log}
         >
             {#if !conversation.length}<div class="conversation-start">
+                    {#if detail?.members.length && !selected}
+                        <div class="starting-processes">
+                            <div class="evidence-heading">
+                                <span>Largest processes</span><span>Memory</span>
+                            </div>
+                            {#each [...detail.members]
+                                .sort((a, b) => b.memory_bytes - a.memory_bytes)
+                                .slice(0, 3) as p (identityKey(p))}
+                                <button class="contributor" onclick={() => choose(p)}
+                                    ><span
+                                        ><strong>{label(p)?.title ?? p.name}</strong><small
+                                            >PID {p.pid} · {processRole(
+                                                p,
+                                                workload?.label ?? 'this app'
+                                            )}</small
+                                        ></span
+                                    ><span>{memory(p.memory_bytes)}</span></button
+                                >
+                            {/each}
+                        </div>
+                    {/if}
                     <div class="suggestions">
                         {#each workload ? ['Why is it using this much memory?', 'Can I reduce its impact?'] : ['What’s using the most resources?', 'Why does my computer feel slow?'] as prompt}<button
                                 disabled={!!error || busy}
@@ -385,8 +396,7 @@
                     </div>
                 </div>{/if}
             {#each conversation as entry}<div class="message" class:user={entry.role === 'user'}>
-                    {#if entry.role === 'assistant'}<span class="assistant-name"
-                            >{demo ? 'Jitterbug · demo' : 'Jitterbug'}</span
+                    {#if entry.role === 'assistant'}<span class="assistant-name">Jitterbug</span
                         >{/if}
                     <p>{entry.text}</p>
                     {#if entry.answer?.contributors?.length}<div class="contributors">
@@ -478,7 +488,7 @@
                     }
                 }}></textarea>
             <div>
-                <span>{demo ? 'Demo · no model calls' : 'Actions require review'}</span><button
+                <span>Actions require review</span><button
                     class="send"
                     aria-label="Send message"
                     disabled={busy || !!error || !question.trim()}>↑</button
@@ -513,7 +523,6 @@
                 </p>{/if}{#if detail && workload}<InsidePanel
                     {snapshot}
                     workload={detail.workload}
-                    {demo}
                     {actionBusy}
                     {onaction}
                     onview={named}
@@ -566,7 +575,7 @@
         padding: 14px 8px;
         margin: 14px 0 0;
         border: 0;
-        border-top: 1px solid var(--border);
+
         border-radius: 0;
         box-shadow: none;
     }
@@ -579,7 +588,7 @@
     .detail-scroll :global(.unit) {
         grid-template-columns: minmax(0, 1fr) 48px 62px;
         gap: 8px;
-        padding: 8px 0;
+        padding: 6px 10px;
         font-size: 11px;
     }
     .detail-scroll :global(.unit-actions) {
@@ -588,7 +597,7 @@
         flex-wrap: wrap;
     }
     .detail-scroll :global(.unit-actions button) {
-        font-size: 10px;
+        font-size: 11px;
         padding: 4px 8px;
     }
     .inspector-shell {
@@ -624,7 +633,7 @@
         white-space: nowrap;
     }
     .heading span {
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
     }
     .identity-summary {
@@ -636,6 +645,14 @@
         line-height: 1.6;
         margin: 0 0 6px;
     }
+    .identify-app {
+        padding: 0;
+        border: 0;
+        font-size: 12px;
+        color: var(--accent);
+        background: none;
+        min-height: 24px;
+    }
     .summary-credit {
         border: 0;
         padding: 0;
@@ -643,7 +660,7 @@
         background: none;
         box-shadow: none;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
     }
     .quick-readings {
         display: flex;
@@ -660,7 +677,7 @@
     }
     .quick-readings button {
         padding: 0;
-        font-size: 10px;
+        font-size: 11px;
         min-height: 20px;
     }
     .summary-meta {
@@ -668,27 +685,27 @@
         justify-content: space-between;
         align-items: center;
         gap: 8px;
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
         padding-top: 7px;
     }
     .summary-meta button {
-        font-size: 10px;
+        font-size: 11px;
         padding: 0;
         min-height: 18px;
     }
     .inspector-tabs {
         display: flex;
-        padding: 0 16px;
-        gap: 21px;
-        border-bottom: 1px solid var(--border);
+        padding: 8px 16px;
+        gap: 8px;
+
         flex-shrink: 0;
     }
     .inspector-tabs button {
         border: 0;
-        border-bottom: 2px solid transparent;
+
         border-radius: 0;
-        padding: 8px 0;
+        padding: 6px 10px;
         background: none;
         box-shadow: none;
         color: var(--muted);
@@ -696,12 +713,13 @@
     }
     .inspector-tabs button.active {
         color: var(--text);
-        border-bottom-color: var(--accent);
+        background: var(--hover);
+        border-radius: 5px;
     }
     .inspector-tabs span {
         margin-left: 4px;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
     }
     .conversation {
         flex: 1;
@@ -710,6 +728,9 @@
         padding: 14px 16px;
         scrollbar-width: thin;
         overflow-wrap: anywhere;
+    }
+    .starting-processes {
+        margin-bottom: 24px;
     }
     .conversation-start {
         margin: 0;
@@ -724,11 +745,12 @@
         justify-content: space-between;
         gap: 8px;
         text-align: left;
-        padding: 8px 10px;
-        font-size: 11px;
+        padding: 10px 0;
+        font-size: 12px;
         background: none;
-        border: 1px solid var(--border);
-        border-radius: 8px;
+        border: 0;
+
+        border-radius: 0;
         box-shadow: none;
         font-weight: 400;
     }
@@ -738,7 +760,7 @@
     .message {
         margin-bottom: 22px;
         font-size: 13px;
-        line-height: 1.75;
+        line-height: 1.65;
     }
     .message p {
         white-space: pre-wrap;
@@ -749,17 +771,19 @@
         font-size: 11px;
     }
     .message.user {
-        background: var(--hover);
-        margin: 0 0 22px 28px;
-        padding: 10px 13px;
-        border-radius: 11px 11px 3px 11px;
+        background: transparent;
+        margin: 0 0 20px;
+        padding: 0 0 16px;
+
+        border-radius: 0;
+        color: var(--muted);
     }
     .message.user p {
         margin: 0;
     }
     .contributors {
         margin-top: 16px;
-        border-top: 1px solid var(--border);
+
         padding-top: 9px;
     }
     .evidence-heading {
@@ -767,11 +791,11 @@
         justify-content: space-between;
         gap: 8px;
         align-items: center;
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
     }
     .evidence-heading button {
-        font-size: 10px;
+        font-size: 11px;
         padding: 0;
     }
     .contributor {
@@ -783,7 +807,7 @@
         border: 0;
         box-shadow: none;
         background: none;
-        padding: 8px 0;
+        padding: 6px 10px;
         border-radius: 0;
         font-size: 11px;
     }
@@ -806,11 +830,11 @@
     }
     .contributor small {
         color: var(--muted);
-        font-size: 10px;
+        font-size: 11px;
         margin-top: 3px;
     }
     .answer-sources {
-        font-size: 10px;
+        font-size: 11px;
         margin-top: 10px;
     }
     .answer-sources a {
@@ -836,14 +860,19 @@
         margin: 0 14px 14px;
         padding: 8px 10px 6px;
         border: 1px solid var(--control-border);
-        border-radius: 10px;
-        background: var(--control);
+        border-radius: 6px;
+        background: transparent;
         flex-shrink: 0;
     }
     .composer:focus-within {
         border-color: var(--accent);
     }
-    textarea {
+    .composer textarea,
+    .composer textarea:focus,
+    .composer textarea:focus-visible {
+        outline: none;
+        border-radius: 0;
+        border-color: transparent;
         display: block;
         width: 100%;
         border: none;
@@ -852,7 +881,9 @@
         font-size: 12px;
         padding: 4px;
         resize: none;
-        min-height: 28px;
+        min-height: 48px;
+        max-height: 120px;
+        field-sizing: content;
         line-height: 1.5;
     }
     .composer > div {
@@ -863,13 +894,13 @@
     }
     .composer span {
         color: var(--muted);
-        font-size: 9px;
+        font-size: 11px;
     }
     .send {
-        background: var(--accent);
-        color: white;
+        background: var(--text);
+        color: var(--canvas);
         border: 0;
-        border-radius: 7px;
+        border-radius: 4px;
         min-height: 26px;
         height: 26px;
         width: 27px;
@@ -891,7 +922,7 @@
         gap: 14px;
         padding: 12px 8px;
         border: 0;
-        border-bottom: 1px solid var(--border);
+
         border-radius: 0;
         background: none;
         box-shadow: none;
@@ -910,7 +941,7 @@
     }
     .member small {
         display: block;
-        font-size: 10px;
+        font-size: 11px;
         color: var(--muted);
         margin-top: 5px;
     }
@@ -940,7 +971,6 @@
     .technical ol {
         list-style: none;
         padding: 0 0 0 12px;
-        border-left: 1px solid var(--border);
     }
     .technical li {
         padding: 6px 0;
@@ -973,7 +1003,7 @@
     .action-proposal {
         padding: 12px;
         margin-top: 12px;
-        border: 1px solid var(--border);
+        border: 0;
         border-radius: 8px;
     }
     .action-proposal p {

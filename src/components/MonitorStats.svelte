@@ -5,59 +5,49 @@
     let expanded = $state(false);
     const used = $derived(snapshot.memory_total_bytes - snapshot.memory_available_bytes);
     const pressure = $derived(snapshot.pressure.level);
-    const points = $derived(
-        snapshot.history
-            .map(
-                (p, i, a) =>
-                    `${(i / Math.max(a.length - 1, 1)) * 110},${28 - Math.min(p.cpu_percent, 100) * 0.26}`
-            )
-            .join(' ')
-    );
 </script>
 
-<section class="monitor-stats" aria-label="System resources" data-tour="health">
+<section class="monitor-stats" aria-label="System resources">
     <div class="stat">
-        <div>
-            <span>CPU</span><strong
-                >{snapshot.sample_ready ? percent(snapshot.cpu_percent) : '—'}</strong
-            >
-        </div>
-        <svg viewBox="0 0 110 30" aria-label="CPU history" role="img"><polyline {points} /></svg>
+        <span>CPU</span><strong
+            >{snapshot.sample_ready ? percent(snapshot.cpu_percent) : '—'}</strong
+        ><small>of total capacity</small>
     </div>
-    <div class="stat memory">
-        <div>
-            <span>Memory</span><strong
-                >{memory(used)}<small> / {memory(snapshot.memory_total_bytes)}</small></strong
-            >
-        </div>
-        <div class="memory-track">
-            <i style:width={`${(100 * used) / Math.max(snapshot.memory_total_bytes, 1)}%`}></i>
-        </div>
+    <div class="stat">
+        <span>Memory</span><strong
+            >{memory(used)}<small> / {memory(snapshot.memory_total_bytes)}</small></strong
+        ><small>{memory(snapshot.memory_available_bytes)} available</small>
     </div>
     <div class="stat health">
-        <div>
-            <span>System pressure</span><strong class:warning={pressure !== 'normal'}
-                ><i></i>{!snapshot.sample_ready
-                    ? 'Sampling'
-                    : pressure === 'normal'
-                      ? 'Normal'
-                      : pressure === 'watch'
-                        ? 'Elevated'
-                        : 'High'}</strong
-            >
-        </div>
-        <button
-            class="text-button"
-            aria-label="System details"
-            aria-expanded={expanded}
-            onclick={() => (expanded = !expanded)}>···</button
+        <span>System pressure</span><strong class:strained={pressure !== 'normal'}
+            ><i></i>{!snapshot.sample_ready
+                ? 'Sampling'
+                : pressure === 'normal'
+                  ? 'Normal'
+                  : pressure === 'watch'
+                    ? 'Elevated'
+                    : 'High'}</strong
+        ><small
+            >{snapshot.platform.thermal === 'nominal'
+                ? 'Thermal state normal'
+                : `Thermal: ${snapshot.platform.thermal ?? 'unavailable'}`}</small
         >
     </div>
+    <button
+        class="text-button details-toggle"
+        aria-label="System details"
+        aria-expanded={expanded}
+        onclick={() => (expanded = !expanded)}>{expanded ? 'Less' : 'Details'}</button
+    >
     {#if expanded}<div class="stats-detail">
             <span>{snapshot.logical_cpus} CPU cores</span><span
-                >{memory(snapshot.memory_available_bytes)} available</span
-            ><span>{memory(snapshot.swap_used_bytes)} swap</span><span
-                >Thermal: {snapshot.platform.thermal ?? 'unavailable'}</span
+                >{memory(snapshot.swap_used_bytes)} swap</span
+            ><span
+                >Sampled {new Date(snapshot.captured_at * 1000).toLocaleTimeString([], {
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    second: '2-digit',
+                })}</span
             ><span>CPU is measured across all cores.</span>
         </div>{/if}
 </section>
@@ -65,107 +55,80 @@
 <style>
     .monitor-stats {
         display: grid;
-        grid-template-columns: 1fr 1.15fr 1fr;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: var(--panel);
-        flex-shrink: 0;
+        grid-template-columns: 1fr 1.5fr 1fr auto;
+        column-gap: 24px;
+        padding: 12px 0;
+
+        flex: 0 0 auto;
     }
     .stat {
-        min-width: 0;
         display: flex;
-        gap: 16px;
-        align-items: center;
-        justify-content: space-between;
-        padding: 17px 20px;
+        flex-direction: column;
+        gap: 5px;
+        min-width: 0;
     }
-    .stat + .stat {
-        border-left: 1px solid var(--border);
-    }
-    .stat span {
-        display: block;
+    .stat > span {
+        font-size: 12px;
         color: var(--muted);
-        font-size: 11px;
-        margin-bottom: 5px;
     }
     strong {
-        display: block;
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
         font-size: 23px;
-        line-height: 1.2;
-        font-weight: 600;
+        font-weight: 500;
+        line-height: 1.3;
         font-variant-numeric: tabular-nums;
         letter-spacing: -0.6px;
     }
     small {
-        font-size: 12px;
+        font-size: 11px;
         color: var(--muted);
         font-weight: 400;
         letter-spacing: 0;
     }
-    svg {
-        width: 100px;
-        height: 30px;
-        overflow: visible;
-    }
-    polyline {
-        fill: none;
-        stroke: var(--accent);
-        stroke-width: 1.8;
-    }
-    .memory {
-        display: block;
-    }
-    .memory-track {
-        height: 3px;
-        background: var(--track);
-        margin-top: 10px;
-        border-radius: 4px;
-        overflow: hidden;
-    }
-    .memory-track i {
-        display: block;
-        height: 100%;
-        background: var(--accent);
-        opacity: 0.7;
-    }
     .health strong {
-        font-size: 19px;
-        display: flex;
-        gap: 8px;
         align-items: center;
     }
     .health i {
-        width: 7px;
-        height: 7px;
+        height: 5px;
+        width: 5px;
         border-radius: 50%;
-        background: #39ad79;
+        background: var(--success);
     }
-    .health strong.warning i {
-        background: #e4a239;
+    .health .strained {
+        color: var(--warning);
     }
-    .health button {
-        font-size: 20px;
-        padding: 0 5px;
+    .health .strained i {
+        background: var(--warning);
+    }
+    .details-toggle {
+        align-self: center;
+        padding: 4px 0;
+        font-size: 12px;
     }
     .stats-detail {
-        grid-column: 1 / -1;
         display: flex;
-        gap: 12px 24px;
         flex-wrap: wrap;
-        padding: 12px 20px;
-        border-top: 1px solid var(--border);
+        gap: 12px 24px;
+        grid-column: 1/-1;
         color: var(--muted);
-        font-size: 11px;
+        font-size: 12px;
+        margin-top: 20px;
     }
-    @media (max-width: 1050px) {
-        svg {
-            display: none;
+    @media (max-width: 700px) {
+        .monitor-stats {
+            grid-template-columns: 1fr 1.4fr;
+            row-gap: 18px;
         }
-        .stat {
-            padding: 14px;
+        .health strong {
+            font-size: 18px;
         }
         strong {
             font-size: 20px;
+        }
+        .details-toggle {
+            justify-self: end;
         }
     }
 </style>

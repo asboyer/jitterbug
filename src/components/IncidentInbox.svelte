@@ -1,4 +1,5 @@
 <script lang="ts">
+    import Icon from './Icon.svelte';
     import {
         inboxFilterLabels,
         matchesInboxFilter,
@@ -49,7 +50,7 @@
 <section class="incident-inbox" aria-label="Incident inbox">
     {#if cases.length === 0}
         <div class="panel empty-inbox">
-            <span class="empty-mark" aria-hidden="true">✓</span>
+            <Icon name="check" size={24} />
             <h2>Nothing needs your attention</h2>
             <p>Resource alerts and proposed optimizations will appear here.</p>
         </div>
@@ -87,13 +88,14 @@
                                     class:is-blocked={incident.stage === 'blocked'}
                                     aria-hidden="true"
                                 >
-                                    {['completed', 'resolved'].includes(incident.stage)
-                                        ? '✓'
-                                        : incident.stage === 'awaiting_approval'
-                                          ? '↗'
-                                          : incident.stage === 'blocked'
-                                            ? '!'
-                                            : '·'}
+                                    <Icon
+                                        name={['completed', 'resolved'].includes(incident.stage)
+                                            ? 'check'
+                                            : incident.stage === 'blocked'
+                                              ? 'info'
+                                              : 'activity'}
+                                        size={16}
+                                    />
                                 </span>
                                 <span class="incident-copy">
                                     <span class="incident-card-heading">
@@ -188,9 +190,6 @@
         width: 100%;
         padding: 18px;
     }
-    .incident-card + .incident-card {
-        border-top: 1px solid var(--border);
-    }
     .incident-card:hover {
         background: var(--hover);
     }
@@ -276,17 +275,6 @@
         justify-items: center;
         padding: 56px 24px;
         text-align: center;
-    }
-    .empty-mark {
-        color: var(--success);
-        background: var(--success-soft);
-        width: 42px;
-        height: 42px;
-        border-radius: 50%;
-        display: grid;
-        place-items: center;
-        font-size: 21px;
-        margin-bottom: 18px;
     }
     .empty-inbox h2 {
         font-size: 15px;

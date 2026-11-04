@@ -4,19 +4,9 @@
     import HarnessBadge from './HarnessBadge.svelte';
     import Icon from './Icon.svelte';
     import { errorMessage } from '../lib/format';
-    import {
-        cpuShare,
-        demoAgents,
-        demoBrief,
-        elapsed,
-        size,
-        type AgentsBrief,
-        type AgentsView,
-    } from '../lib/agents';
+    import { cpuShare, elapsed, size, type AgentsBrief, type AgentsView } from '../lib/agents';
 
-    let { demo }: { demo: boolean } = $props();
-
-    const preview = $derived(demo || !isTauri());
+    const desktop = isTauri();
     let view = $state<AgentsView | null>(null);
     let brief = $state<AgentsBrief | null>(null);
     let briefBusy = $state(false);
@@ -26,9 +16,6 @@
     let selected = $state<string[]>([]);
     let connectedAt = $state<number | null>(null);
     let setupOpen = $state(false);
-    // Demo only: whether the synthetic agents are connected, and whether turns have kicked in.
-    let demoConnected = $state(false);
-    let demoStep = $state(0);
     let lastSignature = '';
     let lastAsked = 0;
 
@@ -39,10 +26,7 @@
     const quiet = $derived(view?.sessions.filter((s) => s.state !== 'working') ?? []);
 
     async function refresh() {
-        if (preview) {
-            view = demoAgents(demoStep, demoConnected);
-            return;
-        }
+        if (!desktop) return;
         try {
             view = await invoke<AgentsView>('get_agents');
             error = '';
@@ -53,10 +37,7 @@
 
     async function explain() {
         if (!view || !working.length) return;
-        if (preview) {
-            brief = demoBrief(view);
-            return;
-        }
+        if (!desktop) return;
         briefBusy = true;
         try {
             brief = await invoke<AgentsBrief>('explain_agents', { force: false });
@@ -87,12 +68,7 @@
         busy = true;
         error = '';
         try {
-            if (preview) {
-                demoConnected = true;
-                setTimeout(() => (demoStep = 1), 2500);
-            } else {
-                view = await invoke<AgentsView>('connect_agents', { keys: selected });
-            }
+            view = await invoke<AgentsView>('connect_agents', { keys: selected });
             connectedAt = Math.floor(Date.now() / 1000);
             selected = [];
             await refresh();
@@ -106,8 +82,7 @@
     async function disconnect(key: string) {
         busy = true;
         try {
-            if (preview) demoConnected = false;
-            else view = await invoke<AgentsView>('disconnect_agents', { keys: [key] });
+            view = await invoke<AgentsView>('disconnect_agents', { keys: [key] });
             await refresh();
         } catch (e) {
             error = errorMessage(e);
@@ -117,10 +92,7 @@
     }
 
     async function toggleTurns(enabled: boolean) {
-        if (preview) {
-            demoConnected = enabled;
-            demoStep = enabled ? 1 : 0;
-        } else {
+        if (desktop) {
             try {
                 await invoke('set_turns_enabled', { enabled });
             } catch (e) {
@@ -138,7 +110,7 @@
 
     onMount(() => {
         void refresh();
-        const poll = setInterval(() => void refresh(), preview ? 2500 : 3000);
+        const poll = setInterval(() => void refresh(), 3000);
         const clock = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
         return () => {
             clearInterval(poll);
@@ -186,6 +158,7 @@
         </div>
     {/if}
 
+    {#if !view && !error}<p class="muted" role="status">Reading agent activity…</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
 
     {#if showSetup && view}
@@ -250,7 +223,10 @@
                     {@const contact = heard(harness.last_seen)}
                     <div class="harness-row">
                         <span class="check" class:live={!!contact}
-                            >{#if contact}✓{:else}<Icon name="activity" size={15} />{/if}</span
+                            >{#if contact}<Icon name="check" size={18} />{:else}<Icon
+                                    name="activity"
+                                    size={15}
+                                />{/if}</span
                         >
                         <HarnessBadge harness={harness.key} compact />
                         <div class="harness-copy">
@@ -347,8 +323,8 @@
     {/each}
 
     {#if view && quiet.length}
-        <section class="panel" aria-label="Waiting for you">
-            <h2>Waiting for you</h2>
+        <section class="panel" aria-label="Other running sessions">
+            <h2>Other running sessions</h2>
             {#each quiet as session (session.id)}
                 <div class="quiet-row">
                     <HarnessBadge harness={session.harness} compact />
@@ -357,7 +333,11 @@
                         {#if session.request}<span class="muted">“{session.request}”</span
                             >{/if}</span
                     >
-                    <span class="muted when">{elapsed(session.last_active, now)} ago</span>
+                    <span class="muted when"
+                        >{session.state === 'waiting'
+                            ? 'Waiting for you'
+                            : 'No recent activity'}</span
+                    >
                     <span class="usage" title="Memory still in use"
                         >{size(session.memory_bytes)}</span
                     >
@@ -410,8 +390,8 @@
     .agents {
         display: flex;
         flex-direction: column;
-        gap: 14px;
-        max-width: 980px;
+        gap: 24px;
+        max-width: none;
     }
     .heading {
         display: flex;
@@ -428,7 +408,7 @@
         gap: 10px;
         padding: 8px 12px;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 6px;
         background: var(--panel);
         cursor: pointer;
         white-space: nowrap;
@@ -479,14 +459,17 @@
         margin: 0;
     }
     .panel {
-        padding: 14px 16px;
+        padding: 20px;
+        border: 0;
+        border-radius: 6px;
+        box-shadow: none;
     }
     h2 {
         font-size: 13px;
         margin: 0 0 6px;
     }
     .setup {
-        border: 1px solid var(--accent);
+        border: 1px solid var(--border);
         display: flex;
         flex-direction: column;
         gap: 4px;
@@ -506,7 +489,6 @@
         align-items: flex-start;
         gap: 10px;
         padding: 10px 0;
-        border-top: 1px solid var(--border);
     }
     .harness-copy {
         display: flex;
@@ -553,7 +535,7 @@
         align-items: center;
         gap: 12px;
         padding-top: 10px;
-        border-top: 1px solid var(--border);
+
         font-size: 12px;
     }
     .actions {
@@ -567,7 +549,7 @@
         align-items: center;
         gap: 10px;
         padding: 7px 0;
-        border-top: 1px solid var(--border);
+
         font-size: 13px;
     }
     .turn {
@@ -588,13 +570,8 @@
         height: 8px;
         border-radius: 50%;
         background: var(--success);
-        animation: pulse 1.6s ease-in-out infinite;
+
         flex: none;
-    }
-    @keyframes pulse {
-        50% {
-            opacity: 0.35;
-        }
     }
     code {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -663,7 +640,7 @@
         align-items: center;
         gap: 8px;
         margin: 2px 0 0;
-        font-size: 15px;
+        font-size: 14px;
     }
     .request,
     .note {
@@ -702,8 +679,8 @@
         text-overflow: ellipsis;
     }
     .empty-state {
-        text-align: center;
-        padding: 28px;
+        text-align: left;
+        padding: 32px;
     }
     .empty-state h2 {
         margin: 8px 0 4px;

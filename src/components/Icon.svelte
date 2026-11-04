@@ -4,6 +4,7 @@
         size = 18,
     }: {
         name:
+            | 'check'
             | 'companion'
             | 'activity'
             | 'cpu'
@@ -24,6 +25,7 @@
         size?: number;
     } = $props();
     const paths = {
+        check: 'm5 12 4 4L19 6',
         play: 'm8 4 12 8-12 8z',
         pause: 'M8 4v16M16 4v16',
         cpu: 'M6 6h12v12H6zM9 9h6v6H9zM9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4',

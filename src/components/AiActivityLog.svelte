@@ -6,14 +6,12 @@
         agentCallLabel,
         agentCallSource,
         ago,
-        demoActivity,
-        demoAgentCalls,
     } from '../lib/ai-activity';
     import { providerNames } from '../lib/ai-mode';
     import Icon from './Icon.svelte';
     import type { AgentCall, AiActivity, AutomationCase } from '../lib/types';
 
-    /** `live` reads the app's log; otherwise synthetic entries match the demo. */
+    /** Read activity only when connected to the native app. */
     let { live, cases }: { live: boolean; cases: AutomationCase[] } = $props();
     let entries: AiActivity[] = $state([]);
     let calls: AgentCall[] = $state([]);
@@ -31,8 +29,8 @@
         async function load() {
             now = Date.now() / 1000;
             if (!reading) {
-                entries = demoActivity();
-                calls = demoAgentCalls();
+                entries = [];
+                calls = [];
                 return;
             }
             try {
