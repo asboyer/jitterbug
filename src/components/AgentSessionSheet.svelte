@@ -84,14 +84,15 @@
                 <i class:live={s.state === 'working'}></i>{s.state === 'working'
                     ? (s.doing ?? 'Working')
                     : s.state === 'waiting'
-                      ? 'Waiting for you'
-                      : 'Idle'}{#if s.last_active}<span>
+                      ? 'Needs your answer'
+                      : 'Done'}{#if s.last_active}<span>
                         · active {ago(s.last_active, now)}</span
                     >{/if}{#if detail.started_at}<span>
                         · started {ago(detail.started_at, now)}</span
                     >{/if}
             </p>
-            {#if s.request}<p class="request">“{s.request}”</p>{/if}
+            {#if s.asks}<p class="asks">“{s.asks}”</p>{/if}
+            {#if s.request}<p class="request">You asked: “{s.request}”</p>{/if}
 
             <dl class="figures">
                 <div>
@@ -291,6 +292,14 @@
         line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
+    }
+    .asks {
+        margin: 8px 0 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: var(--accent-soft);
+        font-size: 13px;
+        line-height: 1.45;
     }
     .figures {
         display: grid;

@@ -27,6 +27,87 @@ pub struct Activity {
     pub last_active: Option<u64>,
     /// The agent finished its turn and is waiting for the person.
     pub waiting_for_you: bool,
+    /// The question the agent's last reply put to the person, when it asked one. A finished
+    /// reply with nothing to answer leaves this empty: the session is done, not waiting.
+    pub asks: Option<String>,
+}
+
+/// Openers and phrases that hand a decision back to the person.
+const ASKING: &[&str] = &[
+    "let me know",
+    "should i ",
+    "shall i ",
+    "want me to",
+    "would you like",
+    "do you want",
+    "which would you",
+    "which do you",
+    "please confirm",
+    "your call",
+    "need you to",
+    "needs your",
+    "can you confirm",
+    "could you ",
+    "can you ",
+    "please provide",
+    "please share",
+];
+
+/// The question in an agent's final reply, if it asks one: a sentence ending in "?" or one
+/// that hands a decision back, in the reply's last paragraph only.
+fn question(reply: &str) -> Option<String> {
+    let last = reply
+        .trim()
+        .rsplit("\n\n")
+        .map(str::trim)
+        .find(|p| !p.is_empty() && !p.starts_with("```"))?;
+    sentences(last)
+        .iter()
+        .rev()
+        .find(|s| {
+            let lower = s.to_lowercase();
+            s.ends_with('?') || ASKING.iter().any(|p| lower.contains(p))
+        })
+        .map(|s| clean(s.trim_start_matches(['-', '*', ' ']), 140))
+}
+
+/// Sentences, split after "?", "!", a line break, or a "." that ends a word (not "97.5").
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let next = chars.peek().map(|&(_, n)| n);
+        let end = match c {
+            '?' | '!' | '\n' => true,
+            '.' => next.is_none_or(char::is_whitespace),
+            _ => false,
+        };
+        if end {
+            let piece = text[start..i + c.len_utf8()].trim();
+            if !piece.is_empty() {
+                out.push(piece);
+            }
+            start = i + c.len_utf8();
+        }
+    }
+    let rest = text[start..].trim();
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+/// The text of a Claude Code assistant entry, if it has any.
+fn claude_text(entry: &Value) -> Option<String> {
+    let text: Vec<&str> = entry
+        .pointer("/message/content")?
+        .as_array()?
+        .iter()
+        .filter(|i| i.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|i| i.get("text")?.as_str())
+        .collect();
+    (!text.is_empty()).then(|| text.join("\n\n"))
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -175,7 +256,36 @@ pub fn claude(transcript: &Path) -> Activity {
         last_active: modified(transcript),
         ..Default::default()
     };
-    for line in tail_lines(transcript).iter().rev() {
+    let lines = tail_lines(transcript);
+    // The final reply: the last assistant text after the person's latest message.
+    for line in lines.iter().rev() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                if let Some(text) = claude_text(&entry) {
+                    activity.asks = question(&text);
+                    break;
+                }
+            }
+            Some("user") => {
+                let result = entry
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|i| i.get("type").and_then(Value::as_str) == Some("tool_result"))
+                    });
+                if !result {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    for line in lines.iter().rev() {
         let Ok(entry) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -527,6 +637,8 @@ pub fn codex(log: &Path) -> Activity {
         last_active: modified(log),
         ..Default::default()
     };
+    // Set once the latest reply (or a newer request) has been seen, reading backwards.
+    let mut replied = false;
     for line in tail_lines(log).iter().rev() {
         let Ok(entry) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -537,7 +649,17 @@ pub fn codex(log: &Path) -> Activity {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if activity.request.is_none() {
-            activity.request = codex_user_text(&payload);
+            if let Some(text) = codex_user_text(&payload) {
+                activity.request = Some(text);
+                replied = true;
+            }
+        }
+        if !replied && kind == "agent_message" {
+            replied = true;
+            activity.asks = payload
+                .get("message")
+                .and_then(Value::as_str)
+                .and_then(question);
         }
         if activity.doing.is_none() {
             activity.doing = match kind {
@@ -666,5 +788,55 @@ mod tests {
         assert_eq!(calls[0].ended_at.unwrap() - calls[0].started_at, 90);
         assert_eq!(calls[1].label, "Reading lib.rs");
         assert!(calls[1].ended_at.is_none());
+    }
+
+    #[test]
+    fn only_replies_that_ask_something_count_as_waiting() {
+        assert_eq!(
+            question("Done. Tests pass.\n\nShould I also push it to master?").as_deref(),
+            Some("Should I also push it to master?")
+        );
+        assert_eq!(
+            question("Here is the plan.\n\nLet me know which option you prefer.").as_deref(),
+            Some("Let me know which option you prefer.")
+        );
+        assert_eq!(question("Pushed to master. All 37 tests pass."), None);
+        // A question earlier in the reply, answered by the end, is not waiting on anyone.
+        assert_eq!(
+            question("Why did it fail? A stale lock.\n\nFixed and pushed."),
+            None
+        );
+        assert_eq!(question("```\nwhat?\n```"), None);
+        // A numbered decision followed by context, with decimals that are not sentence ends.
+        assert_eq!(
+            question("3. Should the anchors move? The best is 97.5. Moving it gives 98.5.")
+                .as_deref(),
+            Some("Should the anchors move?")
+        );
+    }
+
+    #[test]
+    fn the_final_claude_reply_decides_whether_it_asked() {
+        let dir = std::env::temp_dir().join(format!("jitterbug-asks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let reply = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-11-04T10:00:00Z","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#
+            )
+        };
+        std::fs::write(
+            &path,
+            [reply("Want me to open a PR?"), reply("Done, it is merged.")].join("\n"),
+        )
+        .unwrap();
+        assert_eq!(claude(&path).asks, None);
+        std::fs::write(
+            &path,
+            [reply("Done."), reply("Want me to open a PR?")].join("\n"),
+        )
+        .unwrap();
+        assert_eq!(claude(&path).asks.as_deref(), Some("Want me to open a PR?"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

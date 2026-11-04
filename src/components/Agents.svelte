@@ -342,12 +342,14 @@
                         ><strong
                             >{session.title || session.folder}<em
                                 class:waiting={session.state === 'waiting'}
-                                >{session.state === 'waiting' ? 'Waiting for you' : 'Idle'}</em
+                                >{session.state === 'waiting' ? 'Needs your answer' : 'Done'}</em
                             ></strong
                         ><span class="muted"
-                            >{session.request
-                                ? `“${session.request}”`
-                                : `${session.harness_name} · ${session.folder}`}</span
+                            >{session.asks
+                                ? `Asked: “${session.asks}”`
+                                : session.request
+                                  ? `You: “${session.request}”`
+                                  : `${session.harness_name} · ${session.folder}`}</span
                         ></span
                     >
                     <span class="muted when"

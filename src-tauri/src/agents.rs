@@ -45,6 +45,8 @@ pub struct SessionView {
     pub state: String,
     pub doing: Option<String>,
     pub request: Option<String>,
+    /// What the agent asked the person in its last reply; set only when state is `waiting`.
+    pub asks: Option<String>,
     pub last_active: Option<u64>,
     pub cpu_percent: f32,
     pub memory_bytes: u64,
@@ -167,9 +169,11 @@ fn state_of(activity: &Activity, status: Option<&str>, cpu: f32, at: u64) -> Str
         .is_some_and(|t| t + RECENT_SECONDS >= at);
     match status {
         Some("working") => "working".into(),
-        Some("idle") if cpu < BUSY_CPU => "waiting".into(),
+        // Finished its turn: waiting only when the last reply asked the person something.
+        Some("idle") if cpu < BUSY_CPU && activity.asks.is_some() => "waiting".into(),
+        Some("idle") if cpu < BUSY_CPU => "idle".into(),
         _ if cpu >= BUSY_CPU || (recent && !activity.waiting_for_you) => "working".into(),
-        _ if activity.waiting_for_you || activity.request.is_some() => "waiting".into(),
+        _ if activity.asks.is_some() => "waiting".into(),
         _ => "idle".into(),
     }
 }
@@ -299,11 +303,14 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
             folder,
             state: session_state.clone(),
             doing: match session_state.as_str() {
-                "waiting" => Some("Waiting for you".into()),
+                "waiting" => Some("Needs your answer".into()),
                 "working" => activity.doing.clone(),
                 _ => None,
             },
             request: activity.request.clone(),
+            asks: (session_state == "waiting")
+                .then(|| activity.asks.clone())
+                .flatten(),
             last_active: Some(last_active),
             cpu_percent: cpu,
             memory_bytes: memory,
@@ -374,11 +381,14 @@ pub fn view(snapshot: &Snapshot, state: &State, harnesses: Vec<Harness>) -> View
                 folder,
                 state: session_state.clone(),
                 doing: match session_state.as_str() {
-                    "waiting" => Some("Waiting for you".into()),
+                    "waiting" => Some("Needs your answer".into()),
                     "working" => activity.doing.clone(),
                     _ => None,
                 },
                 request: activity.request.clone(),
+                asks: (session_state == "waiting")
+                    .then(|| activity.asks.clone())
+                    .flatten(),
                 last_active: Some(last_active),
                 cpu_percent: cpu,
                 memory_bytes: memory,
@@ -638,7 +648,13 @@ mod tests {
             request: Some("fix it".into()),
             ..Default::default()
         };
-        assert_eq!(state_of(&activity, Some("idle"), 0.0, now()), "waiting");
+        // Finished with nothing asked: done, not waiting on the person.
+        assert_eq!(state_of(&activity, Some("idle"), 0.0, now()), "idle");
+        let asked = Activity {
+            asks: Some("Should I push it?".into()),
+            ..activity.clone()
+        };
+        assert_eq!(state_of(&asked, Some("idle"), 0.0, now()), "waiting");
         assert_eq!(state_of(&activity, None, 5.0, now()), "working");
         let fresh = Activity {
             last_active: Some(now()),

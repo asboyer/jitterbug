@@ -30,6 +30,8 @@ export interface AgentSession {
     state: 'working' | 'waiting' | 'idle';
     doing: string | null;
     request: string | null;
+    /** The question the agent's last reply asked; set only when state is `waiting`. */
+    asks?: string | null;
     last_active: number | null;
     cpu_percent: number;
     memory_bytes: number;
