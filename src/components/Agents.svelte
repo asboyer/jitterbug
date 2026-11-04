@@ -322,7 +322,11 @@
             </div>
             <p class="doing"><i class="pulse"></i>{session.doing ?? 'Working'}</p>
             {#if session.request}<p class="request">“{session.request}”</p>{/if}
-            {#if brief?.notes[session.id]}<p class="note">{brief.notes[session.id]}</p>{/if}
+            {#if brief?.notes[session.id] && (session.cpu_percent >= 5 || session.agents.length)}<p
+                    class="note"
+                >
+                    {brief.notes[session.id]}
+                </p>{/if}
             {#each session.agents as agent, index (agent.label + index)}
                 <div class="subagent">
                     <span class="sub-label">{agent.label || 'Main conversation'}</span>

@@ -391,6 +391,68 @@ fn codex_command(call: &Value) -> Option<String> {
     Some(command_summary(&rest[..end].replace("\\n", "\n")))
 }
 
+/// What the person typed, from either form Codex logs: a `user_message` event (CLI) or a user
+/// message item whose text parts include injected context (desktop app).
+fn codex_user_text(payload: &Value) -> Option<String> {
+    let text = match payload.get("type").and_then(Value::as_str)? {
+        "user_message" => payload.get("message")?.as_str()?.to_string(),
+        "message" if payload.get("role").and_then(Value::as_str) == Some("user") => payload
+            .get("content")?
+            .as_array()?
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_text"))
+            .filter_map(|part| part.get("text")?.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && !t.starts_with('#') && !t.starts_with('<'))
+            .last()?
+            .to_string(),
+        _ => return None,
+    };
+    Some(clean(&text, 140)).filter(|t| !t.is_empty())
+}
+
+/// The latest request in a Codex log. Logs grow to many MiB and requests can be far from the
+/// end, so each log is scanned once and then only from where the previous scan stopped.
+fn codex_request(log: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::io::BufRead;
+    use std::sync::Mutex;
+    static SCANNED: Mutex<Option<HashMap<PathBuf, (u64, Option<String>)>>> = Mutex::new(None);
+    let length = fs::metadata(log).ok()?.len();
+    let mut guard = SCANNED.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = guard.get_or_insert_with(HashMap::new);
+    let (offset, mut request) = cache.get(log).cloned().unwrap_or((0, None));
+    let offset = if offset > length { 0 } else { offset };
+    if offset < length {
+        let mut file = File::open(log).ok()?;
+        file.seek(SeekFrom::Start(offset)).ok()?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut consumed = offset;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = reader.read_line(&mut line).ok()?;
+            if read == 0 || !line.ends_with('\n') {
+                break;
+            }
+            consumed += read as u64;
+            if line.contains("\"user_message\"") || line.contains("\"role\":\"user\"") {
+                if let Some(text) = serde_json::from_str::<Value>(&line)
+                    .ok()
+                    .and_then(|v| codex_user_text(v.get("payload")?))
+                {
+                    request = Some(text);
+                }
+            }
+        }
+        if cache.len() > 64 {
+            cache.clear();
+        }
+        cache.insert(log.to_path_buf(), (consumed, request.clone()));
+    }
+    request
+}
+
 pub fn codex(log: &Path) -> Activity {
     let mut activity = Activity {
         last_active: modified(log),
@@ -405,12 +467,8 @@ pub fn codex(log: &Path) -> Activity {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if activity.request.is_none() && kind == "user_message" {
-            activity.request = payload
-                .get("message")
-                .and_then(Value::as_str)
-                .map(|m| clean(m, 140))
-                .filter(|m| !m.is_empty());
+        if activity.request.is_none() {
+            activity.request = codex_user_text(&payload);
         }
         if activity.doing.is_none() {
             activity.doing = match kind {
@@ -432,6 +490,9 @@ pub fn codex(log: &Path) -> Activity {
         if activity.doing.is_some() && activity.request.is_some() {
             break;
         }
+    }
+    if activity.request.is_none() {
+        activity.request = codex_request(log);
     }
     if activity.last_active.is_none() {
         activity.last_active = tail_lines(log)

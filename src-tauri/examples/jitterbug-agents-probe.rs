@@ -31,6 +31,9 @@ fn main() {
             s.memory_bytes / 1_048_576,
             s.doing.as_deref().unwrap_or("-"),
         );
+        if let Some(r) = &s.request {
+            println!("         asked: {}", r.chars().take(70).collect::<String>());
+        }
         for a in &s.agents {
             println!(
                 "         - {} [{}] {}",
