@@ -3,8 +3,9 @@
     import { invoke, isTauri } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import { errorMessage, memory, percent } from '../lib/format';
-    import type { Snapshot } from '../lib/types';
+    import type { Scene, Snapshot } from '../lib/types';
     import Icon from './Icon.svelte';
+    import Logo from './Logo.svelte';
     import AppIcon from './AppIcon.svelte';
     import ActivityGraph from './ActivityGraph.svelte';
     import HeldAgents from './HeldAgents.svelte';
@@ -13,6 +14,24 @@
     let snapshot: Snapshot | null = $state(null);
     let error = $state('');
     let capture = $state('');
+    // Meta's latest reading of the computer; the backend reuses it while nothing changes.
+    let scene = $state<Scene | null>(null);
+    async function readScene() {
+        try {
+            scene = await invoke<Scene>('read_scene', { force: false });
+        } catch {
+            /* The reading is optional here; the numbers below stand on their own. */
+        }
+    }
+    onMount(() => {
+        if (!desktop) return;
+        const first = setTimeout(() => void readScene(), 1500);
+        const timer = setInterval(() => void readScene(), 60_000);
+        return () => {
+            clearTimeout(first);
+            clearInterval(timer);
+        };
+    });
     const shortcut = navigator.userAgent.includes('Mac') ? '⌘⇧J' : 'Ctrl+Shift+J';
     onMount(() => {
         if (!desktop) return;
@@ -76,13 +95,16 @@
 <svelte:window onkeydown={escape} />
 <div class="quick-view">
     <header class="quick-header">
-        <Icon name="companion" size={19} /><strong>Jitterbug</strong>
+        <Logo size={20} live={!!snapshot?.sample_ready} /><strong>Jitterbug</strong>
         <span class="muted">{desktop ? 'Live' : 'Demo'}</span>
         <button class="icon-button" aria-label="Open settings" onclick={() => open('settings')}
             ><Icon name="settings" /></button
         >
     </header>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if scene}<button class="quick-reading" onclick={() => open('dashboard')}
+            ><span>{scene.headline}</span><small>{scene.detail}</small></button
+        >{/if}
     {#if snapshot && snapshot.memory_total_bytes > 0}
         <div class="quick-metrics">
             <div>
@@ -161,3 +183,38 @@
         ><small>Click a workload to investigate</small>
     </footer>
 </div>
+
+<style>
+    .quick-reading {
+        display: grid;
+        gap: 3px;
+        margin: 4px 12px 0;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: var(--accent-soft);
+        box-shadow: none;
+        text-align: left;
+        font-weight: 400;
+    }
+    .quick-reading:hover:not(:disabled) {
+        background: #5fe0b32a;
+    }
+    .quick-reading span {
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.35;
+    }
+    .quick-reading small {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.4;
+    }
+    :global(.quick-workloads button) {
+        box-shadow: none;
+        border-radius: 6px;
+        font-weight: 400;
+    }
+    :global(.quick-workloads button:hover:not(:disabled)) {
+        background: var(--hover);
+    }
+</style>
