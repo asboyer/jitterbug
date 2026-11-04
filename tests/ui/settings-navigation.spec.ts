@@ -255,14 +255,15 @@ test('an agent asking while access is off gets a one-tap prompt', async ({ page 
     await expect(page.getByRole('checkbox', { name: 'Allow agent access' })).toBeChecked();
 });
 
-test('the AI page lists recent model calls and links investigations to their outcome', async ({
+test('Monitor lists recent model calls and links investigations to their outcome', async ({
     page,
 }) => {
     await page.goto('/');
-    await page.getByRole('navigation').getByRole('button', { name: 'AI', exact: true }).click();
-    const activity = page.getByRole('region', { name: 'Recent activity' });
-    await expect(activity).toContainText('5 calls this session');
-    await expect(activity).toContainText('1 failed');
+    const strip = page.locator('details.ai-activity');
+    await expect(strip.locator('summary')).toContainText('5 calls this session');
+    await expect(strip.locator('summary')).toContainText('1 failed');
+    await strip.locator('summary').click();
+    const activity = page.getByRole('region', { name: 'AI activity' });
     const investigation = activity
         .getByRole('listitem')
         .filter({ hasText: 'Investigated a slowdown' });
@@ -271,6 +272,8 @@ test('the AI page lists recent model calls and links investigations to their out
     await expect(
         activity.getByRole('listitem').filter({ hasText: 'Explained the Monitor overview' })
     ).toContainText('No credential');
+    await page.getByRole('navigation').getByRole('button', { name: 'AI', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'AI activity' })).toHaveCount(0);
 });
 
 test('integrations offer an instruction that makes agents check before heavy work', async ({

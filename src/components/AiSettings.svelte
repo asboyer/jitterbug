@@ -1,33 +1,17 @@
 <script lang="ts">
     import '../settings.css';
     import SettingSwitch from './SettingSwitch.svelte';
-    import AiActivityLog from './AiActivityLog.svelte';
     import { untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { errorMessage, memory } from '../lib/format';
     import { applyMode, missingKeys, modeChoices, providerNames } from '../lib/ai-mode';
-    import type {
-        AutomationCase,
-        Bootstrap,
-        LocalModel,
-        Mode,
-        Provider,
-        Tier,
-        TierName,
-    } from '../lib/types';
+    import type { Bootstrap, LocalModel, Mode, Provider, Tier, TierName } from '../lib/types';
 
     let {
         bootstrap,
         desktop,
         onrefresh,
-        cases = [],
-    }: {
-        bootstrap: Bootstrap;
-        desktop: boolean;
-        onrefresh: () => Promise<void>;
-        /** Incidents, so an investigation can show what happened next. */
-        cases?: AutomationCase[];
-    } = $props();
+    }: { bootstrap: Bootstrap; desktop: boolean; onrefresh: () => Promise<void> } = $props();
 
     let settings = $state(untrack(() => $state.snapshot(bootstrap.settings)));
     let saved = $state(untrack(() => JSON.stringify(bootstrap.settings)));
@@ -143,8 +127,6 @@
         </div>
         {#if !desktop}<span class="tag">Preview · changes stay here</span>{/if}
     </div>
-
-    <AiActivityLog {desktop} {cases} />
 
     <section class="settings-group" aria-labelledby="ai-where">
         <h2 id="ai-where">Where AI runs</h2>

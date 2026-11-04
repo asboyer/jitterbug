@@ -844,12 +844,7 @@
             {/if}
             {#if page === 'ai'}
                 {#key settingsRevision}
-                    <AiSettings
-                        {bootstrap}
-                        {desktop}
-                        onrefresh={refreshBootstrap}
-                        cases={visibleCases}
-                    />
+                    <AiSettings {bootstrap} {desktop} onrefresh={refreshBootstrap} />
                 {/key}
             {:else if page === 'settings'}
                 {#key settingsRevision}
@@ -871,6 +866,7 @@
                 {#if page === 'monitor'}
                     <Monitor
                         assistantOpen={chatOpen || automationOpen}
+                        cases={visibleCases}
                         {snapshot}
                         {selected}
                         {actionBusy}

@@ -1,89 +1,148 @@
 <script lang="ts">
-    import { onMount, untrack } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { activityLabel, activityOutcome, ago, demoActivity } from '../lib/ai-activity';
     import { providerNames } from '../lib/ai-mode';
+    import Icon from './Icon.svelte';
     import type { AiActivity, AutomationCase } from '../lib/types';
 
-    let { desktop, cases }: { desktop: boolean; cases: AutomationCase[] } = $props();
-    // `desktop` never changes while the app runs.
-    let entries: AiActivity[] = $state(untrack(() => (desktop ? [] : demoActivity())));
+    /** `live` reads the app's log; otherwise synthetic entries match the demo. */
+    let { live, cases }: { live: boolean; cases: AutomationCase[] } = $props();
+    let entries: AiActivity[] = $state([]);
     let showAll = $state(false);
     let now = $state(Date.now() / 1000);
     const shown = $derived(showAll ? entries : entries.slice(0, 5));
     const spent = $derived(entries.reduce((sum, entry) => sum + entry.cost_usd, 0));
     const failed = $derived(entries.filter((entry) => !entry.ok).length);
 
-    onMount(() => {
+    $effect(() => {
+        const reading = live;
+        let stopped = false;
         async function load() {
             now = Date.now() / 1000;
-            if (!desktop) return;
+            if (!reading) {
+                entries = demoActivity();
+                return;
+            }
             try {
-                entries = await invoke<AiActivity[]>('get_ai_activity');
+                const next = await invoke<AiActivity[]>('get_ai_activity');
+                if (!stopped) entries = next;
             } catch {
-                /* The log is optional; the rest of the page still works. */
+                /* The log is optional; Monitor still works without it. */
             }
         }
         void load();
         const timer = setInterval(load, 5000);
-        return () => clearInterval(timer);
+        return () => {
+            stopped = true;
+            clearInterval(timer);
+        };
     });
     const seconds = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 </script>
 
-<section class="settings-group ai-activity" aria-labelledby="ai-activity">
-    <h2 id="ai-activity">Recent activity</h2>
-    {#if entries.length}
-        <p class="group-note">
-            {entries.length}
-            {entries.length === 1 ? 'call' : 'calls'} this session · ${spent.toFixed(4)}{failed
-                ? ` · ${failed} failed`
-                : ''}
-        </p>
-        <ul class="activity-list">
-            {#each shown as entry (entry.at + entry.purpose + entry.duration_ms)}
-                {@const outcome = activityOutcome(entry, cases)}
-                <li>
-                    <span class="activity-dot" class:failed={!entry.ok} aria-hidden="true"></span>
-                    <div class="activity-copy">
-                        <strong>{activityLabel(entry)}</strong>
-                        <span
-                            >{entry.ok
-                                ? `${providerNames[entry.provider]} · ${entry.model} · ${seconds(entry.duration_ms)}${entry.cost_usd ? ` · $${entry.cost_usd.toFixed(4)}` : ''}`
-                                : (entry.error ?? 'Failed')}</span
-                        >
-                    </div>
-                    <div class="activity-meta">
-                        {#if outcome}<span class="integration-status">{outcome}</span>{/if}
-                        <time>{ago(entry.at, now)}</time>
-                    </div>
-                </li>
-            {/each}
-        </ul>
-        {#if entries.length > 5}
-            <button class="text-button" onclick={() => (showAll = !showAll)}
-                >{showAll ? 'Show less' : `Show all ${entries.length}`}</button
-            >
+<details class="ai-activity panel">
+    <summary>
+        <span class="activity-title"><Icon name="model" size={16} /> AI activity</span>
+        <span class="activity-stats"
+            >{entries.length
+                ? `${entries.length} ${entries.length === 1 ? 'call' : 'calls'} this session · $${spent.toFixed(4)}${failed ? ` · ${failed} failed` : ''}`
+                : 'No AI calls yet this session'}</span
+        >
+    </summary>
+    <section aria-label="AI activity">
+        {#if entries.length}
+            <ul class="activity-list">
+                {#each shown as entry (entry.at + entry.purpose + entry.duration_ms)}
+                    {@const outcome = activityOutcome(entry, cases)}
+                    <li>
+                        <span class="activity-dot" class:failed={!entry.ok} aria-hidden="true"
+                        ></span>
+                        <div class="activity-copy">
+                            <strong>{activityLabel(entry)}</strong>
+                            <span
+                                >{entry.ok
+                                    ? `${providerNames[entry.provider]} · ${entry.model} · ${seconds(entry.duration_ms)}${entry.cost_usd ? ` · $${entry.cost_usd.toFixed(4)}` : ''}`
+                                    : (entry.error ?? 'Failed')}</span
+                            >
+                        </div>
+                        <div class="activity-meta">
+                            {#if outcome}<span class="activity-outcome">{outcome}</span>{/if}
+                            <time>{ago(entry.at, now)}</time>
+                        </div>
+                    </li>
+                {/each}
+            </ul>
+            {#if entries.length > 5}
+                <button class="text-button" onclick={() => (showAll = !showAll)}
+                    >{showAll ? 'Show less' : `Show all ${entries.length}`}</button
+                >
+            {/if}
+        {:else}
+            <p class="muted">
+                Jitterbug calls a model only when you ask, open an explanation, or a slowdown
+                persists. Each call shows here with its model, time and cost.
+            </p>
         {/if}
-    {:else}
-        <p class="group-note">
-            No AI calls yet this session. Jitterbug calls a model only when you ask, open an
-            explanation, or a slowdown persists.
-        </p>
-    {/if}
-</section>
+    </section>
+</details>
 
 <style>
+    .ai-activity {
+        margin-bottom: 20px;
+        padding: 0;
+    }
+    summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 16px;
+        cursor: pointer;
+        list-style: none;
+    }
+    summary::-webkit-details-marker {
+        display: none;
+    }
+    summary::after {
+        content: '›';
+        color: var(--muted);
+        transition: transform 120ms;
+    }
+    .ai-activity[open] summary::after {
+        transform: rotate(90deg);
+    }
+    .activity-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+        font-size: 13px;
+    }
+    .activity-title :global(svg) {
+        color: var(--accent);
+    }
+    .activity-stats {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 12px;
+    }
+    section {
+        padding: 0 16px 12px;
+    }
+    section > p {
+        margin: 0 0 4px;
+        font-size: 12px;
+    }
     .activity-list {
         list-style: none;
-        margin: 6px 0 4px;
+        margin: 0 0 4px;
         padding: 0;
     }
     .activity-list li {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 10px 0;
+        padding: 9px 0;
         border-top: 1px solid var(--border);
     }
     .activity-dot {
@@ -118,6 +177,13 @@
         align-items: center;
         gap: 10px;
         flex-shrink: 0;
+    }
+    .activity-outcome {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        color: var(--muted);
+        background: var(--sidebar);
     }
     time {
         color: var(--muted);
